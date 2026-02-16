@@ -47,22 +47,24 @@ We construct this leadfield using MNE-Python's boundary element method (BEM) for
 
 We run thousands of TVB simulations, each time:
 
-1. **Randomly choosing** which regions are epileptogenic (by setting their $x_0$ to values between −1.6 and −1.2) and which are healthy (setting $x_0$ between −2.2 and −2.1).
+1. **Randomly choosing** how many regions (0 to 8) are epileptogenic. About 11% of samples have zero epileptogenic regions (k=0), meaning all 76 regions are healthy. These healthy-only samples ensure the network also learns normal brain activity patterns, making it useful for general-purpose EEG source imaging on any patient, not just epileptic ones. For epileptic samples (k≥1), regions are set with $x_0$ between −1.8 and −1.2 (epileptogenic), while healthy regions get $x_0$ between −2.2 and −2.05 (stable).
 2. **Varying** coupling strengths, noise levels, and time constants across physiologically plausible ranges.
-3. **Running** the Epileptor simulation to produce 76 source time series.
+3. **Running** the Epileptor simulation at high temporal resolution (dt=0.1 ms) to produce 76 source time series. The raw output is at 20,000 Hz and is anti-aliased down to 200 Hz using a proper FIR decimation filter (not a simple average, which would cause spectral aliasing artifacts).
 4. **Projecting** the source time series through the leadfield to get a 19-channel synthetic EEG.
-5. **Adding** noise (Gaussian and colored) to the synthetic EEG to make it realistic.
+5. **Adding** noise (white Gaussian noise at 5–30 dB SNR plus colored 1/f noise at 10–30% of signal amplitude) to the synthetic EEG to make it realistic.
 
 For each simulation, we store:
 - The 19-channel synthetic EEG (the network's **input** during training).
 - The 76-region source activity (the network's **target** during training).
-- The binary label vector marking which regions were set as epileptogenic (used for evaluation).
+- The binary label vector marking which regions were set as epileptogenic (used for evaluation; all-zero for healthy-only samples).
 
-We generate on the order of 50,000–100,000 such samples, with varied seizure topographies, SNR levels, and timing.
+We generate on the order of 50,000–100,000 such samples, with varied seizure topographies, SNR levels, and timing. The dataset includes both healthy-only brain activity (~11%) and mixed healthy+epileptic activity (~89%), reflecting a realistic distribution that makes the network robust for both general-purpose source imaging and epileptogenicity detection.
 
 ### Step 4: We Train the PhysDeepSIF Inverse Solver
 
-PhysDeepSIF is a deep neural network inspired by the DeepSIF architecture (Sun et al., 2022, PNAS). It has two main modules:
+PhysDeepSIF is a deep neural network inspired by the DeepSIF architecture (Sun et al., 2022, PNAS). It is trained on **both healthy and epileptic synthetic data simultaneously**. This is deliberate: the network's primary job is to solve the EEG inverse problem (recovering brain sources from scalp EEG), which requires understanding both normal and abnormal brain dynamics. The network does NOT first learn on healthy data and then fine-tune on epileptic data—it learns the full distribution from the start.
+
+The network has two main modules:
 
 - A **spatial module**: a stack of fully connected layers with skip connections that takes in the 19-channel EEG at each time step and maps it toward the 76-region source space. This module learns to undo the spatial blurring caused by volume conduction.
 - A **temporal module**: a stack of bidirectional LSTM layers that processes the time series in the source space to capture temporal dynamics—how source activity evolves over time.

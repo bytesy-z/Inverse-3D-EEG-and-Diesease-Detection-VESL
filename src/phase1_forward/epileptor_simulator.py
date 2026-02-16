@@ -16,11 +16,19 @@ produce spontaneous spikes or seizure-like oscillations.
 
 Key simulation details:
   - Integrator: HeunStochastic (second-order stochastic Runge-Kutta)
-  - Time step: 1.0 ms
-  - Output: TemporalAverage at 200 Hz (period=5.0 ms)
+  - Time step: 0.1 ms (must be ≤ 0.1 for numerical stability)
+  - Output: Raw monitor at full dt resolution, then anti-aliased decimation
+    to 200 Hz using scipy.signal.decimate (FIR low-pass filter).
+    TVB's TemporalAverage monitor does NOT apply anti-aliasing, which causes
+    severe spectral aliasing (>90% power folding to Nyquist). Proper FIR
+    decimation preserves the biologically correct spectral content.
   - Duration: 12 seconds total, first 2 seconds discarded as transient
   - Output variable: x2 - x1 (LFP proxy)
   - Result shape: (76, 2000) — 76 regions × 2000 time points (10s at 200Hz)
+  - Noise: Structured — applied only to fast subsystem (x1, y1, x2, y2),
+    NOT to slow variables (z, g) to prevent numerical divergence.
+  - TVB 2× rate factor: TVB outputs at 2× the nominal rate (dt=0.1 ms yields
+    20 kHz, not 10 kHz). Decimation factor accounts for this.
 
 See docs/02_TECHNICAL_SPECIFICATIONS.md Sections 3.2 and 3.4.2 for full specs.
 
@@ -44,13 +52,14 @@ from typing import Any, Dict, Optional, Tuple
 # Third-party imports
 import numpy as np
 from numpy.typing import NDArray
+from scipy.signal import decimate
 
 # TVB imports — these are the core simulation components
 from tvb.datatypes.connectivity import Connectivity
 from tvb.simulator.coupling import Difference
 from tvb.simulator.integrators import HeunStochastic
 from tvb.simulator.models.epileptor import Epileptor
-from tvb.simulator.monitors import TemporalAverage
+from tvb.simulator.monitors import Raw
 from tvb.simulator.noise import Additive
 from tvb.simulator.simulator import Simulator
 
@@ -58,11 +67,19 @@ from tvb.simulator.simulator import Simulator
 # Module-level constants (from technical specs Sections 3.2 and 3.4.2)
 # ---------------------------------------------------------------------------
 N_REGIONS = 76              # Desikan-Killiany parcellation
-DT = 1.0                    # Integration time step in ms (HeunStochastic)
-MONITOR_PERIOD = 5.0        # TemporalAverage period in ms → 200 Hz output
+N_STATE_VARS = 6            # Epileptor has 6 state variables: x1, y1, z, x2, y2, g
+DT = 0.1                    # Integration time step in ms (HeunStochastic)
+                            # Must be ≤ 0.1 for numerical stability with stochastic
+                            # Epileptor. dt=1.0 causes overflow in the fast subsystem.
 SIMULATION_LENGTH_MS = 12000.0   # Total simulation length: 12 seconds
 TRANSIENT_MS = 2000.0       # First 2 seconds discarded as initial transient
-SAMPLING_RATE = 200.0       # Output sampling rate in Hz (1000/5 = 200)
+SAMPLING_RATE = 200.0       # Target output sampling rate in Hz
+
+# TVB 2× output rate factor: TVB outputs at 2× the nominal rate.
+# For dt=0.1 ms, the nominal rate is 1000/0.1 = 10,000 Hz, but TVB's
+# Raw monitor actually yields at 20,000 Hz. This factor is used to
+# compute the correct decimation ratio: actual_fs / target_fs.
+TVB_RATE_FACTOR = 2.0
 
 # After discarding transient: 10 seconds at 200 Hz = 2000 time points
 EXPECTED_OUTPUT_TIMEPOINTS = int(
@@ -71,6 +88,66 @@ EXPECTED_OUTPUT_TIMEPOINTS = int(
 
 # Configure module-level logger
 logger = logging.getLogger(__name__)
+
+
+def _factorize_decimation(total_factor: int, max_stage: int = 10) -> list:
+    """
+    Factorize a large decimation factor into stages of at most max_stage.
+
+    scipy.signal.decimate works best with small decimation factors (≤10-13).
+    For larger factors, multi-stage decimation produces cleaner anti-aliasing.
+    For example, a total factor of 100 is factored as [10, 10].
+
+    This function uses a greedy approach: repeatedly extract the largest
+    factor ≤ max_stage until the remainder is 1.
+
+    Args:
+        total_factor: The total decimation factor to achieve.
+            Must be a positive integer ≥ 1.
+        max_stage: Maximum decimation factor per stage. Default 10.
+
+    Returns:
+        List of integer factors whose product equals total_factor.
+        Each factor is ≤ max_stage.
+
+    Raises:
+        ValueError: If total_factor < 1 or has a prime factor > max_stage.
+
+    Examples:
+        >>> _factorize_decimation(100)
+        [10, 10]
+        >>> _factorize_decimation(50)
+        [10, 5]
+        >>> _factorize_decimation(200)
+        [10, 10, 2]
+    """
+    if total_factor < 1:
+        raise ValueError(
+            f"Decimation factor must be ≥ 1, got {total_factor}."
+        )
+    if total_factor == 1:
+        return [1]
+
+    stages = []
+    remaining = total_factor
+    while remaining > 1:
+        # Find the largest factor of 'remaining' that is ≤ max_stage
+        found = False
+        for divisor in range(min(remaining, max_stage), 1, -1):
+            if remaining % divisor == 0:
+                stages.append(divisor)
+                remaining //= divisor
+                found = True
+                break
+        if not found:
+            # remaining is a prime > max_stage — cannot factorize cleanly
+            raise ValueError(
+                f"Cannot factorize decimation factor {total_factor} into "
+                f"stages of at most {max_stage}. Remaining prime factor: "
+                f"{remaining}."
+            )
+
+    return stages
 
 
 def build_tvb_connectivity(
@@ -176,14 +253,38 @@ def configure_epileptor(
     model.x0 = x0_vector.reshape(-1)
 
     # Set scalar Epileptor parameters
-    # These control the dynamics of the fast and slow subsystems
+    # These control the dynamics of the fast and slow subsystems.
+    #
+    # CRITICAL PARAMETER MAPPING (TVB attribute ↔ our naming):
+    #   tau0 (slow time constant, ms) → model.r = 1.0 / tau0
+    #       TVB uses r (the rate) directly in the z-equation:
+    #       dz/dt = r * (4*(x1 - x0) - z)
+    #       Default r=0.00035 corresponds to tau0 ≈ 2857 ms.
+    #   tau2 (y2 time constant) → model.tau
+    #       Used in the y2-equation: dy2/dt = (-y2 + f2(x2)) / tau
+    #       Default tau=10.0.
+    #   model.tt is a global time-scaling factor (dimensionless), NOT tau2.
+    #       Must stay at the default value of 1.0.
+    #
+    # WARNING: Python silently creates new attributes on assignment
+    # (e.g., model.tau_s = X creates a new attr ignored by TVB).
+    # Only set attributes that exist in TVB's Epileptor declarative attrs.
     model.Iext = np.array([params.get("Iext1", 3.1)])    # External input 1
     model.Iext2 = np.array([params.get("Iext2", 0.45)])  # External input 2
-    model.tau_s = np.array([params.get("tau0", 2857.0)])  # Slow time constant
-    model.tt = np.array([params.get("tau2", 10.0)])       # Fast time constant 2
+
+    # tau0 → r: Convert slow time constant (ms) to rate (1/ms)
+    tau0_ms = params.get("tau0", 2857.0)
+    model.r = np.array([1.0 / tau0_ms])
+
+    # tau2 → tau: Set the y2-equation time constant directly
+    tau2_val = params.get("tau2", 10.0)
+    model.tau = np.array([tau2_val])
+
+    # model.tt stays at default 1.0 — it is a global time scaling factor,
+    # NOT related to our tau2 parameter.
 
     # y0 is fixed at 1.0 per technical specs (equilibrium point)
-    model.r = np.array([0.00035])  # Default value from TVB
+    # (y0 does not need explicit setting — TVB default is 1.0)
 
     logger.debug(
         f"Configured Epileptor: x0 range [{x0_vector.min():.3f}, "
@@ -202,7 +303,6 @@ def run_simulation(
     tract_lengths: NDArray[np.float64],
     simulation_length_ms: float = SIMULATION_LENGTH_MS,
     dt: float = DT,
-    monitor_period: float = MONITOR_PERIOD,
 ) -> NDArray[np.float64]:
     """
     Run one complete TVB Epileptor simulation and return source activity.
@@ -211,15 +311,26 @@ def run_simulation(
       1. Builds a TVB Connectivity from our data files
       2. Configures the Epileptor model with the given parameters
       3. Sets up the HeunStochastic integrator with additive noise
-      4. Runs the simulation for the specified duration
-      5. Extracts the LFP proxy (x2 - x1) from the Epileptor state variables
-      6. Discards the initial transient
-      7. Returns the clean source activity time series
+      4. Runs the simulation at full dt resolution (Raw monitor)
+      5. Extracts the LFP proxy (x2 - x1) from the Epileptor output
+      6. Applies anti-aliased decimation to reach 200 Hz
+      7. Discards the initial transient
+      8. Returns the clean source activity time series
 
     The output variable (x2 - x1) is the standard LFP proxy in the Epileptor
     literature (Jirsa et al., 2014; Proix et al., 2017). It combines the fast
     subsystem variable x1 with the slow subsystem variable x2 to produce a
     signal that resembles local field potentials recorded intracranially.
+
+    IMPORTANT — Anti-aliasing:
+        TVB's TemporalAverage monitor performs simple box-car averaging
+        (no proper anti-alias filter). The Epileptor fast subsystem generates
+        significant high-frequency energy (>500 Hz at dt=0.1ms), which
+        TemporalAverage aliases into the Nyquist bin (~100 Hz at 200 Hz
+        output), producing unphysical spectral content (~90% of power at
+        Nyquist). We instead use the Raw monitor and apply scipy's FIR-based
+        decimate() for proper anti-aliased downsampling. This preserves the
+        biologically correct spectral profile (dominant power <30 Hz).
 
     Args:
         params: Complete parameter dictionary from
@@ -238,14 +349,13 @@ def run_simulation(
             Shape (76, 76), dtype float64.
         simulation_length_ms: Total simulation length in milliseconds.
             Default 12000.0 (12 seconds).
-        dt: Integration time step in milliseconds. Default 1.0.
-        monitor_period: TemporalAverage monitor period in ms. Default 5.0
-            (gives 200 Hz output).
+        dt: Integration time step in milliseconds. Default 0.1.
+            Must be ≤ 0.1 for numerical stability with stochastic Epileptor.
 
     Returns:
         NDArray[np.float64]: Source activity (LFP proxy: x2 - x1).
-            Shape (76, T) where T = (simulation_length - transient) / period * 1000.
-            For default settings: (76, 2000). dtype float64.
+            Shape (76, 2000). dtype float64.
+            Anti-alias filtered and decimated to 200 Hz.
 
     Raises:
         RuntimeError: If TVB simulation fails to produce expected output.
@@ -278,10 +388,26 @@ def run_simulation(
 
     # TVB's noise expects an array of noise intensities, one per state
     # variable. The Epileptor has 6 state variables per region:
-    # [x1, y1, z, x2, y2, g]. We add noise primarily to x1 and x2.
-    # Standard practice: equal noise on all state variables
-    n_state_vars = model.nvar  # Should be 6 for Epileptor
-    nsig = np.array([noise_intensity] * n_state_vars)
+    # [x1, y1, z, x2, y2, g] at indices [0, 1, 2, 3, 4, 5].
+    #
+    # CRITICAL: Noise must only be applied to the FAST subsystem variables
+    # (x1, y1, x2, y2) and NOT to the slow variables (z at index 2, g at
+    # index 5). The slow variables z and g have very large effective time
+    # constants (tau0 ≈ 2857 ms), so even small noise perturbations
+    # accumulate and cause numerical divergence. This is consistent with
+    # the Epileptor literature (Jirsa et al., 2014; Proix et al., 2017)
+    # where stochastic terms enter only the fast subsystem.
+    #
+    # nsig structure: [D, D, 0.0, D, D, 0.0]
+    #                  x1 y1  z   x2 y2  g
+    nsig = np.array([
+        noise_intensity,   # x1 — fast subsystem population 1
+        noise_intensity,   # y1 — fast subsystem population 1
+        0.0,               # z  — slow energy variable (NO noise)
+        noise_intensity,   # x2 — fast subsystem population 2
+        noise_intensity,   # y2 — fast subsystem population 2
+        0.0,               # g  — slow permittivity variable (NO noise)
+    ])
 
     noise = Additive(nsig=nsig)
     noise.random_stream.seed(
@@ -296,9 +422,17 @@ def run_simulation(
     coupling = Difference(a=np.array([params["global_coupling"]]))
 
     # --- Step 5: Set up the monitor ---
-    # TemporalAverage with period=5.0 ms downsamples from the 1ms integration
-    # step to 200 Hz output, matching the NMT dataset sampling rate
-    monitor = TemporalAverage(period=monitor_period)
+    # We use the Raw monitor to capture all integration steps at full dt
+    # resolution. This is necessary because TVB's TemporalAverage monitor
+    # applies only a simple box-car average (no anti-aliasing filter),
+    # which causes severe spectral aliasing — the Epileptor's fast subsystem
+    # generates energy up to several kHz, and without a proper low-pass
+    # filter, this energy folds back to the Nyquist frequency of the output
+    # (100 Hz at 200 Hz sampling), producing unphysical spectral content.
+    #
+    # Instead, we capture the full-resolution output and apply proper
+    # anti-aliased decimation in Step 8 using scipy.signal.decimate (FIR).
+    monitor = Raw()
 
     # --- Step 6: Assemble and configure the simulator ---
     simulator = Simulator(
@@ -312,37 +446,92 @@ def run_simulation(
     simulator.configure()
 
     # --- Step 7: Run the simulation ---
-    # TVB returns a generator of (time, data) tuples from each monitor
-    # We collect all output from the TemporalAverage monitor
+    # TVB returns a generator of (time, data) tuples from each monitor.
+    # The Raw monitor yields at every integration step (dt=0.1 ms).
+    # Due to TVB's internal 2× rate factor, the actual output rate is
+    # 2 × (1000/dt) Hz = 20,000 Hz for dt=0.1.
     raw_output = []
     for (time_array, data_array), in simulator():
-        # data_array has shape (n_timepoints, n_state_vars, n_regions, n_modes)
-        # For TemporalAverage, n_timepoints is typically 1 per yield
         raw_output.append(data_array)
 
-    # Concatenate all time steps into a single array
-    # Shape: (total_timepoints, n_state_vars, n_regions, n_modes)
+    # Concatenate all time steps into a single array.
+    # For the Raw monitor with Epileptor, TVB computes the default
+    # observable (x2 - x1) and returns it as shape (T, n_regions, 1).
     full_output = np.concatenate(raw_output, axis=0)
 
     logger.debug(
-        f"Simulation complete. Raw output shape: {full_output.shape}"
+        f"Simulation complete. Raw output shape: {full_output.shape}, "
+        f"ndim: {full_output.ndim}"
     )
 
-    # --- Step 8: Extract the LFP proxy (x2 - x1) ---
-    # In TVB's Epileptor, the state variables are ordered:
-    # [x1, y1, z, x2, y2, g] → indices [0, 1, 2, 3, 4, 5]
-    # LFP proxy = x2 (index 3) - x1 (index 0)
-    # We take mode 0 (the only mode for standard Epileptor)
-    x1 = full_output[:, 0, :, 0]  # Shape: (total_timepoints, n_regions)
-    x2 = full_output[:, 3, :, 0]  # Shape: (total_timepoints, n_regions)
-    lfp_proxy = x2 - x1           # Shape: (total_timepoints, n_regions)
+    # --- Step 8: Extract LFP proxy and apply anti-aliased decimation ---
+    # TVB's Raw monitor returns the pre-computed Epileptor observable
+    # (x2 - x1) with shape (T, n_regions, 1). We extract it and then
+    # decimate from the actual raw sampling rate down to 200 Hz.
+
+    if full_output.ndim == 3 and full_output.shape[2] == 1:
+        # Shape: (T, n_regions, 1) — the common case.
+        # TVB already computed x2 - x1 (the Epileptor's default observable).
+        lfp_raw = full_output[:, :, 0]  # (T_raw, n_regions)
+    elif full_output.ndim == 4:
+        # Shape: (T, n_state_vars, n_regions, n_modes)
+        # Extract x1 and x2 manually
+        x1 = full_output[:, 0, :, 0]
+        x2 = full_output[:, 3, :, 0]
+        lfp_raw = x2 - x1
+    else:
+        raise ValueError(
+            f"Unexpected output shape from TVB Raw monitor: "
+            f"{full_output.shape}. Expected (T, 76, 1) or (T, 6, 76, 1)."
+        )
+
+    # Compute the actual raw sampling rate.
+    # TVB outputs at 2× the nominal rate: actual_fs = 2 × (1000/dt).
+    actual_raw_fs = TVB_RATE_FACTOR * (1000.0 / dt)
+
+    # Total decimation factor to reach target sampling rate (200 Hz).
+    total_decimation = int(actual_raw_fs / SAMPLING_RATE)
+    logger.debug(
+        f"Anti-aliased decimation: {actual_raw_fs:.0f} Hz → "
+        f"{SAMPLING_RATE:.0f} Hz (factor {total_decimation})"
+    )
+
+    # Apply multi-stage anti-aliased decimation using scipy's FIR filter.
+    # For large decimation factors (e.g., 100), we split into stages
+    # for better filter performance: 100 = 10 × 10, or 50 = 10 × 5, etc.
+    # scipy.signal.decimate applies a FIR low-pass anti-aliasing filter
+    # before downsampling, preventing spectral aliasing.
+    n_raw_timepoints, n_regions_out = lfp_raw.shape
+
+    # Factorize the decimation into stages of at most 10
+    stages = _factorize_decimation(total_decimation)
+
+    # Compute expected output length after decimation
+    expected_decimated_length = n_raw_timepoints
+    for s in stages:
+        expected_decimated_length = expected_decimated_length // s
+
+    # Apply decimation stage-by-stage, region-by-region
+    lfp_decimated = np.zeros(
+        (expected_decimated_length, n_regions_out), dtype=np.float64
+    )
+    for r in range(n_regions_out):
+        signal_1d = lfp_raw[:, r].astype(np.float64)
+        for stage_factor in stages:
+            signal_1d = decimate(signal_1d, stage_factor, ftype='fir')
+        lfp_decimated[:, r] = signal_1d
+
+    logger.debug(
+        f"Decimated LFP shape: {lfp_decimated.shape}, "
+        f"effective rate: {SAMPLING_RATE:.0f} Hz"
+    )
 
     # --- Step 9: Discard initial transient ---
     # The first TRANSIENT_MS milliseconds contain the model's initial
     # settling dynamics, which are not representative of steady-state
     # activity. At 200 Hz, 2000 ms = 400 time points to discard.
     transient_samples = int(TRANSIENT_MS / 1000.0 * SAMPLING_RATE)
-    source_activity = lfp_proxy[transient_samples:, :]  # (T_remaining, n_regions)
+    source_activity = lfp_decimated[transient_samples:, :]
 
     # Transpose to (n_regions, T) format matching our pipeline convention
     source_activity = source_activity.T  # (n_regions, T)
@@ -359,8 +548,9 @@ def run_simulation(
     if source_activity.shape[1] != expected_t:
         logger.warning(
             f"Expected {expected_t} time points after transient removal, "
-            f"got {source_activity.shape[1]}. This may be due to TVB's "
-            f"internal temporal averaging. Proceeding with actual length."
+            f"got {source_activity.shape[1]}. This may indicate incorrect "
+            f"decimation factor or TVB rate factor. Proceeding with actual "
+            f"length."
         )
 
     logger.debug(

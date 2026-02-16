@@ -45,7 +45,7 @@ N_REGIONS = 76  # Desikan-Killiany parcellation
 # Default sampling ranges (can be overridden by config.yaml)
 DEFAULT_X0_EPILEPTOGENIC = (-1.8, -1.2)   # Spontaneous spikes to seizures
 DEFAULT_X0_HEALTHY = (-2.2, -2.05)        # Stable background oscillations
-DEFAULT_N_EPILEPTOGENIC = (1, 8)           # 1 to 8 epileptogenic regions
+DEFAULT_N_EPILEPTOGENIC = (0, 8)           # 0 to 8 epileptogenic regions (0=healthy-only)
 DEFAULT_GLOBAL_COUPLING = (0.5, 3.0)      # Coupling strength G
 DEFAULT_NOISE_INTENSITY = (1e-4, 5e-3)    # Additive noise D
 DEFAULT_CONDUCTION_SPEED = (3.0, 6.0)     # m/s for propagation delays
@@ -69,19 +69,26 @@ def sample_epileptogenic_regions(
     """
     Select which brain regions are epileptogenic for one synthetic sample.
 
-    This function determines the spatial pattern of epileptogenicity. Two
-    selection strategies are used (50/50 split by default):
+    This function determines the spatial pattern of epileptogenicity. Three
+    selection strategies are used:
 
-    Strategy A (Random): Select k regions uniformly at random from all 76.
-        This ensures the network sees diverse, scattered patterns.
+    Strategy A (Healthy-only, k=0): All regions are healthy. This ensures
+        the network learns normal brain activity patterns for general inverse
+        solving and activity mapping on patients without epilepsy.
 
-    Strategy B (Clustered): Select a seed region at random, then grow the
-        cluster by iteratively adding the most-connected neighbor. This
-        produces spatially contiguous epileptogenic zones, which are more
-        realistic for focal epilepsy (the most common clinical scenario).
+    Strategy B (Random, 50% of k≥1 samples): Select k regions uniformly at
+        random from all 76. This ensures the network sees diverse, scattered
+        patterns.
 
-    The 50/50 split ensures the network can handle both focal (clustered)
-    and multifocal (distributed) epilepsy patterns.
+    Strategy C (Clustered, 50% of k≥1 samples): Select a seed region at
+        random, then grow the cluster by iteratively adding the most-connected
+        neighbor. This produces spatially contiguous epileptogenic zones,
+        which are more realistic for focal epilepsy (the most common clinical
+        scenario).
+
+    The distribution is: ~11% healthy-only (k=0), then 44.5% random and 44.5%
+    clustered for k in [1,8]. This ensures balanced training across all
+    possible network states.
 
     Args:
         n_regions: Total number of brain regions (should be 76).
@@ -90,14 +97,15 @@ def sample_epileptogenic_regions(
             Higher weights mean stronger anatomical connection.
         n_epileptogenic_range: Tuple (min_k, max_k) for the number of
             epileptogenic regions. Sampled as DiscreteUniform(min_k, max_k).
+            Default (0, 8) includes healthy-only samples (k=0).
         clustering_probability: Probability of using the clustered selection
-            strategy instead of random. Default 0.5 per specs.
+            strategy instead of random, for k ≥ 1. Default 0.5 per specs.
         rng: NumPy random Generator for reproducibility. If None, a new
             default Generator is created.
 
     Returns:
         NDArray[np.bool_]: Binary mask of shape (76,) where True indicates
-            an epileptogenic region.
+            an epileptogenic region. All-False (zeros) for healthy-only samples.
 
     References:
         Technical Specs Section 3.4.1 (steps 1-2)
@@ -106,10 +114,20 @@ def sample_epileptogenic_regions(
         rng = np.random.default_rng()
 
     # Step 1: Sample how many regions are epileptogenic
-    # k ~ DiscreteUniform(1, 8) — at least 1, at most 8
+    # k ~ DiscreteUniform(min_k, max_k) — includes 0 for healthy-only samples
+    # This allows the network to learn normal brain activity patterns as well
     k = rng.integers(n_epileptogenic_range[0], n_epileptogenic_range[1] + 1)
 
-    # Step 2: Decide which regions — random or clustered
+    # Step 2: Handle healthy-only case (k=0)
+    if k == 0:
+        # All regions are healthy — no epileptogenic zone
+        mask = np.zeros(n_regions, dtype=np.bool_)
+        logger.debug(
+            f"Sampled healthy-only sample (no epileptogenic regions)"
+        )
+        return mask
+
+    # Step 3: Decide which regions — random or clustered (for k ≥ 1)
     use_clustering = rng.random() < clustering_probability
 
     if use_clustering and k > 1:
@@ -241,16 +259,21 @@ def sample_x0_vector(
         x0_healthy_range[0], x0_healthy_range[1], size=n_healthy
     )
 
-    # Assign epileptogenic x0 values to marked regions
+    # Assign epileptogenic x0 values to marked regions (if any)
     n_epi = np.sum(epileptogenic_mask)
-    x0_vector[epileptogenic_mask] = rng.uniform(
-        x0_epileptogenic_range[0], x0_epileptogenic_range[1], size=n_epi
-    )
+    if n_epi > 0:
+        x0_vector[epileptogenic_mask] = rng.uniform(
+            x0_epileptogenic_range[0], x0_epileptogenic_range[1], size=n_epi
+        )
+        epi_range_str = (
+            f"range [{x0_vector[epileptogenic_mask].min():.3f}, "
+            f"{x0_vector[epileptogenic_mask].max():.3f}]"
+        )
+    else:
+        epi_range_str = "none (healthy-only)"
 
     logger.debug(
-        f"Sampled x0 vector: {n_epi} epileptogenic "
-        f"(range [{x0_vector[epileptogenic_mask].min():.3f}, "
-        f"{x0_vector[epileptogenic_mask].max():.3f}]), "
+        f"Sampled x0 vector: {n_epi} epileptogenic ({epi_range_str}), "
         f"{n_healthy} healthy "
         f"(range [{x0_vector[~epileptogenic_mask].min():.3f}, "
         f"{x0_vector[~epileptogenic_mask].max():.3f}])"

@@ -397,6 +397,20 @@ def generate_one_simulation(
             tract_lengths=tract_lengths,
         )
 
+        # Step 2b: Validate simulation output — reject diverged simulations
+        # Some parameter combinations (high coupling + high noise + extreme x0)
+        # cause the Epileptor to overflow. TVB may produce NaN or Inf in some
+        # regions without raising an exception (RuntimeWarning only). We must
+        # detect and discard these simulations to keep the dataset clean.
+        if np.isnan(source_activity).any() or np.isinf(source_activity).any():
+            nan_count = np.isnan(source_activity).sum()
+            inf_count = np.isinf(source_activity).sum()
+            logger.warning(
+                f"Simulation {sim_index} produced invalid values "
+                f"(NaN={nan_count}, Inf={inf_count}). Discarding."
+            )
+            return None
+
         # Step 3: Segment into 2-second non-overlapping windows
         # source_activity shape: (76, ~2000) → windows shape: (5, 76, 400)
         syn_config = config.get("synthetic_data", {}) if config else {}
@@ -450,8 +464,9 @@ def generate_one_simulation(
         }
 
     except Exception as e:
+        import traceback
         logger.warning(
-            f"Simulation {sim_index} failed: {e}. Skipping."
+            f"Simulation {sim_index} failed: {e}\n{traceback.format_exc()}"
         )
         return None
 
