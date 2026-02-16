@@ -1,0 +1,151 @@
+# =============================================================================
+# PhysDeepSIF Pipeline — Global Configuration
+# =============================================================================
+# This YAML file controls all hyperparameters, file paths, and settings across
+# the entire PhysDeepSIF pipeline. All modules load their configuration from
+# this single file to ensure consistency.
+#
+# See docs/02_TECHNICAL_SPECIFICATIONS.md Section 8.2 for full specification.
+# =============================================================================
+
+source_space:
+  n_regions: 76
+  parcellation: "desikan_killiany"
+  connectivity_file: "data/connectivity_76.npy"
+  region_centers_file: "data/region_centers_76.npy"
+  region_labels_file: "data/region_labels_76.json"
+  tract_lengths_file: "data/tract_lengths_76.npy"
+
+neural_mass_model:
+  model_type: "Epileptor"
+  dt: 1.0  # ms, integration step for HeunStochastic
+  output_variable: "x2-x1"  # LFP proxy from Epileptor
+  default_params:
+    x0: -2.2
+    Iext1: 3.1
+    Iext2: 0.45
+    tau0: 2857.0
+    tau2: 10.0
+    y0: 1.0
+  sampling_ranges:
+    x0_epileptogenic: [-1.8, -1.2]
+    x0_healthy: [-2.2, -2.05]
+    global_coupling: [0.5, 3.0]
+    noise_intensity: [0.0001, 0.005]
+    conduction_speed: [3.0, 6.0]
+    Iext1: [2.8, 3.4]
+    Iext2: [0.3, 0.6]
+    tau0: [2000.0, 4000.0]
+    tau2: [6.0, 15.0]
+
+forward_model:
+  n_channels: 19
+  montage: "standard_1020"
+  reference: "linked_ears"
+  leadfield_file: "data/leadfield_19x76.npy"
+  channel_names:
+    - "Fp1"
+    - "Fp2"
+    - "F3"
+    - "F4"
+    - "C3"
+    - "C4"
+    - "P3"
+    - "P4"
+    - "O1"
+    - "O2"
+    - "F7"
+    - "F8"
+    - "T3"
+    - "T4"
+    - "T5"
+    - "T6"
+    - "Fz"
+    - "Cz"
+    - "Pz"
+
+synthetic_data:
+  n_simulations_train: 16000
+  n_simulations_val: 2000
+  n_simulations_test: 2000
+  windows_per_simulation: 5
+  simulation_length_ms: 12000
+  transient_ms: 2000
+  window_length_samples: 400
+  sampling_rate: 200
+  snr_range_db: [5, 30]
+  colored_noise_alpha_range: [0.5, 1.5]
+  colored_noise_amplitude_fraction: [0.1, 0.3]
+  output_dir: "data/synthetic/"
+  n_epileptogenic_range: [1, 8]
+  clustering_probability: 0.5
+  n_jobs: -1  # -1 means use all available cores
+
+network:
+  spatial_module:
+    input_dim: 19
+    hidden_dims: [128, 256, 256, 128]
+    output_dim: 76
+    activation: "relu"
+    batch_norm: true
+    skip_connections: true
+  temporal_module:
+    type: "bilstm"
+    input_dim: 76
+    hidden_dim: 76
+    num_layers: 2
+    dropout: 0.1
+    bidirectional: true
+  output_skip: true
+
+training:
+  optimizer: "adamw"
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  batch_size: 64
+  max_epochs: 200
+  early_stopping_patience: 15
+  gradient_clip_norm: 1.0
+  lr_scheduler:
+    type: "cosine_annealing_warm_restarts"
+    T_0: 10
+    T_mult: 2
+  loss_weights:
+    alpha_source: 1.0
+    beta_forward: 0.5
+    gamma_physics: 0.1
+  physics_sub_weights:
+    lambda_laplacian: 0.5
+    lambda_temporal: 0.3
+    lambda_amplitude: 0.2
+  amplitude_max: 3.0
+
+preprocessing:
+  bandpass: [0.5, 70.0]
+  notch_freq: 50.0
+  reject_threshold_uv: 200.0
+  ica_n_components: 15
+  ica_method: "fastica"
+  epoch_length_sec: 2.0
+
+parameter_inversion:
+  optimizer: "cma-es"
+  initial_x0: -2.1
+  initial_sigma: 0.3
+  population_size: 50
+  max_generations: 200
+  bounds: [-2.4, -1.0]
+  convergence_threshold: 1.0e-6
+  convergence_patience: 10
+  objective_weights:
+    w_source: 0.4
+    w_eeg: 0.4
+    w_reg: 0.2
+  sparsity_lambda: 0.1
+
+heatmap:
+  ei_threshold: 0.5
+  x0_min: -2.4
+  x0_max: -1.0
+  colormap: "hot"
+  output_formats: ["png", "html", "csv"]
