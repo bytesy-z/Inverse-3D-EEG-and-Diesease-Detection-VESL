@@ -49,14 +49,22 @@ Output data format:
 
 # Standard library imports
 import logging
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import warnings
 
 # Third-party imports
 import h5py
 import numpy as np
-from joblib import Parallel, delayed
 from numpy.typing import NDArray
+
+# Suppress runtime warnings from TVB, numba, and scipy in worker processes
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='tvb.simulator.history')
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='numba.np.ufunc.gufunc')
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='tvb.simulator.coupling')
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='tvb.simulator.models.epileptor')
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='scipy.signal')
 
 # Local imports
 from .epileptor_simulator import run_simulation, segment_source_activity
@@ -694,11 +702,21 @@ def generate_dataset(
     )
     logger.info(f"✓ HDF5 file created: {output_file}")
 
-    # Step 2: Run simulations in parallel and process in batches
-    logger.info(f"Running {n_simulations} simulations (n_jobs={n_jobs})...")
+    # Step 2: Run simulations in parallel and process results as they complete
+    logger.info(f"Running {n_simulations} simulations...")
 
     syn_config = config.get("synthetic_data", {}) if config else {}
     batch_size = syn_config.get("hdf5_batch_size", 500)  # Write every 500 samples
+    
+    # Determine number of workers
+    if n_jobs == -1:
+        # Count available CPUs
+        import os
+        n_workers = os.cpu_count() or 8
+    elif n_jobs > 0:
+        n_workers = n_jobs
+    else:
+        n_workers = 1
     
     # Track statistics across all batches
     total_samples_written = 0
@@ -711,74 +729,83 @@ def generate_dataset(
     current_batch_snr = []
     current_batch_coupling = []
 
-    # Run simulations and collect results
-    results = Parallel(n_jobs=n_jobs, verbose=10)(
-        delayed(generate_one_simulation)(
-            sim_index=i,
+    # Helper function to create kwargs for a simulation
+    def create_sim_kwargs(sim_index: int):
+        return dict(
+            sim_index=sim_index,
             connectivity=connectivity,
             region_centers=region_centers,
             region_labels=region_labels,
             tract_lengths=tract_lengths,
             leadfield=leadfield,
             config=config,
-            seed=base_seed + i,
+            seed=base_seed + sim_index,
         )
-        for i in range(n_simulations)
-    )
 
-    # Process results and write to HDF5 in batches
-    logger.info("Processing results and writing to HDF5...")
+    # Use ProcessPoolExecutor to process results as they complete (not waiting for all)
+    logger.info(f"Using {n_workers} worker processes")
+    logger.info("Processing results and writing to HDF5 incrementally...")
     
-    for idx, result in enumerate(results):
-        if result is None:
-            total_simulations_failed += 1
-            continue
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        # Submit all tasks
+        futures = {
+            executor.submit(generate_one_simulation, **create_sim_kwargs(i)): i
+            for i in range(n_simulations)
+        }
+        
+        # Process results as they complete (not waiting for all to finish first)
+        for future in as_completed(futures):
+            result = future.result()
+            
+            if result is None:
+                total_simulations_failed += 1
+                continue
 
-        total_simulations_completed += 1
-        n_w = result["eeg"].shape[0]
+            total_simulations_completed += 1
+            n_w = result["eeg"].shape[0]
 
-        # Accumulate windows from this simulation into batch
-        for w in range(n_w):
-            current_batch_eeg.append(result["eeg"][w])
-            current_batch_source.append(result["source_activity"][w])
-            current_batch_mask.append(result["epileptogenic_mask"])
-            current_batch_x0.append(result["x0_vector"])
-            current_batch_snr.append(result["snr_db"][w])
-            current_batch_coupling.append(result["global_coupling"])
+            # Accumulate windows from this simulation into batch
+            for w in range(n_w):
+                current_batch_eeg.append(result["eeg"][w])
+                current_batch_source.append(result["source_activity"][w])
+                current_batch_mask.append(result["epileptogenic_mask"])
+                current_batch_x0.append(result["x0_vector"])
+                current_batch_snr.append(result["snr_db"][w])
+                current_batch_coupling.append(result["global_coupling"])
 
-            # Write batch to HDF5 when we reach batch_size
-            if len(current_batch_eeg) >= batch_size:
-                batch_eeg = np.array(current_batch_eeg, dtype=np.float32)
-                batch_source = np.array(current_batch_source, dtype=np.float32)
-                batch_mask = np.array(current_batch_mask, dtype=np.bool_)
-                batch_x0 = np.array(current_batch_x0, dtype=np.float32)
-                batch_snr = np.array(current_batch_snr, dtype=np.float32)
-                batch_coupling = np.array(current_batch_coupling, dtype=np.float32)
+                # Write batch to HDF5 when we reach batch_size
+                if len(current_batch_eeg) >= batch_size:
+                    batch_eeg = np.array(current_batch_eeg, dtype=np.float32)
+                    batch_source = np.array(current_batch_source, dtype=np.float32)
+                    batch_mask = np.array(current_batch_mask, dtype=np.bool_)
+                    batch_x0 = np.array(current_batch_x0, dtype=np.float32)
+                    batch_snr = np.array(current_batch_snr, dtype=np.float32)
+                    batch_coupling = np.array(current_batch_coupling, dtype=np.float32)
 
-                total_samples_written = _append_to_hdf5(
-                    output_file=output_file,
-                    eeg=batch_eeg,
-                    source_activity=batch_source,
-                    epileptogenic_mask=batch_mask,
-                    x0_vector=batch_x0,
-                    snr_db=batch_snr,
-                    global_coupling=batch_coupling,
-                )
+                    total_samples_written = _append_to_hdf5(
+                        output_file=output_file,
+                        eeg=batch_eeg,
+                        source_activity=batch_source,
+                        epileptogenic_mask=batch_mask,
+                        x0_vector=batch_x0,
+                        snr_db=batch_snr,
+                        global_coupling=batch_coupling,
+                    )
 
-                # Log progress
-                logger.info(
-                    f"Progress: {total_samples_written} samples written "
-                    f"({total_simulations_completed}/{n_simulations} simulations completed, "
-                    f"{total_simulations_failed} failed)"
-                )
+                    # Log progress
+                    logger.info(
+                        f"Progress: {total_samples_written} samples written "
+                        f"({total_simulations_completed}/{n_simulations} simulations completed, "
+                        f"{total_simulations_failed} failed)"
+                    )
 
-                # Reset batch accumulators
-                current_batch_eeg = []
-                current_batch_source = []
-                current_batch_mask = []
-                current_batch_x0 = []
-                current_batch_snr = []
-                current_batch_coupling = []
+                    # Reset batch accumulators
+                    current_batch_eeg = []
+                    current_batch_source = []
+                    current_batch_mask = []
+                    current_batch_x0 = []
+                    current_batch_snr = []
+                    current_batch_coupling = []
 
     # Write any remaining samples in the final incomplete batch
     if len(current_batch_eeg) > 0:

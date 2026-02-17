@@ -36,11 +36,21 @@ import argparse
 import logging
 import sys
 import time
+import warnings
 from pathlib import Path
 
 # Third-party imports
 import numpy as np
 import yaml
+
+# Suppress runtime warnings from TVB, numba, and scipy
+# These are expected overflow/invalid value warnings during Epileptor simulation
+# and don't affect the validity of discarded samples
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='tvb.simulator.history')
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='numba.np.ufunc.gufunc')
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='tvb.simulator.coupling')
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='tvb.simulator.models.epileptor')
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='scipy.signal')
 
 # Ensure the project root is on the Python path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
