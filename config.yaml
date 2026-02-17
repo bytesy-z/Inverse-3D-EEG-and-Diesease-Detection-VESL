@@ -79,7 +79,8 @@ synthetic_data:
   output_dir: "data/synthetic/"
   n_epileptogenic_range: [0, 8]  # 0 = healthy-only, 1-8 = focal/multifocal epilepsy
   clustering_probability: 0.5
-  n_jobs: -1  # -1 means use all available cores
+  n_jobs: 8  # -1 means use all available cores
+  hdf5_batch_size: 500  # Write to HDF5 every 500 samples for fault tolerance
 
 network:
   spatial_module:

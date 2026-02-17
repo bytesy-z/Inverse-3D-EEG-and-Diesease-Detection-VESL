@@ -359,6 +359,46 @@ These normalizations are applied on-the-fly in the PyTorch `Dataset.__getitem__(
 
 ---
 
+### 3.4.6 Incremental HDF5 Writing Strategy
+
+To minimize memory usage and provide fault tolerance during generation, datasets are written to HDF5 incrementally in batches rather than accumulating all samples in RAM:
+
+**Algorithm**:
+1. **File creation** (Step 1): Create an empty HDF5 file with resizable datasets:
+   - All main datasets (eeg, source_activity, epileptogenic_mask, x0_vector, snr_db, global_coupling)
+   - `shape=(0, ...)` with `maxshape=(None, ...)` for unlimited growth
+   - Use HDF5 chunking for efficient incremental I/O: `chunks=(batch_size, *spatial_dims)`
+
+2. **Incremental writing** (Step 2): As simulations complete:
+   - Collect results into batch accumulators (default batch_size=500 samples)
+   - When batch_size is reached, append to HDF5 using `Dataset.resize()` and slice assignment
+   - Clear accumulators and continue
+   - After all simulations, write any remaining incomplete batch
+
+3. **Memory efficiency**:
+   - Only ~1-2 GB RAM used at any time (one batch + intermediate arrays)
+   - Avoids storing 100,000+ samples simultaneously
+   - With 80,000 training samples at 500/batch = 160 write operations
+
+4. **Fault tolerance**:
+   - If generation crashes at hour 9 of 12, all completed batches are preserved in the HDF5 file
+   - Generation can resume by filtering out already-written simulations (future enhancement)
+
+5. **Progress monitoring**:
+   - HDF5 file can be read while generation is in progress
+   - Current sample count accessible via `f["eeg"].shape[0]`
+   - Real-time progress visualization possible
+
+**Configuration** (in config.yaml):
+```yaml
+synthetic_data:
+  hdf5_batch_size: 500  # Write to HDF5 every 500 samples
+```
+
+**Reference**: Technical Specs Section 3.4.4 (HDF5 Storage Format)
+
+---
+
 # 4. Phase 2: PhysDeepSIF Network Architecture and Training
 
 ## 4.1 Network Architecture

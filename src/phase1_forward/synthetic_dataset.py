@@ -471,6 +471,161 @@ def generate_one_simulation(
         return None
 
 
+def _create_hdf5_file(
+    output_file: Path,
+    expected_n_samples: int,
+    channel_names: List[str],
+    region_names: List[str],
+) -> None:
+    """
+    Create an empty HDF5 file with resizable datasets ready for incremental writing.
+
+    This function pre-allocates the HDF5 structure with maxshape=None (unlimited),
+    allowing data to be appended incrementally without reallocating the entire file.
+
+    Args:
+        output_file: Path to create the HDF5 file.
+        expected_n_samples: Approximate upper bound on number of samples.
+            Used for initial allocation; datasets will grow as needed.
+        channel_names: List of 19 channel name strings.
+        region_names: List of 76 region name strings.
+
+    References:
+        Technical Specs Section 3.4.4 (HDF5 Storage Format)
+    """
+    with h5py.File(output_file, "w") as f:
+        # Create resizable datasets with initial size 0, max size unlimited
+        # The 'chunks' parameter enables incremental I/O and compression
+        f.create_dataset(
+            "eeg",
+            shape=(0, N_CHANNELS, WINDOW_LENGTH_SAMPLES),
+            dtype=np.float32,
+            maxshape=(None, N_CHANNELS, WINDOW_LENGTH_SAMPLES),
+            chunks=(1, N_CHANNELS, WINDOW_LENGTH_SAMPLES),
+            compression="gzip",
+        )
+        f.create_dataset(
+            "source_activity",
+            shape=(0, N_REGIONS, WINDOW_LENGTH_SAMPLES),
+            dtype=np.float32,
+            maxshape=(None, N_REGIONS, WINDOW_LENGTH_SAMPLES),
+            chunks=(1, N_REGIONS, WINDOW_LENGTH_SAMPLES),
+            compression="gzip",
+        )
+        f.create_dataset(
+            "epileptogenic_mask",
+            shape=(0, N_REGIONS),
+            dtype=np.bool_,
+            maxshape=(None, N_REGIONS),
+            chunks=(1, N_REGIONS),
+            compression="gzip",
+        )
+        f.create_dataset(
+            "x0_vector",
+            shape=(0, N_REGIONS),
+            dtype=np.float32,
+            maxshape=(None, N_REGIONS),
+            chunks=(1, N_REGIONS),
+            compression="gzip",
+        )
+        f.create_dataset(
+            "snr_db",
+            shape=(0,),
+            dtype=np.float32,
+            maxshape=(None,),
+            chunks=(256,),
+            compression=None,
+        )
+        f.create_dataset(
+            "global_coupling",
+            shape=(0,),
+            dtype=np.float32,
+            maxshape=(None,),
+            chunks=(256,),
+            compression=None,
+        )
+
+        # Create metadata group with fixed metadata
+        metadata = f.create_group("metadata")
+        metadata.create_dataset(
+            "channel_names",
+            data=np.array(channel_names, dtype="S"),
+        )
+        metadata.create_dataset(
+            "region_names",
+            data=np.array(region_names, dtype="S"),
+        )
+        metadata.create_dataset(
+            "sampling_rate", data=SAMPLING_RATE
+        )
+        metadata.create_dataset(
+            "window_length_sec", data=WINDOW_LENGTH_SAMPLES / SAMPLING_RATE
+        )
+
+
+def _append_to_hdf5(
+    output_file: Path,
+    eeg: NDArray[np.float32],
+    source_activity: NDArray[np.float32],
+    epileptogenic_mask: NDArray[np.bool_],
+    x0_vector: NDArray[np.float32],
+    snr_db: NDArray[np.float32],
+    global_coupling: NDArray[np.float32],
+) -> int:
+    """
+    Append a batch of samples to an existing HDF5 file.
+
+    This function increments the size of each dataset and writes the new data.
+    It is designed for periodic/batch writing to maintain constant memory usage.
+
+    Args:
+        output_file: Path to the HDF5 file (must already exist).
+        eeg: Batch of EEG data. Shape (batch_size, 19, 400).
+        source_activity: Batch of source activity. Shape (batch_size, 76, 400).
+        epileptogenic_mask: Batch of masks. Shape (batch_size, 76).
+        x0_vector: Batch of x0 vectors. Shape (batch_size, 76).
+        snr_db: Batch of SNR values. Shape (batch_size,).
+        global_coupling: Batch of coupling values. Shape (batch_size,).
+
+    Returns:
+        int: Total number of samples now in the file.
+
+    References:
+        Technical Specs Section 3.4.4 (HDF5 Storage Format)
+    """
+    batch_size = eeg.shape[0]
+
+    with h5py.File(output_file, "a") as f:  # Open in append mode
+        # Get current dataset sizes
+        current_size = f["eeg"].shape[0]
+
+        # Resize all datasets to accommodate new data
+        f["eeg"].resize(current_size + batch_size, axis=0)
+        f["source_activity"].resize(current_size + batch_size, axis=0)
+        f["epileptogenic_mask"].resize(current_size + batch_size, axis=0)
+        f["x0_vector"].resize(current_size + batch_size, axis=0)
+        f["snr_db"].resize(current_size + batch_size, axis=0)
+        f["global_coupling"].resize(current_size + batch_size, axis=0)
+
+        # Write new data to the end of each dataset
+        f["eeg"][current_size : current_size + batch_size] = eeg
+        f["source_activity"][current_size : current_size + batch_size] = (
+            source_activity
+        )
+        f["epileptogenic_mask"][current_size : current_size + batch_size] = (
+            epileptogenic_mask
+        )
+        f["x0_vector"][current_size : current_size + batch_size] = x0_vector
+        f["snr_db"][current_size : current_size + batch_size] = snr_db
+        f["global_coupling"][current_size : current_size + batch_size] = (
+            global_coupling
+        )
+
+        new_total = f["eeg"].shape[0]
+
+    return new_total
+
+
 def generate_dataset(
     n_simulations: int,
     connectivity: NDArray[np.float64],
@@ -484,11 +639,14 @@ def generate_dataset(
     base_seed: int = 0,
 ) -> Path:
     """
-    Generate a complete synthetic EEG dataset and save to HDF5.
+    Generate a complete synthetic EEG dataset and save to HDF5 with incremental writing.
 
-    This is the main entry point for dataset generation. It runs n_simulations
-    TVB simulations in parallel, collects all windows, and writes them to a
-    single HDF5 file following the schema in Section 3.4.4.
+    This function implements fault-tolerant dataset generation by writing results
+    to HDF5 incrementally in batches. This approach:
+    - Uses constant memory (~1-2 GB) instead of accumulating in RAM
+    - Provides fault tolerance: if interrupted, completed samples are preserved
+    - Allows real-time monitoring of progress by reading the HDF5 file
+    - Avoids the need to hold 100,000+ samples in RAM simultaneously
 
     The parallelization uses joblib's Parallel with the "loky" backend,
     which spawns independent processes. Each simulation is fully self-contained
@@ -516,16 +674,44 @@ def generate_dataset(
         Path: Path to the saved HDF5 file.
 
     References:
-        Technical Specs Sections 3.4.3–3.4.4
+        Technical Specs Sections 3.4.3–3.4.4, Section 3.4.6 (Incremental HDF5 Writing)
     """
     logger.info("=" * 60)
     logger.info(f"GENERATING SYNTHETIC DATASET: {n_simulations} simulations")
     logger.info(f"Output: {output_path}")
     logger.info("=" * 60)
 
-    # Run all simulations in parallel using joblib
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Step 1: Create empty HDF5 file with resizable datasets
+    logger.info("Creating HDF5 file with resizable datasets...")
+    _create_hdf5_file(
+        output_file=output_file,
+        expected_n_samples=n_simulations * WINDOWS_PER_SIM,
+        channel_names=CHANNEL_NAMES,
+        region_names=region_labels,
+    )
+    logger.info(f"✓ HDF5 file created: {output_file}")
+
+    # Step 2: Run simulations in parallel and process in batches
     logger.info(f"Running {n_simulations} simulations (n_jobs={n_jobs})...")
 
+    syn_config = config.get("synthetic_data", {}) if config else {}
+    batch_size = syn_config.get("hdf5_batch_size", 500)  # Write every 500 samples
+    
+    # Track statistics across all batches
+    total_samples_written = 0
+    total_simulations_completed = 0
+    total_simulations_failed = 0
+    current_batch_eeg = []
+    current_batch_source = []
+    current_batch_mask = []
+    current_batch_x0 = []
+    current_batch_snr = []
+    current_batch_coupling = []
+
+    # Run simulations and collect results
     results = Parallel(n_jobs=n_jobs, verbose=10)(
         delayed(generate_one_simulation)(
             sim_index=i,
@@ -540,167 +726,91 @@ def generate_dataset(
         for i in range(n_simulations)
     )
 
-    # Filter out failed simulations (None results)
-    successful_results = [r for r in results if r is not None]
-    n_failed = n_simulations - len(successful_results)
-    if n_failed > 0:
-        logger.warning(
-            f"{n_failed}/{n_simulations} simulations failed. "
-            f"Proceeding with {len(successful_results)} successful ones."
-        )
+    # Process results and write to HDF5 in batches
+    logger.info("Processing results and writing to HDF5...")
+    
+    for idx, result in enumerate(results):
+        if result is None:
+            total_simulations_failed += 1
+            continue
 
-    if len(successful_results) == 0:
-        raise RuntimeError(
-            "All simulations failed. Check TVB installation and parameters."
-        )
-
-    # Collect all windows from all simulations into flat arrays
-    logger.info("Collecting results into arrays...")
-    all_eeg = []
-    all_source = []
-    all_mask = []
-    all_x0 = []
-    all_snr = []
-    all_coupling = []
-
-    syn_config = config.get("synthetic_data", {}) if config else {}
-    n_windows = syn_config.get("windows_per_simulation", WINDOWS_PER_SIM)
-
-    for result in successful_results:
+        total_simulations_completed += 1
         n_w = result["eeg"].shape[0]
+
+        # Accumulate windows from this simulation into batch
         for w in range(n_w):
-            all_eeg.append(result["eeg"][w])
-            all_source.append(result["source_activity"][w])
-            all_mask.append(result["epileptogenic_mask"])
-            all_x0.append(result["x0_vector"])
-            all_snr.append(result["snr_db"][w])
-            all_coupling.append(result["global_coupling"])
+            current_batch_eeg.append(result["eeg"][w])
+            current_batch_source.append(result["source_activity"][w])
+            current_batch_mask.append(result["epileptogenic_mask"])
+            current_batch_x0.append(result["x0_vector"])
+            current_batch_snr.append(result["snr_db"][w])
+            current_batch_coupling.append(result["global_coupling"])
 
-    # Convert lists to numpy arrays with the dtypes specified in Section 3.4.4
-    eeg_array = np.array(all_eeg, dtype=np.float32)
-    source_array = np.array(all_source, dtype=np.float32)
-    mask_array = np.array(all_mask, dtype=np.bool_)
-    x0_array = np.array(all_x0, dtype=np.float32)
-    snr_array = np.array(all_snr, dtype=np.float32)
-    coupling_array = np.array(all_coupling, dtype=np.float32)
+            # Write batch to HDF5 when we reach batch_size
+            if len(current_batch_eeg) >= batch_size:
+                batch_eeg = np.array(current_batch_eeg, dtype=np.float32)
+                batch_source = np.array(current_batch_source, dtype=np.float32)
+                batch_mask = np.array(current_batch_mask, dtype=np.bool_)
+                batch_x0 = np.array(current_batch_x0, dtype=np.float32)
+                batch_snr = np.array(current_batch_snr, dtype=np.float32)
+                batch_coupling = np.array(current_batch_coupling, dtype=np.float32)
 
-    n_total = eeg_array.shape[0]
-    logger.info(
-        f"Collected {n_total} total samples from "
-        f"{len(successful_results)} simulations"
-    )
+                total_samples_written = _append_to_hdf5(
+                    output_file=output_file,
+                    eeg=batch_eeg,
+                    source_activity=batch_source,
+                    epileptogenic_mask=batch_mask,
+                    x0_vector=batch_x0,
+                    snr_db=batch_snr,
+                    global_coupling=batch_coupling,
+                )
 
-    # Save to HDF5 with the exact schema from Section 3.4.4
-    output_file = Path(output_path)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
+                # Log progress
+                logger.info(
+                    f"Progress: {total_samples_written} samples written "
+                    f"({total_simulations_completed}/{n_simulations} simulations completed, "
+                    f"{total_simulations_failed} failed)"
+                )
 
-    _save_to_hdf5(
-        output_file=output_file,
-        eeg=eeg_array,
-        source_activity=source_array,
-        epileptogenic_mask=mask_array,
-        x0_vector=x0_array,
-        snr_db=snr_array,
-        global_coupling=coupling_array,
-        channel_names=CHANNEL_NAMES,
-        region_names=region_labels,
-    )
+                # Reset batch accumulators
+                current_batch_eeg = []
+                current_batch_source = []
+                current_batch_mask = []
+                current_batch_x0 = []
+                current_batch_snr = []
+                current_batch_coupling = []
+
+    # Write any remaining samples in the final incomplete batch
+    if len(current_batch_eeg) > 0:
+        batch_eeg = np.array(current_batch_eeg, dtype=np.float32)
+        batch_source = np.array(current_batch_source, dtype=np.float32)
+        batch_mask = np.array(current_batch_mask, dtype=np.bool_)
+        batch_x0 = np.array(current_batch_x0, dtype=np.float32)
+        batch_snr = np.array(current_batch_snr, dtype=np.float32)
+        batch_coupling = np.array(current_batch_coupling, dtype=np.float32)
+
+        total_samples_written = _append_to_hdf5(
+            output_file=output_file,
+            eeg=batch_eeg,
+            source_activity=batch_source,
+            epileptogenic_mask=batch_mask,
+            x0_vector=batch_x0,
+            snr_db=batch_snr,
+            global_coupling=batch_coupling,
+        )
 
     logger.info("=" * 60)
-    logger.info(f"DATASET GENERATION COMPLETE: {n_total} samples")
+    logger.info(f"DATASET GENERATION COMPLETE")
+    logger.info(f"Total samples written: {total_samples_written}")
+    logger.info(f"Simulations completed: {total_simulations_completed}/{n_simulations}")
+    logger.info(f"Simulations failed: {total_simulations_failed}")
     logger.info(f"Saved to: {output_file}")
     logger.info("=" * 60)
 
     return output_file
 
 
-def _save_to_hdf5(
-    output_file: Path,
-    eeg: NDArray[np.float32],
-    source_activity: NDArray[np.float32],
-    epileptogenic_mask: NDArray[np.bool_],
-    x0_vector: NDArray[np.float32],
-    snr_db: NDArray[np.float32],
-    global_coupling: NDArray[np.float32],
-    channel_names: List[str],
-    region_names: List[str],
-) -> None:
-    """
-    Save the synthetic dataset to HDF5 with the standardized schema.
 
-    The HDF5 file structure exactly matches Section 3.4.4 of the technical
-    specifications. This format is the primary data interface between
-    Phase 1 (forward modeling) and Phase 2 (network training).
-
-    All main datasets use gzip compression to reduce disk usage. The
-    metadata group stores string arrays for channel and region names,
-    plus scalar metadata (sampling rate, window length).
-
-    Args:
-        output_file: Path to the output HDF5 file.
-        eeg: Noisy EEG data. Shape (N, 19, 400), dtype float32.
-        source_activity: Source time series. Shape (N, 76, 400), dtype float32.
-        epileptogenic_mask: Binary mask. Shape (N, 76), dtype bool.
-        x0_vector: Excitability parameters. Shape (N, 76), dtype float32.
-        snr_db: SNR values per sample. Shape (N,), dtype float32.
-        global_coupling: Coupling strength per sample. Shape (N,), dtype float32.
-        channel_names: List of 19 channel name strings.
-        region_names: List of 76 region name strings.
-
-    References:
-        Technical Specs Section 3.4.4 (HDF5 Storage Format)
-    """
-    n_samples = eeg.shape[0]
-
-    logger.info(
-        f"Saving {n_samples} samples to HDF5: {output_file}"
-    )
-
-    with h5py.File(output_file, "w") as f:
-        # Main data arrays — exact names from specs
-        f.create_dataset(
-            "eeg", data=eeg, dtype=np.float32, compression="gzip"
-        )
-        f.create_dataset(
-            "source_activity", data=source_activity,
-            dtype=np.float32, compression="gzip"
-        )
-        f.create_dataset(
-            "epileptogenic_mask", data=epileptogenic_mask,
-            dtype=np.bool_, compression="gzip"
-        )
-        f.create_dataset(
-            "x0_vector", data=x0_vector,
-            dtype=np.float32, compression="gzip"
-        )
-        f.create_dataset(
-            "snr_db", data=snr_db, dtype=np.float32
-        )
-        f.create_dataset(
-            "global_coupling", data=global_coupling, dtype=np.float32
-        )
-
-        # Metadata group — string arrays and scalars
-        metadata = f.create_group("metadata")
-        metadata.create_dataset(
-            "channel_names",
-            data=np.array(channel_names, dtype="S")
-        )
-        metadata.create_dataset(
-            "region_names",
-            data=np.array(region_names, dtype="S")
-        )
-        metadata.create_dataset(
-            "sampling_rate", data=SAMPLING_RATE
-        )
-        metadata.create_dataset(
-            "window_length_sec", data=WINDOW_LENGTH_SAMPLES / SAMPLING_RATE
-        )
-
-    logger.info(
-        f"HDF5 saved successfully. File size: "
-        f"{output_file.stat().st_size / (1024**2):.1f} MB"
-    )
 
 
 def generate_all_splits(

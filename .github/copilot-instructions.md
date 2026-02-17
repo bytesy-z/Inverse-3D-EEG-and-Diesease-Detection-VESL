@@ -719,6 +719,7 @@ Before submitting code, verify:
 - [ ] Achieves the stated objective from current subtask
 - [ ] No modifications to technical specifications documents
 - [ ] No unnecessary documentation files generated
+- [ ] Always activate the deepsif conda environment when running code on the tukl pc
 
 ---
 
