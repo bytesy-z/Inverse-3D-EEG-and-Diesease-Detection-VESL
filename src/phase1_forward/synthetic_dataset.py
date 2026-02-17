@@ -49,6 +49,7 @@ Output data format:
 
 # Standard library imports
 import logging
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -704,6 +705,7 @@ def generate_dataset(
 
     # Step 2: Run simulations in parallel and process results as they complete
     logger.info(f"Running {n_simulations} simulations...")
+    generation_start_time = time.time()
 
     syn_config = config.get("synthetic_data", {}) if config else {}
     batch_size = syn_config.get("hdf5_batch_size", 500)  # Write every 500 samples
@@ -792,11 +794,22 @@ def generate_dataset(
                         global_coupling=batch_coupling,
                     )
 
-                    # Log progress
+                    # Log progress with timing information
+                    elapsed_sec = time.time() - generation_start_time
+                    elapsed_min = elapsed_sec / 60.0
+                    samples_per_sec = total_samples_written / elapsed_sec if elapsed_sec > 0 else 0
+                    
+                    # Estimate remaining time
+                    target_samples = n_simulations * WINDOWS_PER_SIM
+                    remaining_samples = target_samples - total_samples_written
+                    eta_sec = remaining_samples / samples_per_sec if samples_per_sec > 0 else 0
+                    eta_min = eta_sec / 60.0
+                    
                     logger.info(
-                        f"Progress: {total_samples_written} samples written "
-                        f"({total_simulations_completed}/{n_simulations} simulations completed, "
-                        f"{total_simulations_failed} failed)"
+                        f"Progress: {total_samples_written:,}/{target_samples:,} samples "
+                        f"| Sims: {total_simulations_completed}/{n_simulations} "
+                        f"({total_simulations_failed} failed) "
+                        f"| Elapsed: {elapsed_min:.1f}m | ETA: {eta_min:.1f}m"
                     )
 
                     # Reset batch accumulators
@@ -832,6 +845,15 @@ def generate_dataset(
     logger.info(f"Simulations completed: {total_simulations_completed}/{n_simulations}")
     logger.info(f"Simulations failed: {total_simulations_failed}")
     logger.info(f"Saved to: {output_file}")
+    
+    # Final timing summary
+    total_elapsed_sec = time.time() - generation_start_time
+    total_elapsed_min = total_elapsed_sec / 60.0
+    total_elapsed_hr = total_elapsed_min / 60.0
+    samples_per_sec = total_samples_written / total_elapsed_sec if total_elapsed_sec > 0 else 0
+    
+    logger.info(f"Total time: {total_elapsed_hr:.2f} hours ({total_elapsed_min:.1f} min)")
+    logger.info(f"Throughput: {samples_per_sec:.1f} samples/sec")
     logger.info("=" * 60)
 
     return output_file
