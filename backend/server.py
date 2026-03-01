@@ -846,10 +846,21 @@ def generate_source_activity_heatmap_html(
         autosize=True,
     )
 
-    return fig.to_html(
+    # Debug: log frame count before HTML generation
+    n_frames_before = len(fig.frames) if fig.frames else 0
+    logger.info(f"[generate_source_activity_heatmap_html] Frames in figure: {n_frames_before}, has_animation={has_animation}")
+    
+    html_output = fig.to_html(
         include_plotlyjs='cdn', full_html=True, auto_play=False,
         config=dict(responsive=True),
     )
+    
+    # Debug: count frames in generated HTML
+    import re
+    frame_names = re.findall(r'"name":"\d+"', html_output)
+    logger.info(f"[generate_source_activity_heatmap_html] Frame definitions in HTML: {len(frame_names)}")
+    
+    return html_output
 
 
 # ========================================================================
@@ -1157,12 +1168,25 @@ async def analyze_eeg(
             processing_time = time.time() - start_time
             logger.info(f"[{job_id}] Complete in {processing_time:.1f}s")
 
-            # Extract <body> content for frontend embedding
+            # Extract content for frontend embedding
+            # CRITICAL: Include the external Plotly CDN script so Plotly.js loads in the frontend
             import re
+            
+            # Extract the external Plotly script from head
+            script_match = re.search(
+                r'<script[^>]*src="https://cdn\.plot\.ly/plotly[^"]*"[^>]*></script>',
+                heatmap_html, re.I
+            )
+            plotly_script = script_match.group(0) if script_match else ''
+            
+            # Extract body content
             body_match = re.search(
                 r'<body[^>]*>([\s\S]*?)</body>', heatmap_html, re.I
             )
-            plot_content = body_match.group(1) if body_match else heatmap_html
+            body_content = body_match.group(1) if body_match else heatmap_html
+            
+            # Combine: Plotly script + body HTML (so frontend gets everything needed)
+            plot_content = plotly_script + body_content
 
             return JSONResponse({
                 "jobId": job_id,
@@ -1224,12 +1248,25 @@ async def analyze_eeg(
             processing_time = time.time() - start_time
             logger.info(f"[{job_id}] Complete in {processing_time:.1f}s")
 
-            # Extract <body> content for frontend embedding
+            # Extract content for frontend embedding
+            # CRITICAL: Include the external Plotly CDN script so Plotly.js loads in the frontend
             import re
+            
+            # Extract the external Plotly script from head
+            script_match = re.search(
+                r'<script[^>]*src="https://cdn\.plot\.ly/plotly[^"]*"[^>]*></script>',
+                heatmap_html, re.I
+            )
+            plotly_script = script_match.group(0) if script_match else ''
+            
+            # Extract body content
             body_match = re.search(
                 r'<body[^>]*>([\s\S]*?)</body>', heatmap_html, re.I
             )
-            plot_content = body_match.group(1) if body_match else heatmap_html
+            body_content = body_match.group(1) if body_match else heatmap_html
+            
+            # Combine: Plotly script + body HTML (so frontend gets everything needed)
+            plot_content = plotly_script + body_content
 
             return JSONResponse({
                 "jobId": job_id,

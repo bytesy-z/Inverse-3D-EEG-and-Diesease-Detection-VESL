@@ -4,11 +4,9 @@ data/synthetic*/train_dataset.h5
 data/synthetic*/val_dataset.h5
 data/synthetic*/test_dataset.h5
 
-# Trained model checkpoints (include checkpoint files for deployment)
+# Trained model checkpoints
 outputs/models/*.pt
 outputs/models/*.pth
-!outputs/models/checkpoint_best.pt
-!outputs/models/checkpoint_latest.pt
 outputs/models/*.log
 outputs/hyperparam_search/*.db*
 
@@ -22,8 +20,10 @@ uploads/
 outputs/figures/
 outputs/test/
 outputs/validation/
+outputs/visualizations/
 outputs/demo/
 outputs/frontend_results/
+outputs/*.png
 outputs/*.json
 !outputs/models/normalization_stats.json  # Explicitly include normalization stats
 
