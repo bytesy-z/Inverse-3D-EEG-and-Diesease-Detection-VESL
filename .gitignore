@@ -4,9 +4,11 @@ data/synthetic*/train_dataset.h5
 data/synthetic*/val_dataset.h5
 data/synthetic*/test_dataset.h5
 
-# Trained model checkpoints
+# Trained model checkpoints (include checkpoint files for deployment)
 outputs/models/*.pt
 outputs/models/*.pth
+!outputs/models/checkpoint_best.pt
+!outputs/models/checkpoint_latest.pt
 outputs/models/*.log
 outputs/hyperparam_search/*.db*
 
