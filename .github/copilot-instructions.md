@@ -146,69 +146,247 @@ def compute_dipole_localization_error(predicted_sources, true_sources, region_ce
 
 ### 6. Current Phase Context
 
-**CURRENT PHASE: Phase 2 — PhysDeepSIF Network Architecture and Training**
+**CURRENT MODE: WEB APPLICATION DEMO v3 (UNIFIED DASHBOARD) + PENDING DC OFFSET FIX**
 
-**CURRENT SUBTASK: 2.1 — PhysDeepSIF Network Architecture**
+**SITUATION:**
+- ✅ **MODEL TRAINING v1 COMPLETE** (Feb 26, 34 epochs, early stopping at epoch 19)
+- ✅ **MVP Demo delivered** (Feb 27) — cherry-picked samples with recall=1.0
+- ✅ **DC offset root cause identified and validated via literature review**
+- ✅ **De-meaning approach validated** — see Technical Specs §4.4.7
+- ✅ **Web Application v3 COMPLETE** (Mar) — unified dashboard, single /analysis page, dark theme throughout, Plotly fixes
+- Using `data/synthetic3/` dataset (80k training samples, generated with older code)
+- Current code has significant improvements not reflected in synthetic3 data
+
+**WEB APPLICATION (Section 9 of Technical Specs):**
+
+The system has a clinical-grade web demo built on a **unified analysis dashboard** architecture:
+
+**Shared UI Components:**
+- `AppHeader`: Sticky top nav with VESL brand + single "Analyze EEG" tab → `/analysis` (uses `usePathname()`)
+- `AppContainer`: Centered `max-w-6xl` container with consistent padding
+- `StepIndicator`: Three-step workflow (Upload → Analyze → Results) with visual state tracking
+- `FileUploadSection`: Drag-drop with validation, file display, clear button, keyboard accessible
+- `BrainVisualization`: Plotly HTML container with skeleton loader, fullscreen toggle, resize handler, `playbackSpeed` prop
+- `ResultsMeta`: Compact key-value stats row (filename, time, windows)
+- `DetectedRegions`: Badge list with full anatomical names (e.g., "rAMYG (Right Amygdala)")
+- `ProcessingWindow`: Timer + progress bar + pipeline step checklist
+- `AppFooter`: Footer with VESL copyright + team credits (Hira Sardar, Muhammad Zikrullah Rehman, Shahliza Ahmad)
+
+**Design System (`lib/theme.ts`):**
+- Sage green accent (oklch hue ≈ 160), neutral grey base
+- **Dark theme throughout** — all pages use `<div className="dark">`
+- CSS tokens in `globals.css`: `:root` (light) + `.dark` (dark)
+- `.plotly-container` CSS ensures proper Plotly sizing
+
+**Landing Page (`/`):**
+- Dark theme with hero section, problem & solution cards, capabilities cards, CTA → `/analysis`
+- Professional clinical tone (no emoji, no "AI-y" language)
+- Sections: "The Problem & Our Solution" (4 cards), "What VESL Does" (4 cards), CTA banner
+
+**Unified Analysis Dashboard (`/analysis`):**
+- Single page for both Source Localization and Biomarker Detection
+- Dark theme with shared upload → parallel processing → tabbed results
+- Both API calls (`/api/analyze-eeg` + `/api/physdeepsif`) run in parallel via `Promise.all`
+- View mode toggle tabs: "Source Localization" (Brain icon) / "Biomarker Detection" (Activity icon)
+- **Playback speed control** (0.5x, 1x, 2x, 4x) — shown only for animated ESI results
+  - Dynamically adjusts Plotly frame duration via `Plotly.relayout()` on `BrainVisualization`
+- ESI view: inferno colorscale, dark canvas, animation hint for multi-window
+- Biomarkers view: warm gradient, dark canvas, DetectedRegions badges (clinical red, top-K=5)
+- Legacy routes `/eeg-source-localization` and `/biomarkers` → 307 redirect to `/analysis`
+
+**Architecture:**
+- FastAPI backend (port 8000) — loads PhysDeepSIF model on CUDA, generates Plotly HTML
+- Next.js 15 frontend (port 3000) — proxies `/api/*` to backend, renders Plotly HTML in container div
+- `src/region_names.py` — maps 76 DK region codes to full anatomical names
+- `start.sh` manages both servers (start/stop/kill)
+
+**Key Implementation Details — Plotly Figures:**
+- `auto_play=False` — prevents animation autoplay on load
+- `autosize=True` + `config=dict(responsive=True)` — figures resize to fit container
+- **No camera view buttons** — Left/Right/Front/Back/Top buttons removed from all figures
+- **Styled play/pause** — `bgcolor='rgba(40,40,60,0.85)'`, border, consistent font
+- **m:ss timestamp format** — slider labels use `M:SS.s` format (e.g., "0:01.0", "1:30.5")
+- **Both modes dark canvas** — `#1a1a2e` background with `#e0e0e0` text
+- Bottom margin `b=60` on animated figures ensures slider visibility
+- No custom React play/pause — Plotly native controls + React speed control via `Plotly.relayout()`
+- Region name mapping returns both short codes and full names in API responses (`*_full` fields)
+
+**CRITICAL FINDING: Epileptor LFP Proxy DC Offset Problem**
+
+The Epileptor x2-x1 LFP proxy has a large DC offset that varies with x0 (excitability):
+- Healthy regions (x0 ∈ [-2.2, -2.05]): mean(x2-x1) ≈ 1.80
+- Epileptogenic regions (x0 ∈ [-1.8, -1.2]): mean(x2-x1) ≈ 1.60
+- **DC offset dominates**: power = mean² + var, and mean² accounts for 98.1% of total power
+
+This causes two cascading problems:
+1. **Source normalization masks the useful signal**: Global normalization (src_mean=1.792, src_std=0.258)
+   shifts everything toward zero, but the *dynamics* (variance ~0.05) are only 1.9% of total power.
+   The model learns to output a near-constant DC value (spatial CV = 0.002) with effectively zero
+   temporal dynamics (pred temporal var ≈ 0.00002 vs true ≈ 0.05).
+
+2. **Power-based epileptogenicity scoring inverts**: Because epileptogenic regions have LOWER mean
+   signal (lower DC offset due to x0), time-averaged power incorrectly ranks them as *less* active.
+   However, variance and ptp are 3.9x and 1.86x HIGHER in epileptogenic regions respectively.
+   The useful discriminatory signal is in the AC component, not the DC component.
+
+**Evidence (from 50 epileptogenic test samples):**
+| Feature | Epileptogenic | Healthy | Ratio | Oracle top-10 recall |
+|---------|-------------|---------|-------|---------------------|
+| Power (mean s²) | 2.74 | 3.29 | 0.84 | 0.023 (inverted!) |
+| Variance | 0.178 | 0.045 | 3.92 | 0.886 ✓ |
+| Range (ptp) | 1.94 | 1.04 | 1.86 | 0.771 ✓ |
+| Kurtosis_inv | — | — | — | 0.913 ✓ |
+
+**This is NOT a bug** — it is physically correct Epileptor behavior (Jirsa et al., 2014):
+- Near-critical x0 values → intermittent bursts with quiescent baseline → high variance
+- The DC offset of x2-x1 shifts with x0 as the system's equilibrium point changes
+- Clinical parallel: focal epilepsy shows background suppression between interictal discharges
+
+**VALIDATED SOLUTION: Per-Region Temporal De-Meaning**
+
+Literature review confirms this is the correct approach:
+- **Yu et al. 2024 (MS-ESI, NeuroImage)**: Uses Wendling model generating interictal spikes — inherently AC, no DC issue
+- **DeepSIF (Sun et al., 2022, PNAS)**: Also spike-based training data, no DC issue
+- **Virtual Brain Twins (Hashemi et al., 2025)**: Uses same x0 range, confirms DC shifts are standard Epileptor behavior
+- **Real EEG is AC-coupled**: All clinical EEG amplifiers use highpass ≥ 0.1 Hz; model cannot learn DC from input
+- **Physics losses unaffected**: Laplacian/temporal smoothness operate on gradients, invariant to mean removal
+- **CMA-ES compatible**: Welch PSD is inherently DC-free
+
+Implementation: Subtract per-region temporal mean from source_activity AND per-channel temporal
+mean from EEG in Dataset.__iter__() before global z-score normalization.
+
+**CURRENT PHASE: Phase 2.5 — DC Offset Fix and Model Retraining**
 
 **COMPLETION STATUS:**
-- ✅ 1.1: Source Space Definition — COMPLETE
-  - TVB connectivity (76×76) loaded and preprocessed
-  - Region centroids (76×3) in MNI space
-  - Region labels (76 names) available
-  
-- ✅ 1.2: Neural Mass Model Configuration — COMPLETE
-  - Epileptor simulator wrapper implemented
-  - Parameter randomization implemented
-  - Batch simulation support ready
-  
-- ✅ 1.3: Leadfield Matrix Construction — COMPLETE
-  - BEM forward model computed (3-layer, oct-6)
-  - Voronoi vertex-to-region mapping implemented (71 cortical + 5 fallback)
-  - Linked-ear reference applied
-  - Leadfield validated: shape (19, 76), rank 18, condition number 33.1
-  - Data file: `data/leadfield_19x76.npy`
-  
-- ✅ 1.4: Synthetic Dataset Generation — COMPLETE
-  - Full pipeline: TVB simulation → anti-aliased decimation → leadfield projection → noise → HDF5
-  - Anti-aliased decimation: Raw monitor + scipy.signal.decimate (FIR, 2-stage 10×10)
-  - TVB 2× rate factor handled: dt=0.1ms → 20,000 Hz → decimate to 200 Hz
-  - Noise structure: [D,D,0,D,D,0] — no noise on slow variables (z, g)
-  - Healthy-only samples (k=0): ~11% of dataset for general inverse solving
-  - Mixed samples (k=1-8): ~89% for epileptogenicity detection
-  - NaN/Inf detection and rejection for diverged simulations (~5-10% failure rate)
-  - HDF5 schema matches Section 3.4.4 exactly
-  - Output files: `data/synthetic/{train,val,test}_dataset.h5`
-  - Script: `scripts/02_generate_synthetic_data.py`
-  - All shapes/dtypes validated: eeg (N,19,400) float32, source (N,76,400) float32, etc.
-  - Spectral validation: peak freq ~10 Hz, >60% power <30 Hz, lag-1 autocorr ~0.5-0.6
+- ✅ **PHASE 1 COMPLETE** — Forward Modeling and Synthetic Data Generation
+  - ✅ 1.1: Source Space Definition (76 Desikan-Killiany regions)
+  - ✅ 1.2: Neural Mass Model Configuration (Epileptor, 6 parameters per region)
+  - ✅ 1.3: Leadfield Matrix Construction (BEM, 19×76, linked-ear reference)
+  - ✅ 1.4: Synthetic Dataset Generation (100k samples, 3 splits)
+    - Using `data/synthetic3/`: Train 79,995 | Val 10,010 | Test 9,980
+    - **NOTE**: Generated with older code; current code includes spectral shaping improvements
+  - ✅ 1.5: Biophysical Validation (13/13 metrics PASS)
+  - ✅ 1.6: Integrated Spectral Shaping (STFT-based alpha/beta processing)
 
-**Specific Instructions for Current Subtask (2.1):**
-- Implement PhysDeepSIF network architecture per Section 4.1 of technical specs
-- File: `src/phase2_network/physdeepsif.py`
-- Spatial module: 5 FC layers with skip connections and BatchNorm (Section 4.1.2)
-- Temporal module: 2 BiLSTM layers with output projection + skip (Section 4.1.3)
-- Register leadfield and connectivity Laplacian as non-trainable buffers
-- Target: ~355,000 parameters total
+- ✅ **PHASE 2 COMPLETE** — Network Architecture and Training (v1)
+  - ✅ 2.1: PhysDeepSIF Network Architecture (410,244 params)
+  - ✅ 2.2: Physics-Informed Loss Functions (source MSE + forward + physics)
+  - ✅ 2.3: Training Loop with early stopping
+  - ✅ 2.4: Model Training v1 on synthetic3
+    - **Best checkpoint:** Epoch 19, val_loss=1.0141
+    - **Metrics:** DLE=10.41mm, SD=53.75mm, AUC=0.486, Corr=0.072
+    - **Known issue:** Model outputs ~100% DC offset, near-zero temporal dynamics
+    - Model learns average DC level well but fails to reconstruct per-region variance
 
-**Key Implementation Requirements for Phase 2:**
-- Spatial module processes each time step independently (weight-shared across time)
-- Layer dimensions: 19→128→256→256→128→76 with skip connections
-- BiLSTM: input_size=76, hidden_size=76, bidirectional=True, 2 layers
-- Output projection: Linear(152, 76) + skip from spatial module
-- Loss function implements exact formulas from Section 4.2 (composite: source + forward + physics)
-- Physics loss has three sub-components: Laplacian, temporal smoothness, amplitude bound
+- ✅ **MVP DEMO MODULE** — Biomarker Detection Prototype
+  - ✅ End-to-end inference pipeline working
+  - ✅ Inverted-range scoring (range_inv) — best post-processing feature found
+    - 0.258 top-10 recall (2x chance) for model predictions
+    - Perfect recall (1.0) on ~15% of epileptogenic patterns (left cingulate-insular network)
+  - ✅ 3D brain visualization with dark=epileptogenic colorscale
+  - ✅ Cherry-picked demo samples: indices 10, 25, 51 (recall=1.0)
+  - ✅ Support for specifying multiple --sample-idx values
+  - ✅ Threshold: 87.5th percentile (top ~10 regions)
+  - ✅ Top-K recall metrics in output JSON
 
-**Next Subtasks (after 2.1):**
-- 2.2: Physics-Informed Loss Functions
-- 2.3: Training Loop Implementation
-- 3.1: NMT Preprocessing Pipeline
+- ✅ **WEB APPLICATION v3** — Unified Dashboard + Plotly Fixes (Mar)
+  - ✅ FastAPI backend (serves model inference + Plotly HTML with `auto_play=False`, `autosize=True`, `responsive=True`)
+  - ✅ `src/region_names.py` — 76-entry DK region code → full anatomical name mapping
+  - ✅ Next.js 15 frontend with clinical-grade design system
+  - ✅ **Unified analysis dashboard** (`/analysis`) — single upload, parallel processing, tabbed results
+  - ✅ Landing page with problem statement, benefits, CTA (professional clinical tone)
+  - ✅ Single nav tab "Analyze EEG" → `/analysis` (replaced two separate tabs)
+  - ✅ Legacy routes `/eeg-source-localization` and `/biomarkers` → 307 redirect to `/analysis`
+  - ✅ **Dark theme throughout** — both ESI and biomarkers on dark canvas (`#1a1a2e`)
+  - ✅ **Camera view buttons removed** — no Left/Right/Front/Back/Top in any Plotly figure
+  - ✅ **Styled play/pause buttons** — consistent dark background, border, font
+  - ✅ **m:ss timestamp format** — animation slider uses M:SS.s (e.g., "0:01.0", "1:30.5")
+  - ✅ **Playback speed control** — 0.5x, 1x, 2x, 4x buttons, adjusts Plotly frame duration via `Plotly.relayout()`
+  - ✅ **Responsive Plotly figures** — `autosize=True`, no fixed width/height, `config=dict(responsive=True)`
+  - ✅ **Improved fullscreen** — dynamic height, Plotly resize after toggle
+  - ✅ Parallel API calls via `Promise.all` for both ESI and biomarkers
+  - ✅ AppFooter with team credits (Hira Sardar, Muhammad Zikrullah Rehman, Shahliza Ahmad)
+  - ✅ TypeScript 0 errors, all routes responding correctly
 
-**Update Instructions:**
-This "Current Phase Context" section will be manually updated after each subtask completion. When a subtask is completed:
-1. Mark it as complete in project tracking
-2. Update "CURRENT SUBTASK" to the next item
-3. Update "Specific Instructions" with details from the technical specifications
-4. Update "Key Constraints" with validation criteria for the new subtask
+**IMMEDIATE PRIORITIES (ordered):**
+1. ✅ **Literature review**: De-meaning validated — real EEG is AC-coupled, MS-ESI/DeepSIF use
+   spike-based (AC) training data, physics losses are gradient-based (mean-invariant), CMA-ES
+   uses PSD (DC-free). Full analysis in Technical Specs §4.4.7.
+
+2. **Implement per-region de-meaning in training pipeline**:
+   - Modify `HDF5Dataset.__iter__()` in `scripts/03_train_network.py`
+   - Subtract per-region temporal mean: `sources -= sources.mean(dim=-1, keepdim=True)`
+   - Also de-mean EEG per channel for AC-coupling consistency
+   - Apply **before** global z-score normalization
+   - Update in-memory path (`normalize_data()`) similarly
+
+3. **Quick validation training** (~5-10 epochs on synthetic3):
+   - Verify AUC improves from 0.486 baseline
+   - Verify temporal correlation improves from 0.072
+   - Verify DLE stays stable (<20 mm)
+   - If confirmed, proceed with full retraining
+
+4. **Full retraining with de-meaned data** (if quick test passes)
+
+**POST-DEMO TODOs (for after March 3, 2026):**
+
+These improvements have been identified but deferred due to demo deadline constraints.
+Bring these up when work resumes on March 3, 2026.
+
+1. **Regenerate synthetic data with improved code**:
+   - Current `data/synthetic3/` was generated with older code lacking spectral shaping
+   - Regenerate using current `src/phase1_forward/synthetic_dataset.py` with integrated
+     spectral shaping (STFT-based alpha/beta) and skull attenuation filter
+   - Apply per-region de-meaning as a permanent preprocessing step in the Dataset class
+   - Expected benefit: better spectral realism → better generalization to NMT real EEG
+
+2. **Explore variance-based loss terms**:
+   - Add explicit variance-matching loss: $\mathcal{L}_{var} = \sum_i (\text{Var}(\hat{S}_i) - \text{Var}(S_i))^2$
+   - This directly optimizes the discriminative signal (epileptogenic regions have 3.9× higher variance)
+   - Could complement MSE loss on de-meaned data for stronger dynamics learning
+
+3. **Per-region normalization** (alternative to global z-score):
+   - Instead of global stats, normalize each region by its own temporal statistics
+   - Would equalize the learning signal across regions with different activity levels
+   - Risk: may destroy spatial amplitude relationships needed for forward consistency
+   - Test against global z-score to compare
+
+4. **x0 gap sampling investigation**:
+   - Currently x0 has a gap at [-2.05, -1.8] — never sampled
+   - This creates a bimodal distribution. Unclear if this helps or hurts the model
+   - Experiment with continuous x0 sampling to fill the gap
+   - May improve model's ability to detect borderline epileptogenic regions
+
+5. **Forward loss normalization**:
+   - The forward loss $\|\mathbf{L}\hat{S} - \text{EEG}\|^2$ is ~41,456× larger than source loss
+     at correct scale (see §4.4.5)
+   - Even with reduced β, this scale mismatch may cause optimization issues
+   - Options: normalize forward loss by EEG variance, use relative error,
+     or scale leadfield to unit norm columns before computing forward loss
+
+6. **Hyperparameter optimization** (Bayesian/TPE via Optuna):
+   - Search space defined in Tech Specs §4.5.2
+   - Should be run AFTER de-meaning fix is confirmed working
+   - Optimize for temporal correlation as primary objective
+   - 50-100 trials, 30-45 min each
+
+7. **Classical baseline comparisons**:
+   - Implement eLORETA, MNE, dSPM, LCMV for the same test set
+   - Use same leadfield matrix for fair comparison
+   - Required for thesis/paper to contextualize PhysDeepSIF performance
+
+8. **Phase 3: NMT preprocessing pipeline**:
+   - Load and preprocess real EEG from NMT dataset
+   - Linked-ear reference (keep as-is), 0.5-70 Hz bandpass, 50 Hz notch, ICA
+
+9. **Phase 4: CMA-ES parameter inversion**:
+   - Fit x0 per region by matching simulated and real EEG PSDs
+   - Requires Phase 3 output (preprocessed NMT segments)
+
+10. **Comprehensive validation suite** (Tech Specs §7):
+    - Full DLE/SD/AUC/correlation across noise levels
+    - Patient consistency analysis
+    - Normal vs abnormal NMT discrimination
 
 ---
 
@@ -239,7 +417,7 @@ This "Current Phase Context" section will be manually updated after each subtask
 - Must validate rank = 18 (Section 3.3.1, Step 4)
 
 #### `synthetic_dataset.py`
-- Purpose: Orchestrate TVB simulation + leadfield projection + noise addition
+- Purpose: Orchestrate TVB simulation + leadfield projection + noise addition + spectral shaping
 - Must generate HDF5 files with exact schema from Section 3.4.4
 - Must implement parallel simulation using joblib
 - Must apply normalization only in PyTorch Dataset, not in HDF5 storage
@@ -249,6 +427,28 @@ This "Current Phase Context" section will be manually updated after each subtask
 - Colored noise: lowpass-filtered Gaussian, separate spatial correlation via leadfield
 - Healthy-only samples (k=0): ~11% of dataset, all x0 values set to -2.2 (normal range)
 - Simulation yields 10 seconds at 200 Hz = 2000 time points, segmented into 5 windows of 400
+- Skull attenuation: 4th-order Butterworth LP @ 40 Hz applied after noise addition
+- Spectral shaping: STFT-based delta/theta suppression + adaptive alpha redistribution + beta gradient gains
+- Group-level validation: alpha/beta gradients checked on 5 anteroposterior groups, PDR [1.3, 5.0]
+
+### Phase 1 Post-Processing Scripts (`scripts/`)
+
+#### `scripts/07_biophysical_validation.py`
+- Purpose: Validate biophysical properties of synthetic EEG (13 metrics)
+- Checks: amplitude range, spectral content, temporal dynamics, noise levels
+- Must PASS 13/13 metrics for data to be considered valid
+
+#### `scripts/08_apply_spatial_gradients.py` — **DEPRECATED**
+- Previously: Post-processing script for applying spatial-spectral gains to existing HDF5 data
+- Now: Spectral shaping is integrated directly into `synthetic_dataset.py` during generation
+- Script kept for reference only; no longer needed in the data generation pipeline
+
+#### `scripts/09_validate_enhanced_data.py`
+- Purpose: Comprehensive validation of generated data against legacy + spatial-spectral metrics
+- Key thresholds: PDR [1.3, 5.0], group-level monotonic gradient, RMS [5-150 µV], gamma < 15%
+- Uses Welch PSD: 200-sample Hann, 50% overlap (matching generation STFT)
+- Channel groups: frontal_fp (Fp1,Fp2), frontal_f (F3,F4,F7,F8,Fz), central_c (C3,C4,T3,T4,Cz), parietal_p (P3,P4,T5,T6,Pz), occipital_o (O1,O2)
+- Validates 100 random samples per split, outputs report to `outputs/validation_report.json`
 
 ### Phase 2: Network (`src/phase2_network/`)
 

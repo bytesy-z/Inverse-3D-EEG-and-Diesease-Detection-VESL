@@ -1,0 +1,104 @@
+# ====== Data & Models ======
+# Generated datasets (large HDF5 files)
+data/synthetic*/train_dataset.h5
+data/synthetic*/val_dataset.h5
+data/synthetic*/test_dataset.h5
+
+# Trained model checkpoints
+outputs/models/*.pt
+outputs/models/*.pth
+outputs/models/*.log
+outputs/hyperparam_search/*.db*
+
+# Old codebase / archives
+old_codebase/
+
+# Inference results and uploads
+results/
+uploads/
+
+outputs/figures/
+outputs/test/
+outputs/validation/
+outputs/demo/
+outputs/frontend_results/
+outputs/*.json
+!outputs/models/normalization_stats.json  # Explicitly include normalization stats
+
+# ====== Python ======
+# Bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# pip
+pip-log.txt
+pip-delete-this-directory.txt
+
+# PyCharm
+.idea/
+*.iml
+
+# Pylance / Pyright
+pyrightconfig.json
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ====== Node.js / Frontend ======
+# Dependencies
+frontend/node_modules/
+node_modules/
+
+# Next.js build output
+frontend/.next/
+.next/
+
+# npm / yarn lockfiles (optional, remove if you want to commit)
+# frontend/package-lock.json
+# frontend/yarn.lock
+
+# Build outputs
+frontend/dist/
+frontend/build/
+*.tsbuildinfo
+
+# ====== OS & IDE ======
+# macOS
+.DS_Store
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Windows
+Thumbs.db
+
+# Linux
+.directory
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ====== Environment ======
+.env
+.env.local
+.env.*.local
+
+# ====== Logs ======
+*.log
+logs/
+nohup.out

@@ -65,9 +65,12 @@ forward_model:
     - "Pz"
 
 synthetic_data:
-  n_simulations_train: 16000
-  n_simulations_val: 2000
-  n_simulations_test: 2000
+  # Target: 100,000 samples total (80k train / 10k val / 10k test)
+  # With spatial-spectral validation, ~70% of windows pass, so we increase
+  # simulation counts to compensate. Expected output: ~4-5 valid windows per sim.
+  n_simulations_train: 23000    # 23k × 5 × 0.70 ≈ 80.5k valid samples
+  n_simulations_val: 2900       # 2.9k × 5 × 0.70 ≈ 10.1k valid samples
+  n_simulations_test: 2900      # 2.9k × 5 × 0.70 ≈ 10.1k valid samples
   windows_per_simulation: 5
   simulation_length_ms: 12000
   transient_ms: 2000
@@ -76,10 +79,10 @@ synthetic_data:
   snr_range_db: [5, 30]
   colored_noise_alpha_range: [0.5, 1.5]
   colored_noise_amplitude_fraction: [0.1, 0.3]
-  output_dir: "data/synthetic/"
+  output_dir: "data/synthetic3/"
   n_epileptogenic_range: [0, 8]  # 0 = healthy-only, 1-8 = focal/multifocal epilepsy
   clustering_probability: 0.5
-  n_jobs: -1  # -1 means use all available cores
+  n_jobs: 16                     # Explicit 16 cores (RTX 3080 machine)
   hdf5_batch_size: 500  # Write to HDF5 every 500 samples for fault tolerance
 
 network:

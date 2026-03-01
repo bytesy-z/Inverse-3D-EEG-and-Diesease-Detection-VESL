@@ -68,20 +68,47 @@ logger = logging.getLogger(__name__)
 def setup_logging(log_level: str = "INFO") -> None:
     """
     Configure logging with timestamps for tracking long-running generation.
+    Logs to both console and file (outputs/generation.log).
 
     Args:
         log_level: Logging level string. Default "INFO".
     """
+    # Get numeric log level
+    numeric_level = getattr(logging, log_level.upper(), logging.INFO)
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(numeric_level)
+    
+    # Remove any existing handlers to avoid duplicates
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Create formatter
     formatter = logging.Formatter(
         fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    # Console handler
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(log_level)
+    console_handler.setLevel(numeric_level)
     console_handler.setFormatter(formatter)
-
-    logging.basicConfig(level=log_level, handlers=[console_handler])
+    root_logger.addHandler(console_handler)
+    
+    # File handler (save to outputs/generation.log)
+    log_dir = PROJECT_ROOT / 'outputs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / 'generation.log'
+    
+    try:
+        file_handler = logging.FileHandler(log_file, mode='w')
+        file_handler.setLevel(numeric_level)
+        file_handler.setFormatter(formatter)
+        root_logger.addHandler(file_handler)
+        print(f"Logging to file: {log_file}")
+    except Exception as e:
+        print(f"Warning: Could not create file logger: {e}")
 
 
 def load_config(config_path: Path) -> dict:

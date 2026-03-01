@@ -1,0 +1,1377 @@
+"""
+PhysDeepSIF Backend API Server
+Purpose: FastAPI server exposing PhysDeepSIF inference and biomarker detection
+         as HTTP endpoints for the Next.js frontend.
+
+The server loads the trained model once on startup and handles:
+  1. EEG source localization (19ch EEG → 76-region source estimates)
+  2. Epileptogenic zone detection (source activity → per-region EI scores)
+  3. 3D brain heatmap generation (Plotly HTML)
+
+Endpoints:
+  POST /api/analyze       — Upload EEG file, run full pipeline, return results
+  POST /api/biomarkers    — Run biomarker detection on a test sample or uploaded EEG
+  GET  /api/health        — Health check
+  GET  /api/results/{path} — Serve result files (HTML, JSON)
+
+See docs/02_TECHNICAL_SPECIFICATIONS.md Section 4 for pipeline details.
+"""
+
+import json
+import logging
+import os
+import sys
+import time
+import traceback
+import uuid
+import warnings
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import numpy as np
+from numpy.typing import NDArray
+
+# Suppress warnings before importing heavy libs
+warnings.filterwarnings('ignore', category=RuntimeWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+
+# FastAPI imports
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+
+# Ensure project root is on the path so local imports resolve
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+import h5py
+import torch
+import torch.nn as nn
+from scipy import linalg as la
+
+# Local imports — PhysDeepSIF model builder
+from src.phase2_network.physdeepsif import build_physdeepsif
+from src.region_names import get_region_name, format_region_for_display
+
+# ========================================================================
+# Logging
+# ========================================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("physdeepsif_api")
+
+# ========================================================================
+# Constants (from Technical Specs §3, §4)
+# ========================================================================
+N_REGIONS = 76              # Desikan-Killiany parcellation
+N_CHANNELS = 19             # Standard 10-20 EEG montage
+WINDOW_LENGTH = 400         # 2 seconds at 200 Hz
+SAMPLING_RATE = 200.0       # Hz
+
+# Channel order matching our dataset (Technical Specs §3.3.2)
+CHANNEL_NAMES = [
+    'Fp1', 'Fp2', 'F3', 'F4', 'C3', 'C4', 'P3', 'P4',
+    'O1', 'O2', 'F7', 'F8', 'T3', 'T4', 'T5', 'T6',
+    'Fz', 'Cz', 'Pz',
+]
+
+# File paths relative to PROJECT_ROOT
+CHECKPOINT_PATH = PROJECT_ROOT / "outputs" / "models" / "checkpoint_best.pt"
+NORM_STATS_PATH = PROJECT_ROOT / "outputs" / "models" / "normalization_stats.json"
+LEADFIELD_PATH = PROJECT_ROOT / "data" / "leadfield_19x76.npy"
+CONNECTIVITY_PATH = PROJECT_ROOT / "data" / "connectivity_76.npy"
+REGION_LABELS_PATH = PROJECT_ROOT / "data" / "region_labels_76.json"
+REGION_CENTERS_PATH = PROJECT_ROOT / "data" / "region_centers_76.npy"
+TEST_DATA_PATH = PROJECT_ROOT / "data" / "synthetic3" / "test_dataset.h5"
+RESULTS_DIR = PROJECT_ROOT / "outputs" / "frontend_results"
+
+# ========================================================================
+# Global model state (loaded once on startup)
+# ========================================================================
+model: Optional[nn.Module] = None
+norm_stats: Optional[Dict[str, float]] = None
+region_labels: Optional[List[str]] = None
+leadfield_matrix: Optional[NDArray[np.float32]] = None
+device: Optional[torch.device] = None
+
+# In-memory job tracker
+jobs: Dict[str, dict] = {}
+
+
+# ========================================================================
+# FastAPI app
+# ========================================================================
+app = FastAPI(
+    title="PhysDeepSIF API",
+    description="Physics-informed deep learning EEG inverse solver backend",
+    version="1.0.0",
+)
+
+# CORS — allow the Next.js dev server to call us
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ========================================================================
+# Startup: load model, normalization stats, region labels
+# ========================================================================
+@app.on_event("startup")
+async def startup_load_model():
+    """Load the PhysDeepSIF model and all supporting data files on startup."""
+    global model, norm_stats, region_labels, leadfield_matrix, device
+
+    logger.info("=" * 60)
+    logger.info("PhysDeepSIF API — Loading model and data...")
+    logger.info("=" * 60)
+
+    # Select device: prefer GPU if available
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+
+    # Load model checkpoint
+    if not CHECKPOINT_PATH.exists():
+        logger.error(f"Checkpoint not found at {CHECKPOINT_PATH}")
+        raise RuntimeError(f"Checkpoint not found: {CHECKPOINT_PATH}")
+
+    # Build the PhysDeepSIF model (creates architecture + registers buffers)
+    model = build_physdeepsif(
+        leadfield_path=str(LEADFIELD_PATH),
+        connectivity_path=str(CONNECTIVITY_PATH),
+        lstm_dropout=0.0,  # No dropout at inference time
+    )
+
+    # Load trained weights from checkpoint
+    checkpoint = torch.load(str(CHECKPOINT_PATH), map_location=device)
+    if 'model_state' in checkpoint:
+        state_dict = checkpoint['model_state']
+    elif 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    else:
+        state_dict = checkpoint
+
+    model.load_state_dict(state_dict)
+    model = model.to(device)
+    model.eval()
+
+    epoch = checkpoint.get('epoch', 'unknown')
+    val_loss = checkpoint.get('val_loss', 'unknown')
+    logger.info(f"Model loaded: epoch={epoch}, val_loss={val_loss}")
+
+    # Load normalization statistics (computed during training)
+    if NORM_STATS_PATH.exists():
+        with open(NORM_STATS_PATH, 'r') as f:
+            norm_stats = json.load(f)
+        logger.info(
+            f"Normalization stats: EEG μ={norm_stats['eeg_mean']:.4f} "
+            f"σ={norm_stats['eeg_std']:.4f}, "
+            f"Src μ={norm_stats['src_mean']:.6f} "
+            f"σ={norm_stats['src_std']:.6f}"
+        )
+    else:
+        logger.error(f"Normalization stats not found at {NORM_STATS_PATH}")
+        raise RuntimeError(f"Normalization stats not found: {NORM_STATS_PATH}")
+
+    # Load region labels (76 DK region abbreviations)
+    with open(REGION_LABELS_PATH, 'r') as f:
+        region_labels = json.load(f)
+    logger.info(f"Loaded {len(region_labels)} region labels")
+
+    # Load leadfield matrix (19×76) for forward consistency checks
+    leadfield_matrix = np.load(str(LEADFIELD_PATH)).astype(np.float32)
+    logger.info(f"Loaded leadfield: shape {leadfield_matrix.shape}")
+
+    # Ensure results directory exists
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    logger.info("=" * 60)
+    logger.info("PhysDeepSIF API — Ready to serve requests")
+    logger.info("=" * 60)
+
+
+# ========================================================================
+# Inference helpers
+# ========================================================================
+
+def run_inference(eeg: NDArray[np.float32]) -> NDArray[np.float32]:
+    """
+    Run PhysDeepSIF inference on EEG data.
+
+    Applies the same preprocessing as HDF5Dataset.__iter__() in the training
+    pipeline: per-channel temporal de-meaning, then global z-score normalization.
+
+    Args:
+        eeg: Raw EEG data, shape (19, 400) or (batch, 19, 400).
+
+    Returns:
+        Source activity estimate, shape (76, 400) or (batch, 76, 400).
+    """
+    # Guarantee batch dimension
+    single_sample = eeg.ndim == 2
+    if single_sample:
+        eeg = eeg[np.newaxis, ...]  # (1, 19, 400)
+
+    eeg_tensor = torch.from_numpy(eeg.astype(np.float32)).to(device)
+    eps = 1e-7
+
+    # Per-channel temporal de-meaning (matches training pipeline, Tech Specs §4.4.7)
+    # Removes DC offset so the model sees the same distribution it was trained on.
+    eeg_tensor = eeg_tensor - eeg_tensor.mean(dim=-1, keepdim=True)
+
+    # Global z-score normalization using saved training statistics
+    eeg_tensor = (eeg_tensor - norm_stats['eeg_mean']) / (norm_stats['eeg_std'] + eps)
+
+    # Forward pass (inference mode — no gradient computation)
+    with torch.no_grad():
+        source_pred = model(eeg_tensor)  # (batch, 76, 400)
+
+    # Denormalize source predictions back to original scale
+    source_pred = source_pred * (norm_stats['src_std'] + eps) + norm_stats['src_mean']
+
+    source_np = source_pred.cpu().numpy()
+    if single_sample:
+        source_np = source_np[0]  # (76, 400)
+
+    return source_np
+
+
+def compute_epileptogenicity_index(
+    source_activity: NDArray[np.float32],
+    epileptogenic_mask: Optional[NDArray[np.bool_]] = None,
+    threshold_percentile: float = 87.5,
+) -> dict:
+    """
+    Compute per-region epileptogenicity index using inverted-range scoring.
+
+    Epileptogenic regions in the Epileptor model exhibit LOWER temporal dynamic
+    range during resting state compared to healthy regions.  We score based on
+    inverted peak-to-peak range: low ptp → high epileptogenicity score.
+
+    Args:
+        source_activity: Predicted source, shape (76, 400) or (batch, 76, 400).
+        epileptogenic_mask: Optional ground truth mask, shape (76,).
+        threshold_percentile: Percentile for adaptive threshold (default: 87.5 → top ~10 regions).
+
+    Returns:
+        Dictionary with scores, detected regions, threshold, and (if mask given) recall/precision.
+    """
+    # Handle batch dim
+    if source_activity.ndim == 3:
+        source_activity = source_activity.mean(axis=0)  # (76, 400)
+
+    # Inverted-range scoring: lower ptp → higher epileptogenicity
+    region_range = np.ptp(source_activity, axis=1)  # (76,)
+    inverted_range = -region_range
+
+    # Z-score across regions
+    range_mean = inverted_range.mean()
+    range_std = inverted_range.std()
+    if range_std < 1e-10:
+        z_scores = np.zeros(N_REGIONS)
+    else:
+        z_scores = (inverted_range - range_mean) / range_std
+
+    # Sigmoid → [0, 1]
+    ei_raw = 1.0 / (1.0 + np.exp(-np.clip(z_scores, -30, 30)))
+
+    # Min-max normalization to [0, 1]
+    score_min = ei_raw.min()
+    score_max = ei_raw.max()
+    if score_max - score_min < 1e-10:
+        ei_scores = np.zeros(N_REGIONS)
+    else:
+        ei_scores = (ei_raw - score_min) / (score_max - score_min)
+
+    # Adaptive threshold
+    threshold = float(np.percentile(ei_scores, threshold_percentile))
+    threshold = np.clip(threshold, 0.0, 1.0)
+
+    epileptogenic_idx = np.where(ei_scores > threshold)[0]
+    epileptogenic_names = [region_labels[i] for i in epileptogenic_idx]
+    # Include full anatomical names for each detected region
+    epileptogenic_names_full = [
+        format_region_for_display(region_labels[i])
+        for i in epileptogenic_idx
+    ]
+
+    # Build per-region scores dict for JSON serialization
+    scores_dict = {
+        region_labels[i]: float(ei_scores[i])
+        for i in range(N_REGIONS)
+    }
+
+    result = {
+        'scores': scores_dict,
+        'scores_array': ei_scores.tolist(),  # JSON-safe list
+        'epileptogenic_regions': epileptogenic_names,
+        'epileptogenic_regions_full': epileptogenic_names_full,  # With full anatomical names
+        'threshold': float(threshold),
+        'threshold_percentile': threshold_percentile,
+        'max_score_region': region_labels[int(np.argmax(ei_scores))],
+        'max_score': float(np.max(ei_scores)),
+        'region_labels': region_labels,
+    }
+
+    # Ground truth comparison (only for synthetic test data)
+    if epileptogenic_mask is not None:
+        true_epi_idx = np.where(epileptogenic_mask)[0]
+        true_epi_names = [region_labels[i] for i in true_epi_idx]
+        result['ground_truth_regions'] = true_epi_names
+        result['n_true_epileptogenic'] = len(true_epi_names)
+
+        pred_set = set(epileptogenic_idx.tolist())
+        true_set = set(true_epi_idx.tolist())
+        if len(true_set) > 0:
+            intersection = pred_set & true_set
+            result['recall'] = len(intersection) / len(true_set)
+        if len(pred_set) > 0 and len(true_set) > 0:
+            result['precision'] = len(pred_set & true_set) / len(pred_set)
+
+        # Top-K recall metrics
+        for k in [5, 10]:
+            top_k_idx = set(np.argsort(ei_scores)[-k:].tolist())
+            topk_recall = len(top_k_idx & true_set) / max(len(true_set), 1)
+            result[f'top{k}_recall'] = topk_recall
+
+    return result
+
+
+def _load_fsaverage5_mesh():
+    """
+    Load fsaverage5 cortical surface mesh data.
+
+    Returns combined left+right hemisphere coordinates, faces, vertex count,
+    and left hemisphere vertex count for hemisphere-aware region assignment.
+    Cached after first call to avoid repeated I/O.
+    """
+    import nibabel as nib
+    import nilearn.datasets
+    fsaverage5 = nilearn.datasets.fetch_surf_fsaverage(mesh='fsaverage5')
+
+    lh_mesh = nib.load(fsaverage5['pial_left'])
+    rh_mesh = nib.load(fsaverage5['pial_right'])
+
+    lh_coords = lh_mesh.darrays[0].data
+    rh_coords = rh_mesh.darrays[0].data
+    lh_faces = lh_mesh.darrays[1].data
+    rh_faces = rh_mesh.darrays[1].data
+
+    n_verts_lh = lh_coords.shape[0]
+    rh_faces_offset = rh_faces + n_verts_lh
+
+    all_coords = np.vstack([lh_coords, rh_coords])
+    all_faces = np.vstack([lh_faces, rh_faces_offset])
+
+    return all_coords, all_faces, n_verts_lh, lh_coords, rh_coords
+
+
+def _assign_vertices_to_regions(
+    all_coords, n_verts_lh, lh_coords, rh_coords
+):
+    """
+    Assign each cortical surface vertex to the nearest DK76 region.
+
+    Returns an array of shape (n_verts,) with the region index for each vertex.
+    """
+    region_centers = np.load(str(REGION_CENTERS_PATH)).astype(np.float32)
+    n_verts = all_coords.shape[0]
+
+    lh_region_idx = [i for i, name in enumerate(region_labels) if name.startswith('l')]
+    rh_region_idx = [i for i, name in enumerate(region_labels) if name.startswith('r')]
+
+    vertex_region = np.full(n_verts, -1, dtype=np.int32)
+
+    # Left hemisphere vertices → nearest left-hemisphere region
+    if lh_region_idx:
+        lh_centers = region_centers[lh_region_idx]
+        diffs = lh_coords[:, None, :] - lh_centers[None, :, :]
+        dists = np.sqrt(np.sum(diffs ** 2, axis=2))
+        nearest = np.argmin(dists, axis=1)
+        for local_idx, global_idx in enumerate(lh_region_idx):
+            mask = nearest == local_idx
+            vertex_region[:n_verts_lh][mask] = global_idx
+
+    # Right hemisphere vertices → nearest right-hemisphere region
+    if rh_region_idx:
+        rh_centers = region_centers[rh_region_idx]
+        diffs = rh_coords[:, None, :] - rh_centers[None, :, :]
+        dists = np.sqrt(np.sum(diffs ** 2, axis=2))
+        nearest = np.argmin(dists, axis=1)
+        for local_idx, global_idx in enumerate(rh_region_idx):
+            mask = nearest == local_idx
+            vertex_region[n_verts_lh:][mask] = global_idx
+
+    return vertex_region
+
+
+def generate_heatmap_html(
+    ei_scores: NDArray[np.float32],
+    title: str = "Epileptogenic Zone Detection",
+    top_k: int = 5,
+) -> str:
+    """
+    Generate a standalone Plotly 3D brain heatmap for epileptogenicity.
+
+    Uses a HARD THRESHOLD approach: only the top-K highest-scoring regions
+    are colored (red shading by intensity). All other regions are rendered
+    in a neutral brain gray, creating a clear clinical-style visualization
+    where highlighted regions stand out unambiguously.
+
+    Args:
+        ei_scores: Array of shape (76,) with values in [0, 1].
+        title: Title displayed above the 3D plot.
+        top_k: Number of top epileptogenic regions to highlight (default: 5).
+
+    Returns:
+        The complete HTML document string containing the Plotly 3D mesh.
+    """
+    import plotly.graph_objects as go
+
+    # ---- Load cortical mesh and build vertex→region mapping ----
+    all_coords, all_faces, n_verts_lh, lh_coords, rh_coords = _load_fsaverage5_mesh()
+    n_verts = all_coords.shape[0]
+    vertex_region = _assign_vertices_to_regions(
+        all_coords, n_verts_lh, lh_coords, rh_coords
+    )
+
+    # ---- Hard threshold: only top-K regions are colored ----
+    top_k_indices = set(np.argsort(ei_scores)[::-1][:top_k].tolist())
+    top_k_names = [region_labels[i] for i in sorted(top_k_indices)]
+
+    # Build vertex colors:
+    #   - Non-highlighted regions → 0.0 (will map to neutral gray)
+    #   - Highlighted regions → score rescaled within highlighted range for contrast
+    highlighted_scores = ei_scores[list(top_k_indices)]
+    hl_min = highlighted_scores.min()
+    hl_max = highlighted_scores.max()
+    hl_range = hl_max - hl_min if hl_max - hl_min > 1e-10 else 1.0
+
+    # Use a two-tier intensity scheme:
+    #   0.0 = neutral brain, 0.3-1.0 = epileptogenic gradient
+    vertex_colors = np.full(n_verts, 0.0, dtype=np.float32)
+    vertex_hover = [''] * n_verts
+
+    for v_idx in range(n_verts):
+        r_idx = vertex_region[v_idx]
+        if r_idx < 0:
+            vertex_hover[v_idx] = "unassigned"
+            continue
+
+        rname = region_labels[r_idx]
+        if r_idx in top_k_indices:
+            # Map score to 0.3–1.0 range for the epileptogenic gradient
+            normalized = (ei_scores[r_idx] - hl_min) / hl_range
+            vertex_colors[v_idx] = 0.3 + 0.7 * normalized
+            vertex_hover[v_idx] = f"⚠ {rname} (EI: {ei_scores[r_idx]:.3f})"
+        else:
+            vertex_colors[v_idx] = 0.0
+            vertex_hover[v_idx] = rname
+
+    # ---- Build Plotly 3D mesh figure ----
+    fig = go.Figure()
+
+    # Colorscale: neutral gray base, then sharp transition to red for flagged regions
+    fig.add_trace(go.Mesh3d(
+        x=all_coords[:, 0],
+        y=all_coords[:, 1],
+        z=all_coords[:, 2],
+        i=all_faces[:, 0],
+        j=all_faces[:, 1],
+        k=all_faces[:, 2],
+        intensity=vertex_colors,
+        colorscale=[
+            [0.00, '#d4d4d4'],   # Neutral light gray (healthy brain)
+            [0.25, '#d4d4d4'],   # Still gray — ensures non-flagged regions stay gray
+            [0.30, '#fee08b'],   # Sharp transition: yellow entry (borderline)
+            [0.50, '#fc8d59'],   # Orange (moderate risk)
+            [0.70, '#e34a33'],   # Red (high risk)
+            [0.85, '#b30000'],   # Dark red (very high risk)
+            [1.00, '#7f0000'],   # Deepest red (highest risk)
+        ],
+        cmin=0.0,
+        cmax=1.0,
+        opacity=1.0,
+        hovertext=vertex_hover,
+        hoverinfo='text',
+        colorbar=dict(
+            title=dict(text='Epileptogenicity', side='right', font=dict(color='#e0e0e0')),
+            tickvals=[0.0, 0.5, 0.75, 1.0],
+            ticktext=['Normal', 'Moderate', 'High', 'Very High'],
+            tickfont=dict(color='#e0e0e0'),
+            len=0.5,
+        ),
+        lighting=dict(ambient=0.6, diffuse=0.6, specular=0.15, roughness=0.5),
+        lightposition=dict(x=100, y=200, z=300),
+        name='Brain Surface',
+    ))
+
+    # Dark theme matching the ESI page — unified visual style
+    fig.update_layout(
+        title=dict(
+            text=title,
+            x=0.5,
+            font=dict(size=16, color='#e0e0e0'),
+        ),
+        scene=dict(
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            zaxis=dict(visible=False),
+            camera=dict(
+                eye=dict(x=1.8, y=0, z=0.5),
+                up=dict(x=0, y=0, z=1),
+            ),
+            aspectmode='data',
+            bgcolor='#1a1a2e',
+        ),
+        paper_bgcolor='#1a1a2e',
+        plot_bgcolor='#1a1a2e',
+        margin=dict(l=0, r=0, t=50, b=10),
+        font=dict(color='#e0e0e0'),
+        # No camera view buttons — users can rotate interactively via mouse
+        autosize=True,
+    )
+
+    return fig.to_html(
+        include_plotlyjs='cdn', full_html=True, auto_play=False,
+        config=dict(responsive=True),
+    )
+
+
+def compute_source_activity_metrics(
+    source_activity: NDArray[np.float32],
+) -> dict:
+    """
+    Compute per-region source activity metrics for EEG source imaging (ESI).
+
+    Unlike epileptogenicity scoring (inverted range), this computes straightforward
+    activity-level metrics: how electrically active is each brain region?
+
+    The model outputs source_activity of shape (76, 400).  We compute:
+      - Power: mean of squared values across time  (dominant metric)
+      - Variance: temporal variance (dynamic activity)
+      - RMS: root mean square amplitude
+      - Peak amplitude: max absolute value across time
+
+    Returns a dictionary with per-region scores normalized to [0, 1] for
+    visualization, plus the raw metric arrays.
+
+    Args:
+        source_activity: Predicted source, shape (76, 400) or (batch, 76, 400).
+
+    Returns:
+        Dictionary with normalized scores, raw metrics, and region-level details.
+    """
+    # Handle batch dim — average across epochs for a single summary
+    if source_activity.ndim == 3:
+        source_activity = source_activity.mean(axis=0)  # (76, 400)
+
+    # ---- Per-region activity metrics ----
+    # After de-meaning in training, source activity is zero-centered.
+    # Variance IS the meaningful signal (see Tech Specs §4.4.7).
+    region_variance = np.var(source_activity, axis=1)    # (76,)
+    region_rms = np.sqrt(np.mean(source_activity ** 2, axis=1))  # (76,)
+    region_peak = np.max(np.abs(source_activity), axis=1)  # (76,)
+    region_ptp = np.ptp(source_activity, axis=1)  # (76,) peak-to-peak range
+
+    # Use RMS as the primary activity metric for the heatmap
+    # RMS captures both DC residual and temporal dynamics
+    primary_metric = region_rms
+
+    # Normalize to [0, 1] for visualization
+    metric_min = primary_metric.min()
+    metric_max = primary_metric.max()
+    if metric_max - metric_min < 1e-10:
+        normalized_scores = np.full(N_REGIONS, 0.5)
+    else:
+        normalized_scores = (primary_metric - metric_min) / (metric_max - metric_min)
+
+    # Identify top active regions
+    top_indices = np.argsort(normalized_scores)[::-1]
+    top_regions = [region_labels[i] for i in top_indices[:10]]
+    # Include full anatomical names for top regions
+    top_regions_full = [
+        format_region_for_display(region_labels[i])
+        for i in top_indices[:10]
+    ]
+
+    # Build per-region scores dict
+    scores_dict = {
+        region_labels[i]: float(normalized_scores[i])
+        for i in range(N_REGIONS)
+    }
+
+    return {
+        'scores': scores_dict,
+        'scores_array': normalized_scores.tolist(),
+        'top_active_regions': top_regions,
+        'top_active_regions_full': top_regions_full,  # With full anatomical names
+        'max_activity_region': region_labels[int(np.argmax(normalized_scores))],
+        'max_activity_score': float(np.max(normalized_scores)),
+        'region_labels': region_labels,
+        # Raw metric arrays for the frontend details panel
+        'metrics_raw': {
+            'variance': region_variance.tolist(),
+            'rms': region_rms.tolist(),
+            'peak_amplitude': region_peak.tolist(),
+            'ptp_range': region_ptp.tolist(),
+        },
+        # Summary statistics
+        'summary': {
+            'mean_rms': float(region_rms.mean()),
+            'max_rms': float(region_rms.max()),
+            'mean_variance': float(region_variance.mean()),
+            'max_variance': float(region_variance.max()),
+            'spatial_cv': float(region_rms.std() / (region_rms.mean() + 1e-10)),
+        },
+    }
+
+
+def generate_source_activity_heatmap_html(
+    activity_scores: NDArray[np.float32],
+    title: str = "EEG Source Imaging — Estimated Brain Activity",
+    animated_frames: Optional[List[NDArray[np.float32]]] = None,
+    frame_timestamps: Optional[List[float]] = None,
+) -> str:
+    """
+    Generate a standalone Plotly 3D brain heatmap for source activity (ESI).
+
+    Uses an inferno-style colorscale (matching standard neuroimaging conventions):
+    dark purple (low) → orange → bright yellow (high). Clean professional look
+    with no debug annotations or technical overlays.
+
+    If animated_frames is provided, creates a Plotly animation with play/pause
+    and a frame slider for sliding-window playback of longer recordings.
+
+    Args:
+        activity_scores: Array of shape (76,) with values in [0, 1] — best/single window.
+        title: Title displayed above the 3D plot.
+        animated_frames: Optional list of (76,) score arrays, one per time window.
+        frame_timestamps: Optional list of timestamps (seconds) for each frame.
+
+    Returns:
+        The complete HTML document string containing the Plotly 3D mesh.
+    """
+    import plotly.graph_objects as go
+
+    # ---- Load cortical mesh and build vertex→region mapping ----
+    all_coords, all_faces, n_verts_lh, lh_coords, rh_coords = _load_fsaverage5_mesh()
+    n_verts = all_coords.shape[0]
+    vertex_region = _assign_vertices_to_regions(
+        all_coords, n_verts_lh, lh_coords, rh_coords
+    )
+
+    def _scores_to_vertex_colors(scores, with_hover=False):
+        """Map 76 region scores to per-vertex colors and optional hover text."""
+        v_colors = np.full(n_verts, 0.0, dtype=np.float32)
+        v_hover = [''] * n_verts if with_hover else None
+        for v_idx in range(n_verts):
+            r_idx = vertex_region[v_idx]
+            if r_idx >= 0:
+                v_colors[v_idx] = scores[r_idx]
+                if with_hover:
+                    v_hover[v_idx] = (
+                        f"{region_labels[r_idx]}: "
+                        f"Activity {scores[r_idx]:.3f}"
+                    )
+            else:
+                if with_hover:
+                    v_hover[v_idx] = "unassigned"
+        return v_colors, v_hover
+
+    # Build first (or only) frame's vertex data
+    vertex_colors, vertex_hover = _scores_to_vertex_colors(
+        activity_scores, with_hover=True
+    )
+
+    # ---- Build Plotly 3D mesh figure ----
+    fig = go.Figure()
+
+    # Inferno-inspired colorscale (standard in neuroimaging)
+    inferno_colorscale = [
+        [0.00, '#000004'],   # Near-black (lowest activity)
+        [0.15, '#1b0c41'],   # Dark indigo
+        [0.30, '#4a0c6b'],   # Purple
+        [0.45, '#781c6d'],   # Red-purple
+        [0.55, '#a52c60'],   # Warm magenta
+        [0.65, '#cf4446'],   # Orange-red
+        [0.75, '#ed6925'],   # Orange
+        [0.85, '#fb9b06'],   # Yellow-orange
+        [0.95, '#f7d13d'],   # Yellow
+        [1.00, '#fcffa4'],   # Bright yellow-white (highest activity)
+    ]
+
+    fig.add_trace(go.Mesh3d(
+        x=all_coords[:, 0],
+        y=all_coords[:, 1],
+        z=all_coords[:, 2],
+        i=all_faces[:, 0],
+        j=all_faces[:, 1],
+        k=all_faces[:, 2],
+        intensity=vertex_colors,
+        colorscale=inferno_colorscale,
+        cmin=0.0,
+        cmax=1.0,
+        opacity=1.0,
+        hovertext=vertex_hover,
+        hoverinfo='text',
+        colorbar=dict(
+            title=dict(text='Source<br>Activity', side='right'),
+            tickvals=[0, 0.5, 1.0],
+            ticktext=['Low', 'Medium', 'High'],
+            len=0.5,
+        ),
+        lighting=dict(ambient=0.6, diffuse=0.6, specular=0.15, roughness=0.5),
+        lightposition=dict(x=100, y=200, z=300),
+        name='Brain Surface',
+    ))
+
+    # ---- Add animation frames if sliding-window data is provided ----
+    has_animation = (
+        animated_frames is not None
+        and frame_timestamps is not None
+        and len(animated_frames) > 1
+    )
+
+    if has_animation:
+        frames = []
+        slider_steps = []
+        for i, (frame_scores, ts) in enumerate(
+            zip(animated_frames, frame_timestamps)
+        ):
+            v_colors_frame, _ = _scores_to_vertex_colors(frame_scores)
+            frames.append(go.Frame(
+                data=[go.Mesh3d(intensity=v_colors_frame)],
+                name=str(i),
+                traces=[0],
+            ))
+            # Format timestamp as m:ss for cleaner display
+            minutes = int(ts) // 60
+            seconds = ts - (minutes * 60)
+            ts_label = f"{minutes}:{seconds:04.1f}" if minutes > 0 else f"0:{seconds:04.1f}"
+            slider_steps.append(dict(
+                args=[[str(i)], dict(
+                    frame=dict(duration=200, redraw=True),
+                    mode='immediate',
+                    transition=dict(duration=0),
+                )],
+                label=ts_label,
+                method='animate',
+            ))
+
+        fig.frames = frames
+
+        # Add play/pause buttons and slider — no camera view buttons
+        # (users rotate the brain directly with mouse drag)
+        fig.update_layout(
+            updatemenus=[
+                dict(
+                    type='buttons',
+                    showactive=False,
+                    x=0.05, y=0.02,
+                    xanchor='left', yanchor='bottom',
+                    pad=dict(r=10, t=65),
+                    font=dict(size=12),
+                    bgcolor='rgba(40,40,60,0.85)',
+                    bordercolor='rgba(120,120,150,0.5)',
+                    borderwidth=1,
+                    buttons=[
+                        dict(
+                            label='▶ Play',
+                            method='animate',
+                            args=[None, dict(
+                                frame=dict(duration=200, redraw=True),
+                                fromcurrent=True,
+                                transition=dict(duration=0),
+                            )],
+                        ),
+                        dict(
+                            label='⏸ Pause',
+                            method='animate',
+                            args=[[None], dict(
+                                frame=dict(duration=0, redraw=False),
+                                mode='immediate',
+                                transition=dict(duration=0),
+                            )],
+                        ),
+                    ],
+                ),
+            ],
+            sliders=[dict(
+                active=0,
+                currentvalue=dict(
+                    prefix='Time: ',
+                    visible=True,
+                    xanchor='center',
+                ),
+                pad=dict(b=10, t=40),
+                len=0.9,
+                x=0.05,
+                xanchor='left',
+                steps=slider_steps,
+                transition=dict(duration=0),
+            )],
+        )
+    else:
+        # Static view — no buttons needed (mouse interaction for rotation)
+        pass
+
+    fig.update_layout(
+        title=dict(
+            text=title,
+            x=0.5,
+            font=dict(size=16, color='#e0e0e0'),
+        ),
+        scene=dict(
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+            zaxis=dict(visible=False),
+            camera=dict(
+                eye=dict(x=1.8, y=0, z=0.5),
+                up=dict(x=0, y=0, z=1),
+            ),
+            aspectmode='data',
+            bgcolor='#1a1a2e',
+        ),
+        paper_bgcolor='#1a1a2e',
+        plot_bgcolor='#1a1a2e',
+        margin=dict(l=0, r=0, t=50, b=60),
+        font=dict(color='#e0e0e0'),
+        autosize=True,
+    )
+
+    return fig.to_html(
+        include_plotlyjs='cdn', full_html=True, auto_play=False,
+        config=dict(responsive=True),
+    )
+
+
+# ========================================================================
+# API Endpoints
+# ========================================================================
+
+@app.get("/api/health")
+async def health_check():
+    """Health check — verify model is loaded and ready."""
+    return {
+        "status": "ok",
+        "model_loaded": model is not None,
+        "device": str(device),
+        "checkpoint": str(CHECKPOINT_PATH),
+    }
+
+
+@app.post("/api/analyze")
+async def analyze_eeg(
+    file: Optional[UploadFile] = File(None),
+    sample_idx: Optional[int] = Form(None),
+    threshold_percentile: float = Form(87.5),
+    mode: str = Form("biomarkers"),
+):
+    """
+    Full analysis pipeline: EEG → source localization → visualization.
+
+    Accepts either:
+      - An uploaded EEG file (EDF/MAT/NPY format, 19 channels)
+      - A sample index from the synthetic test dataset
+
+    Mode controls the post-processing and visualization:
+      - 'source_localization': ESI visualization — 3D heatmap of source activity
+        magnitude. Shows which brain regions are most electrically active.
+      - 'biomarkers': Epileptogenic zone detection via inverted-range scoring.
+        Shows per-region epileptogenicity index (EI).
+
+    Returns JSON with mode-appropriate scores, metrics, and an HTML heatmap.
+    """
+    start_time = time.time()
+    job_id = f"physdeepsif_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+
+    try:
+        # ---- Load EEG data ----
+        eeg_data = None
+        mask = None
+        source_label = ""
+        edf_all_windows = None       # Sliding window data (EDF only)
+        edf_window_timestamps = None  # Timestamps for each window (EDF only)
+
+        if sample_idx is not None:
+            # Load from synthetic test dataset
+            logger.info(f"[{job_id}] Loading test sample idx={sample_idx}")
+            source_label = f"synthetic3/test sample {sample_idx}"
+
+            if not TEST_DATA_PATH.exists():
+                raise HTTPException(status_code=404, detail="Test dataset not found")
+
+            with h5py.File(str(TEST_DATA_PATH), 'r') as f:
+                n_test = f['eeg'].shape[0]
+                if sample_idx < 0 or sample_idx >= n_test:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Sample index {sample_idx} out of range [0, {n_test})"
+                    )
+                eeg_data = f['eeg'][sample_idx]  # (19, 400)
+                if 'epileptogenic_mask' in f:
+                    mask = f['epileptogenic_mask'][sample_idx]  # (76,)
+
+        elif file is not None:
+            # Parse uploaded EEG file
+            logger.info(f"[{job_id}] Processing uploaded file: {file.filename}")
+            source_label = file.filename
+
+            file_bytes = await file.read()
+            file_ext = Path(file.filename).suffix.lower()
+
+            if file_ext == '.edf':
+                # Parse EDF using MNE
+                import mne
+                import tempfile
+
+                with tempfile.NamedTemporaryFile(suffix='.edf', delete=False) as tmp:
+                    tmp.write(file_bytes)
+                    tmp_path = tmp.name
+
+                try:
+                    raw = mne.io.read_raw_edf(tmp_path, preload=True, verbose=False)
+
+                    # Match channels to our 19-channel montage
+                    available = [ch.upper() for ch in raw.ch_names]
+                    pick_names = []
+                    for ch in CHANNEL_NAMES:
+                        # Try exact match, then case-insensitive
+                        if ch in raw.ch_names:
+                            pick_names.append(ch)
+                        elif ch.upper() in available:
+                            idx = available.index(ch.upper())
+                            pick_names.append(raw.ch_names[idx])
+                        else:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Required channel '{ch}' not found in EDF file. "
+                                       f"Available: {raw.ch_names[:30]}"
+                            )
+
+                    raw.pick_channels(pick_names)
+
+                    # Resample to 200 Hz if necessary
+                    if raw.info['sfreq'] != SAMPLING_RATE:
+                        raw.resample(SAMPLING_RATE)
+
+                    # Extract full data for sliding window processing
+                    data = raw.get_data(units='uV')  # (n_ch, n_samples)
+                    if data.shape[1] < WINDOW_LENGTH:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"EDF file too short: {data.shape[1]} samples "
+                                   f"(need {WINDOW_LENGTH} = 2 seconds at 200 Hz)"
+                        )
+
+                    # Sliding window segmentation (50% overlap)
+                    # For short EDF files ≤ 1 window: single window
+                    # For longer files: multiple windows for animation
+                    step_samples = WINDOW_LENGTH // 2  # 200 samples = 1s step (50% overlap)
+                    n_total_samples = data.shape[1]
+                    edf_windows = []
+                    window_timestamps = []  # Center time of each window in seconds
+
+                    for start in range(0, n_total_samples - WINDOW_LENGTH + 1, step_samples):
+                        end = start + WINDOW_LENGTH
+                        window_data = data[:, start:end].astype(np.float32)
+                        edf_windows.append(window_data)
+                        # Timestamp = center of the window
+                        center_sec = (start + WINDOW_LENGTH / 2) / SAMPLING_RATE
+                        window_timestamps.append(center_sec)
+
+                    # Process all windows (no cap) for full temporal resolution
+                    logger.info(
+                        f"[{job_id}] EDF sliding window: {len(edf_windows)} windows "
+                        f"from {n_total_samples} samples ({n_total_samples / SAMPLING_RATE:.1f}s)"
+                    )
+
+                    # Use the first window as the primary EEG data
+                    eeg_data = edf_windows[0]
+                    # Store all windows for sliding window animation (ESI mode)
+                    edf_all_windows = edf_windows if len(edf_windows) > 1 else None
+                    edf_window_timestamps = window_timestamps if len(edf_windows) > 1 else None
+                finally:
+                    os.unlink(tmp_path)
+
+            elif file_ext == '.npy':
+                # Direct numpy array (19, 400)
+                import io
+                eeg_data = np.load(io.BytesIO(file_bytes)).astype(np.float32)
+                if eeg_data.shape != (N_CHANNELS, WINDOW_LENGTH):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Expected shape ({N_CHANNELS}, {WINDOW_LENGTH}), "
+                               f"got {eeg_data.shape}"
+                    )
+
+            elif file_ext == '.mat':
+                # MATLAB .mat file — look for EEG data array inside
+                import io
+                from scipy.io import loadmat
+
+                mat_data = loadmat(io.BytesIO(file_bytes))
+
+                # Try common variable names for EEG data
+                eeg_key = None
+                candidate_keys = ['EEG', 'eeg', 'data', 'Data', 'X', 'x',
+                                  'eeg_data', 'EEG_data', 'signal', 'signals']
+                for k in candidate_keys:
+                    if k in mat_data:
+                        eeg_key = k
+                        break
+                # Fall back to the first non-metadata key
+                if eeg_key is None:
+                    user_keys = [k for k in mat_data.keys()
+                                 if not k.startswith('__')]
+                    if user_keys:
+                        eeg_key = user_keys[0]
+                    else:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"No data found in MAT file. Keys: {list(mat_data.keys())}"
+                        )
+
+                raw_mat = np.array(mat_data[eeg_key], dtype=np.float32)
+                logger.info(f"[{job_id}] MAT key='{eeg_key}', raw shape={raw_mat.shape}")
+
+                # Accept (channels, time) or (time, channels) and auto-transpose
+                if raw_mat.ndim != 2:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Expected 2D array in MAT file, got shape {raw_mat.shape}"
+                    )
+
+                # If shape is (time, channels), transpose
+                if raw_mat.shape[0] > raw_mat.shape[1]:
+                    raw_mat = raw_mat.T
+
+                if raw_mat.shape[0] != N_CHANNELS:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Expected {N_CHANNELS} channels, got {raw_mat.shape[0]}. "
+                               f"MAT variable '{eeg_key}' has shape {raw_mat.shape}"
+                    )
+
+                # Take first 400 samples if longer
+                if raw_mat.shape[1] < WINDOW_LENGTH:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"MAT data too short: {raw_mat.shape[1]} samples "
+                               f"(need {WINDOW_LENGTH} = 2 seconds at 200 Hz)"
+                    )
+                eeg_data = raw_mat[:, :WINDOW_LENGTH]
+
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported file format: {file_ext}. Use .edf, .mat, or .npy"
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide either 'file' (EEG upload) or 'sample_idx' (test data)"
+            )
+
+        # ---- Run inference ----
+        logger.info(f"[{job_id}] Running PhysDeepSIF inference (mode={mode})...")
+        predicted_sources = run_inference(eeg_data)  # (76, 400)
+        logger.info(
+            f"[{job_id}] Inference complete: "
+            f"source shape {predicted_sources.shape}, "
+            f"range [{predicted_sources.min():.4f}, {predicted_sources.max():.4f}]"
+        )
+
+        # Save results to disk
+        job_dir = RESULTS_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        # Common source activity summary (included in both modes)
+        source_summary = {
+            "shape": list(predicted_sources.shape),
+            "min": float(predicted_sources.min()),
+            "max": float(predicted_sources.max()),
+            "mean": float(predicted_sources.mean()),
+            "std": float(predicted_sources.std()),
+        }
+
+        # ==============================================================
+        # MODE: source_localization — ESI activity heatmap
+        # ==============================================================
+        if mode == 'source_localization':
+            logger.info(f"[{job_id}] Computing source activity metrics...")
+            activity_result = compute_source_activity_metrics(predicted_sources)
+
+            # ---- Sliding window animation (EDF files with > 1 window) ----
+            animated_frames = None
+            frame_timestamps = None
+            n_windows_processed = 1
+
+            if edf_all_windows is not None and edf_window_timestamps is not None:
+                logger.info(
+                    f"[{job_id}] Processing {len(edf_all_windows)} sliding windows..."
+                )
+                animated_frames = []
+                frame_timestamps = edf_window_timestamps
+                n_windows_processed = len(edf_all_windows)
+
+                # Run inference on each window and compute normalized scores
+                for i, win_eeg in enumerate(edf_all_windows):
+                    win_sources = run_inference(win_eeg)  # (76, 400)
+                    win_metrics = compute_source_activity_metrics(win_sources)
+                    animated_frames.append(
+                        np.array(win_metrics['scores_array'], dtype=np.float32)
+                    )
+
+                logger.info(f"[{job_id}] Sliding window processing complete.")
+
+            logger.info(f"[{job_id}] Generating source activity 3D heatmap...")
+            heatmap_html = generate_source_activity_heatmap_html(
+                activity_scores=np.array(activity_result['scores_array']),
+                title="EEG Source Imaging — Estimated Brain Activity",
+                animated_frames=animated_frames,
+                frame_timestamps=frame_timestamps,
+            )
+
+            # Save HTML to disk
+            heatmap_path = job_dir / "source_activity_heatmap.html"
+            with open(heatmap_path, 'w') as f:
+                f.write(heatmap_html)
+
+            # Save metrics JSON
+            metrics_path = job_dir / "source_activity_metrics.json"
+            json_result = {
+                k: v for k, v in activity_result.items()
+                if k != 'scores_array_np'
+            }
+            with open(metrics_path, 'w') as f:
+                json.dump(json_result, f, indent=2)
+
+            processing_time = time.time() - start_time
+            logger.info(f"[{job_id}] Complete in {processing_time:.1f}s")
+
+            # Extract <body> content for frontend embedding
+            import re
+            body_match = re.search(
+                r'<body[^>]*>([\s\S]*?)</body>', heatmap_html, re.I
+            )
+            plot_content = body_match.group(1) if body_match else heatmap_html
+
+            return JSONResponse({
+                "jobId": job_id,
+                "status": "completed",
+                "mode": "source_localization",
+                "processingTime": round(processing_time, 2),
+                "source": source_label,
+                "plotHtml": plot_content,
+                "fullHtmlPath": f"/api/results/{job_id}/source_activity_heatmap.html",
+                "nWindowsProcessed": n_windows_processed,
+                "hasAnimation": animated_frames is not None,
+                # Per-region activity scores
+                "sourceLocalization": {
+                    "scores": activity_result['scores'],
+                    "scores_array": activity_result['scores_array'],
+                    "top_active_regions": activity_result['top_active_regions'],
+                    "top_active_regions_full": activity_result['top_active_regions_full'],
+                    "max_activity_region": activity_result['max_activity_region'],
+                    "max_activity_score": activity_result['max_activity_score'],
+                    "region_labels": region_labels,
+                    "summary": activity_result['summary'],
+                },
+                # Raw source activity summary
+                "sourceActivity": source_summary,
+            })
+
+        # ==============================================================
+        # MODE: biomarkers — Epileptogenicity index heatmap (default)
+        # ==============================================================
+        else:
+            logger.info(f"[{job_id}] Computing epileptogenicity index...")
+            ei_result = compute_epileptogenicity_index(
+                predicted_sources,
+                epileptogenic_mask=mask,
+                threshold_percentile=threshold_percentile,
+            )
+
+            logger.info(f"[{job_id}] Generating epileptogenicity 3D heatmap...")
+            heatmap_html = generate_heatmap_html(
+                ei_scores=np.array(ei_result['scores_array']),
+                title="Epileptogenic Zone Detection",
+                top_k=5,
+            )
+
+            # Save HTML to disk
+            heatmap_path = job_dir / "brain_heatmap.html"
+            with open(heatmap_path, 'w') as f:
+                f.write(heatmap_html)
+
+            # Save scores JSON
+            scores_path = job_dir / "epileptogenicity_scores.json"
+            json_result = {
+                k: v for k, v in ei_result.items()
+                if k != 'scores_array_np'
+            }
+            with open(scores_path, 'w') as f:
+                json.dump(json_result, f, indent=2)
+
+            processing_time = time.time() - start_time
+            logger.info(f"[{job_id}] Complete in {processing_time:.1f}s")
+
+            # Extract <body> content for frontend embedding
+            import re
+            body_match = re.search(
+                r'<body[^>]*>([\s\S]*?)</body>', heatmap_html, re.I
+            )
+            plot_content = body_match.group(1) if body_match else heatmap_html
+
+            return JSONResponse({
+                "jobId": job_id,
+                "status": "completed",
+                "mode": "biomarkers",
+                "processingTime": round(processing_time, 2),
+                "source": source_label,
+                "plotHtml": plot_content,
+                "fullHtmlPath": f"/api/results/{job_id}/brain_heatmap.html",
+                # Epileptogenicity scores
+                "epileptogenicity": {
+                    "scores": ei_result['scores'],
+                    "scores_array": ei_result['scores_array'],
+                    "epileptogenic_regions": ei_result['epileptogenic_regions'],
+                    "epileptogenic_regions_full": ei_result['epileptogenic_regions_full'],
+                    "threshold": ei_result['threshold'],
+                    "threshold_percentile": ei_result['threshold_percentile'],
+                    "max_score_region": ei_result['max_score_region'],
+                    "max_score": ei_result['max_score'],
+                    "region_labels": region_labels,
+                },
+                # Ground truth metrics (only for synthetic test data)
+                "groundTruth": {
+                    "available": mask is not None,
+                    "regions": ei_result.get('ground_truth_regions', []),
+                    "n_epileptogenic": ei_result.get('n_true_epileptogenic', 0),
+                    "recall": ei_result.get('recall', None),
+                    "precision": ei_result.get('precision', None),
+                    "top5_recall": ei_result.get('top5_recall', None),
+                    "top10_recall": ei_result.get('top10_recall', None),
+                } if mask is not None else None,
+                # Source activity summary
+                "sourceActivity": source_summary,
+            })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[{job_id}] Error: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/biomarkers")
+async def biomarker_detection(
+    sample_idx: int = Form(...),
+    threshold_percentile: float = Form(87.5),
+):
+    """
+    Quick biomarker detection on a synthetic test sample.
+
+    This is a convenience endpoint that loads a single test sample by index
+    and runs the full biomarker detection pipeline.  Identical to /api/analyze
+    with sample_idx but optimized for the biomarker-specific UI.
+    """
+    # Delegate to the main analyze endpoint logic
+    return await analyze_eeg(
+        file=None,
+        sample_idx=sample_idx,
+        threshold_percentile=threshold_percentile,
+    )
+
+
+@app.get("/api/test-samples")
+async def list_test_samples(
+    mode: str = "epileptogenic",
+    limit: int = 20,
+):
+    """
+    List available test sample indices for the demo UI.
+
+    Args:
+        mode: 'epileptogenic' | 'healthy' | 'all'
+        limit: Maximum number of indices to return.
+
+    Returns:
+        List of sample indices matching the requested mode.
+    """
+    if not TEST_DATA_PATH.exists():
+        raise HTTPException(status_code=404, detail="Test dataset not found")
+
+    indices = []
+    with h5py.File(str(TEST_DATA_PATH), 'r') as f:
+        n_test = f['eeg'].shape[0]
+        has_mask = 'epileptogenic_mask' in f
+
+        if mode == 'all' or not has_mask:
+            indices = list(range(min(limit, n_test)))
+        else:
+            batch_size = 1000
+            for start in range(0, n_test, batch_size):
+                end = min(start + batch_size, n_test)
+                masks = f['epileptogenic_mask'][start:end]
+                for local_idx in range(masks.shape[0]):
+                    is_epi = masks[local_idx].any()
+                    if (mode == 'epileptogenic' and is_epi) or \
+                       (mode == 'healthy' and not is_epi):
+                        indices.append(start + local_idx)
+                    if len(indices) >= limit:
+                        break
+                if len(indices) >= limit:
+                    break
+
+    return {
+        "mode": mode,
+        "count": len(indices),
+        "total_test_samples": n_test if TEST_DATA_PATH.exists() else 0,
+        "indices": indices,
+    }
+
+
+@app.get("/api/results/{path:path}")
+async def serve_result_file(path: str):
+    """Serve a result file (HTML, JSON) from the results directory."""
+    file_path = RESULTS_DIR / path
+    # Security: ensure path doesn't escape results dir
+    if not file_path.resolve().is_relative_to(RESULTS_DIR.resolve()):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    suffix = file_path.suffix.lower()
+    content_types = {
+        '.html': 'text/html',
+        '.json': 'application/json',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+    }
+    return FileResponse(
+        str(file_path),
+        media_type=content_types.get(suffix, 'application/octet-stream'),
+    )
+
+
+# ========================================================================
+# Entry point
+# ========================================================================
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "server:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=False,
+        log_level="info",
+    )
