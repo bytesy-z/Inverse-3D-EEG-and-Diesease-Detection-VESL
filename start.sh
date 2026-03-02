@@ -15,7 +15,7 @@
 #   ./start.sh --kill       # Kill any running servers
 #
 # Requirements:
-#   - conda env 'deepsif' at /home/tukl/anaconda3/envs/deepsif
+#   - conda env 'physdeepsif' (auto-detected)
 #   - nvm + Node.js 20+ at ~/.nvm
 #   - Frontend deps installed in frontend/node_modules
 #   - Trained model checkpoint at outputs/models/checkpoint_best.pt
@@ -25,7 +25,7 @@ set -euo pipefail
 
 # ---- Configuration ----
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PYTHON="/home/tukl/anaconda3/envs/deepsif/bin/python"
+CONDA_ENV="physdeepsif"
 BACKEND_PORT=8000
 FRONTEND_PORT=3000
 BACKEND_DIR="$PROJECT_ROOT/backend"
@@ -51,6 +51,11 @@ log_success() { echo -e "${GREEN}[  OK]${NC} $*"; }
 log_warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error()   { echo -e "${RED}[FAIL]${NC} $*"; }
 log_header()  { echo -e "\n${BOLD}${CYAN}=== $* ===${NC}\n"; }
+
+# Run a Python command in the conda environment
+python_run() {
+    conda run -n "$CONDA_ENV" python "$@"
+}
 
 # Gracefully shut down both servers on SIGINT / SIGTERM / EXIT
 cleanup() {
@@ -80,32 +85,43 @@ trap cleanup EXIT INT TERM
 check_python() {
     log_info "Checking Python environment..."
 
-    if [[ ! -x "$PYTHON" ]]; then
-        log_error "Python not found at $PYTHON"
-        log_error "Expected conda env 'deepsif' at /home/tukl/anaconda3/envs/deepsif"
+    # Check if conda is available
+    if ! command -v conda &>/dev/null; then
+        log_error "conda not found in PATH"
+        log_error "Please activate conda: eval \"$(conda shell.bash hook)\""
         return 1
     fi
+
+    # Check if the conda environment exists
+    if ! conda env list | grep -q "^${CONDA_ENV} "; then
+        log_error "Conda environment '$CONDA_ENV' not found"
+        log_error "Available environments:"
+        conda env list | grep -v "^#" | tail -5
+        return 1
+    fi
+
+    # Test Python in the environment
     local py_version
-    py_version=$("$PYTHON" --version 2>&1)
-    log_success "Python: $py_version"
+    py_version=$(python_run --version 2>&1)
+    log_success "Python: $py_version (env: $CONDA_ENV)"
 
     # Check critical Python packages
     local missing=()
-    for pkg in torch fastapi uvicorn h5py numpy scipy; do
-        if ! "$PYTHON" -c "import $pkg" 2>/dev/null; then
+    for pkg in torch fastapi uvicorn h5py numpy scipy mne; do
+        if ! python_run -c "import $pkg" 2>/dev/null; then
             missing+=("$pkg")
         fi
     done
     if [[ ${#missing[@]} -gt 0 ]]; then
         log_error "Missing Python packages: ${missing[*]}"
-        log_info "Install with: $PYTHON -m pip install ${missing[*]}"
+        log_info "Install with: conda run -n $CONDA_ENV pip install ${missing[*]}"
         return 1
     fi
-    log_success "Python packages: torch, fastapi, uvicorn, h5py, numpy, scipy"
+    log_success "Python packages: torch, fastapi, uvicorn, h5py, numpy, scipy, mne"
 
     # Check GPU
     local gpu_status
-    gpu_status=$("$PYTHON" -c "import torch; print('CUDA' if torch.cuda.is_available() else 'CPU')" 2>/dev/null)
+    gpu_status=$(python_run -c "import torch; print('CUDA' if torch.cuda.is_available() else 'CPU')" 2>/dev/null)
     if [[ "$gpu_status" == "CUDA" ]]; then
         log_success "GPU: CUDA available"
     else
@@ -116,16 +132,22 @@ check_python() {
 check_model() {
     log_info "Checking model files..."
 
+    # Critical files for inference
     local checkpoint="$PROJECT_ROOT/outputs/models/checkpoint_best.pt"
     local norm_stats="$PROJECT_ROOT/outputs/models/normalization_stats.json"
     local leadfield="$PROJECT_ROOT/data/leadfield_19x76.npy"
     local connectivity="$PROJECT_ROOT/data/connectivity_76.npy"
     local labels="$PROJECT_ROOT/data/region_labels_76.json"
     local centers="$PROJECT_ROOT/data/region_centers_76.npy"
+
+    # Optional file (only needed for training/validation)
     local test_data="$PROJECT_ROOT/data/synthetic3/test_dataset.h5"
 
+    local critical_files=("$checkpoint" "$norm_stats" "$leadfield" "$connectivity" "$labels" "$centers")
     local all_ok=true
-    for f in "$checkpoint" "$norm_stats" "$leadfield" "$connectivity" "$labels" "$centers" "$test_data"; do
+
+    # Check critical files
+    for f in "${critical_files[@]}"; do
         if [[ -f "$f" ]]; then
             log_success "Found: $(basename "$f")"
         else
@@ -133,6 +155,14 @@ check_model() {
             all_ok=false
         fi
     done
+
+    # Check optional test data (warning only)
+    if [[ ! -f "$test_data" ]]; then
+        log_warn "Optional test data not found: $test_data (only needed for training)"
+    else
+        log_success "Found: $(basename "$test_data")"
+    fi
+
     $all_ok || return 1
 }
 
@@ -310,7 +340,9 @@ start_backend() {
     log_header "Starting Backend (FastAPI on port $BACKEND_PORT)"
 
     cd "$BACKEND_DIR"
-    "$PYTHON" server.py &
+    # Use uvicorn directly instead of running server.py as a script
+    # This avoids module import issues and is more robust
+    conda run -n "$CONDA_ENV" uvicorn server:app --host 0.0.0.0 --port "$BACKEND_PORT" --log-level info &
     BACKEND_PID=$!
     cd "$PROJECT_ROOT"
 
@@ -329,11 +361,13 @@ start_backend() {
         # Check if process died
         if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
             log_error "Backend process died during startup"
+            log_error "Try running manually to debug: cd backend && conda run -n $CONDA_ENV uvicorn server:app --host 0.0.0.0 --port 8000"
             return 1
         fi
     done
 
     log_error "Backend did not become ready within ${max_attempts}s"
+    log_error "Try running manually to debug: cd backend && conda run -n $CONDA_ENV uvicorn server:app --host 0.0.0.0 --port 8000"
     return 1
 }
 

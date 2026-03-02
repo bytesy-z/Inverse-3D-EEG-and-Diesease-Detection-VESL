@@ -118,7 +118,7 @@ export function AppFooter() {
     <footer className="mt-auto border-t border-border/40 py-6">
       <div className="mx-auto max-w-6xl px-6 text-center text-xs text-muted-foreground">
         <p>&copy; {new Date().getFullYear()} VESL &mdash; Virtual Epileptogenic Source Localizer</p>
-        <p className="mt-1">Hira Sardar &middot; Muhammad Zikrullah Rehman &middot; Shahliza Ahmad</p>
+        <p className="mt-1">Hira Sardar &middot; Muhammad Zikrullah Rehman &middot; Shahliza Ahmed</p>
       </div>
     </footer>
   )
