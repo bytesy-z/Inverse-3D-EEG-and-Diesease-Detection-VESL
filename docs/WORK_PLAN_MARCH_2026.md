@@ -1,9 +1,10 @@
-# PhysDeepSIF — Work Plan: March 6 – April 4, 2026
+# PhysDeepSIF — Work Plan: March 17 – April 13, 2026
 
-**Generated:** March 6, 2026
+**Generated:** March 16, 2026  
+**Timeline Updated:** March 16, 2026 (shifted 11 days forward from original Mar 6 start)
 **Team:** Zik (Muhammad Zikrullah Rehman), Shahliza (Shahliza Ahmad), Hira (Hira Sardar)
-**Deadline:** April 4, 2026 (Friday, end of first week of April)
-**Calendar days:** 30 | **Working days (estimate):** ~22
+**Deadline:** April 13, 2026 (Sunday, end of 4-week sprint)
+**Calendar days:** 28 | **Working days (estimate):** ~20
 
 ---
 
@@ -201,19 +202,19 @@ W9 (docs update) ─────→ (independent, done anytime)
 
 | Week | Task | Deliverable |
 |------|------|-------------|
-| **Week 1** (Mar 6–12) | **W1**: Regenerate synthetic data using current code | `data/synthetic4/{train,val,test}.h5` |
-| | **W8**: Vectorize Laplacian loss (while data generates) | Updated `loss_functions.py` |
-| | **W1.5**: Implement forward loss normalization + optional variance loss | Updated `loss_functions.py` with normalized forward loss |
-| | **W2**: Create and start Optuna hyperparam search script | `scripts/05_hyperparam_search.py`, initial trials running |
-| **Week 2** (Mar 13–19) | **W2**: Complete Optuna search (50–100 trials) | Best hyperparams in `outputs/optuna_best.json` |
-| | **W3**: Full retraining with best hyperparams | New `outputs/models/checkpoint_best.pt` with improved metrics |
-| | Validate model meets targets (DLE<20, AUC>0.85, corr>0.7) | Validation results log |
-| | **DC offset verification**: confirm model outputs real dynamics (σ≈0.2, temporal var>0.01) | DC verification report |
-| **Week 3** (Mar 20–26) | **W6**: CMA-ES objective function + optimizer | `src/phase4_inversion/{objective_function,cmaes_optimizer,epileptogenicity_index}.py` |
-| | Integrate CMA-ES biomarker into backend API | Updated `backend/server.py` with CMA-ES endpoint |
-| **Week 4** (Mar 27–Apr 4) | **W10**: Integration testing of full pipeline | End-to-end test results |
-| | **W9**: Update technical specs and copilot instructions | Updated docs |
-| | Bug fixes, merge conflict resolution | Clean merge to main |
+| **Week 1** | Mar 17–23 | **W1**: Regenerate synthetic data using current code | `data/synthetic4/{train,val,test}.h5` |
+| | | **W8**: Vectorize Laplacian loss (while data generates) | Updated `loss_functions.py` |
+| | | **W1.5**: Implement forward loss normalization + optional variance loss | Updated `loss_functions.py` with normalized forward loss |
+| | | **W2**: Create and start Optuna hyperparam search script | `scripts/05_hyperparam_search.py`, initial trials running |
+| **Week 2** | Mar 24–30 | **W2**: Complete Optuna search (50–100 trials) | Best hyperparams in `outputs/optuna_best.json` |
+| | | **W3**: Full retraining with best hyperparams | New `outputs/models/checkpoint_best.pt` with improved metrics |
+| | | Validate model meets targets (DLE<20, AUC>0.85, corr>0.7) | Validation results log |
+| | | **DC offset verification**: confirm model outputs real dynamics (σ≈0.2, temporal var>0.01) | DC verification report |
+| **Week 3** | Mar 31–Apr 6 | **W6**: CMA-ES objective function + optimizer | `src/phase4_inversion/{objective_function,cmaes_optimizer,epileptogenicity_index}.py` |
+| | | Integrate CMA-ES biomarker into backend API | Updated `backend/server.py` with CMA-ES endpoint |
+| **Week 4** | Apr 7–13 | **W10**: Integration testing of full pipeline | End-to-end test results |
+| | | **W9**: Update technical specs and copilot instructions | Updated docs |
+| | | Bug fixes, merge conflict resolution | Clean merge to main |
 
 **Files Zik owns exclusively:**
 - `scripts/02_generate_synthetic_data.py`
@@ -234,18 +235,18 @@ W9 (docs update) ─────→ (independent, done anytime)
 
 | Week | Task | Deliverable |
 |------|------|-------------|
-| **Week 1** (Mar 6–12) | **W4a**: Design EEG waveform component | Figma/mockup + component spec |
-| | **W4b**: Create `EEGWaveformPlot` React component | `frontend/components/eeg-waveform-plot.tsx` |
-| | Plotly line traces with 19-channel montage display, channel offsets, amplitude scale | Working standalone component with mock data |
-| **Week 2** (Mar 13–19) | **W4c**: Backend — add EEG data to API response | Modified response schema in `backend/server.py` (coordinate with Zik) |
-| | **W4d**: Side-by-side layout in analysis page | Updated `frontend/app/analysis/page.tsx` |
-| | Frame synchronization: brain animation frame ↔ EEG window highlight | Synced interaction working |
-| **Week 3** (Mar 20–26) | **W4e**: Polish EEG display | Axis labels, time stamps, channel names, clinical styling |
-| | Responsive layout (fullscreen EEG, fullscreen brain, side-by-side) | All viewport sizes working |
-| | Add support for both source localization and biomarker views | Both tabs show relevant EEG |
-| **Week 4** (Mar 27–Apr 4) | **W10**: UI integration testing with retrained model | All routes working end-to-end |
-| | **W9**: Update §9 of tech specs with EEG waveform feature | Documentation |
-| | Visual polish, accessibility check, loading states | Production-ready UI |
+| **Week 1** | Mar 17–23 | **W4a**: Design EEG waveform component | Figma/mockup + component spec |
+| | | **W4b**: Create `EEGWaveformPlot` React component | `frontend/components/eeg-waveform-plot.tsx` |
+| | | Plotly line traces with 19-channel montage display, channel offsets, amplitude scale | Working standalone component with mock data |
+| **Week 2** | Mar 24–30 | **W4c**: Backend — add EEG data to API response | Modified response schema in `backend/server.py` (coordinate with Zik) |
+| | | **W4d**: Side-by-side layout in analysis page | Updated `frontend/app/analysis/page.tsx` |
+| | | Frame synchronization: brain animation frame ↔ EEG window highlight | Synced interaction working |
+| **Week 3** | Mar 31–Apr 6 | **W4e**: Polish EEG display | Axis labels, time stamps, channel names, clinical styling |
+| | | Responsive layout (fullscreen EEG, fullscreen brain, side-by-side) | All viewport sizes working |
+| | | Add support for both source localization and biomarker views | Both tabs show relevant EEG |
+| **Week 4** | Apr 7–13 | **W10**: UI integration testing with retrained model | All routes working end-to-end |
+| | | **W9**: Update §9 of tech specs with EEG waveform feature | Documentation |
+| | | Visual polish, accessibility check, loading states | Production-ready UI |
 
 **Files Hira owns exclusively:**
 - `frontend/app/analysis/page.tsx`
@@ -267,19 +268,19 @@ W9 (docs update) ─────→ (independent, done anytime)
 
 | Week | Task | Deliverable |
 |------|------|-------------|
-| **Week 1** (Mar 6–12) | **W5a**: Create `src/phase3_inference/__init__.py` | Package structure |
-| | **W5b**: Implement `nmt_preprocessor.py` per §5.2 | 6-step preprocessing pipeline |
-| | Test with sample EDF (`data/samples/0001082.edf`) | Preprocessed output (n_epochs, 19, 400) |
-| **Week 2** (Mar 13–19) | **W5c**: Implement `inference_engine.py` | Batch inference wrapper |
-| | **W5d**: Implement `source_aggregator.py` | Patient-level source power profile |
-| | **W7a**: Create `src/phase5_validation/__init__.py` | Package structure |
-| | **W7b**: Implement `synthetic_metrics.py` | Full metric suite across 5 noise levels |
-| **Week 3** (Mar 20–26) | **W7c**: Implement `classical_baselines.py` | eLORETA, MNE, dSPM, LCMV on same test set |
-| | **W7d**: Implement `patient_validation.py` | Intra-patient consistency, cross-segment stability |
-| | Run baselines on test set (once Zik provides retrained model) | Comparison tables |
-| **Week 4** (Mar 27–Apr 4) | **W7e**: Normal vs abnormal NMT discrimination analysis | AUROC for max(EI) classifier |
-| | Generate thesis/paper validation figures and tables | Plots in `outputs/validation/` |
-| | **W10**: End-to-end integration testing | Full pipeline validation |
+| **Week 1** | Mar 17–23 | **W5a**: Create `src/phase3_inference/__init__.py` | Package structure |
+| | | **W5b**: Implement `nmt_preprocessor.py` per §5.2 | 6-step preprocessing pipeline |
+| | | Test with sample EDF (`data/samples/0001082.edf`) | Preprocessed output (n_epochs, 19, 400) |
+| **Week 2** | Mar 24–30 | **W5c**: Implement `inference_engine.py` | Batch inference wrapper |
+| | | **W5d**: Implement `source_aggregator.py` | Patient-level source power profile |
+| | | **W7a**: Create `src/phase5_validation/__init__.py` | Package structure |
+| | | **W7b**: Implement `synthetic_metrics.py` | Full metric suite across 5 noise levels |
+| **Week 3** | Mar 31–Apr 6 | **W7c**: Implement `classical_baselines.py` | eLORETA, MNE, dSPM, LCMV on same test set |
+| | | **W7d**: Implement `patient_validation.py` | Intra-patient consistency, cross-segment stability |
+| | | Run baselines on test set (once Zik provides retrained model) | Comparison tables |
+| **Week 4** | Apr 7–13 | **W7e**: Normal vs abnormal NMT discrimination analysis | AUROC for max(EI) classifier |
+| | | Generate thesis/paper validation figures and tables | Plots in `outputs/validation/` |
+| | | **W10**: End-to-end integration testing | Full pipeline validation |
 
 **Files Shahliza owns exclusively:**
 - `src/phase3_inference/` (entire new directory)
@@ -388,12 +389,12 @@ main (production)
 
 | Date | Action | Who |
 |------|--------|-----|
-| **Mar 6** | All branch from `main` at the same commit | Everyone |
-| **Mar 12** (end of Week 1) | **Sync checkpoint**: Zik pushes updated `config.yaml` and any shared type changes to `main`. Hira and Shahliza rebase. | Zik merges first |
-| **Mar 19** (end of Week 2) | **Major integration**: Zik merges retrained model + data path changes. Shahliza merges Phase 3. Hira merges EEG component. Order: Zik → Shahliza → Hira (resolve any conflicts at each step). | All three |
-| **Mar 26** (end of Week 3) | **Feature freeze**: Zik merges CMA-ES. Shahliza merges validation. Hira merges synced EEG display. | All three |
-| **Mar 30** | **Code freeze**: only bug fixes after this point | Everyone |
-| **Apr 4** | Final merge + tag v2.0 release | Zik |
+| **Mar 17** | All branch from `main` at the same commit | Everyone |
+| **Mar 23** (end of Week 1) | **Sync checkpoint**: Zik pushes updated `config.yaml` and any shared type changes to `main`. Hira and Shahliza rebase. | Zik merges first |
+| **Mar 30** (end of Week 2) | **Major integration**: Zik merges retrained model + data path changes. Shahliza merges Phase 3. Hira merges EEG component. Order: Zik → Shahliza → Hira (resolve any conflicts at each step). | All three |
+| **Apr 6** (end of Week 3) | **Feature freeze**: Zik merges CMA-ES. Shahliza merges validation. Hira merges synced EEG display. | All three |
+| **Apr 10** | **Code freeze**: only bug fixes after this point | Everyone |
+| **Apr 13** | Final merge + tag v2.0 release | Zik |
 
 ### Conflict Minimization Rules
 
@@ -418,37 +419,37 @@ main (production)
 ## 7. Timeline — Gantt View
 
 ```
-Week 1: Mar 6–12
+Week 1: Mar 17–23
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ZIK:      [████ W1: Regen data ████][█ W8+W1.5: Loss fixes █][ W2: Start Optuna ]
 HIRA:     [██ W4a: Design ██][████████ W4b: EEG component ████████]
 SHAHLIZA: [██████████████ W5a+b: NMT preprocessor █████████████████]
 
-Week 2: Mar 13–19
+Week 2: Mar 24–30
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ZIK:      [████████████ W2: Optuna search (50-100 trials) █████████████]
           [███ W3: Retrain + DC verify ███]
 HIRA:     [██ W4c: Backend EEG ██][████ W4d: Side-by-side layout ████]
 SHAHLIZA: [██ W5c+d: Inference engine ██][██ W7a+b: Synthetic metrics ██]
 
-          ─── Mar 19: MAJOR INTEGRATION MERGE ───
+          ─── Mar 30: MAJOR INTEGRATION MERGE ───
 
-Week 3: Mar 20–26
+Week 3: Mar 31–Apr 6
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ZIK:      [████████████ W6: CMA-ES inversion module █████████████████]
 HIRA:     [████ W4e: EEG polish ████][██ Responsive/a11y ██]
 SHAHLIZA: [██ W7c: Classical baselines ██][██ W7d: Patient validation ██]
 
-          ─── Mar 26: FEATURE FREEZE MERGE ───
+          ─── Apr 6: FEATURE FREEZE MERGE ───
 
-Week 4: Mar 27–Apr 4
+Week 4: Apr 7–13
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ZIK:      [██ W10: Integration ██][██ W9: Docs ██][█ Final merge █]
 HIRA:     [██ W10: UI testing ████][█ W9: §9 docs █][█ Polish █]
 SHAHLIZA: [██ W7e: NMT discrimination ██][██ Figures/tables ██][█ W10 █]
 
-          ─── Mar 30: CODE FREEZE (bug fixes only) ───
-          ─── Apr 4: FINAL RELEASE v2.0 ───
+          ─── Apr 10: CODE FREEZE (bug fixes only) ───
+          ─── Apr 13: FINAL RELEASE v2.0 ───
 ```
 
 ---
@@ -457,7 +458,7 @@ SHAHLIZA: [██ W7e: NMT discrimination ██][██ Figures/tables ██][
 
 | Risk | Probability | Impact | Mitigation |
 |------|-------------|--------|------------|
-| Data regeneration takes >24h or fails | Medium | CRITICAL — blocks W2, W3 | Start immediately (Mar 6); run overnight; have fallback to find synthetic3 backup on TUKL PC |
+| Data regeneration takes >24h or fails | Medium | CRITICAL — blocks W2, W3 | Start immediately (Mar 17); run overnight; have fallback to find synthetic3 backup on TUKL PC |
 | Optuna search doesn't find good hyperparams in 100 trials | Medium | High — model metrics stay poor | Start with manual β reduction first (set β=0.001); if AUC improves, narrow Optuna range around that; consider variance-matching loss as backup |
 | CMA-ES too slow (3h/patient too long for demo) | Medium | Medium — can use heuristic fallback | Keep current inverted-range scoring as fast fallback; CMA-ES can run async/batch |
 | Training data not available (synthetic3 deleted) | HIGH | CRITICAL | W1 regenerates fresh data — this is already the plan |
@@ -469,7 +470,7 @@ SHAHLIZA: [██ W7e: NMT discrimination ██][██ Figures/tables ██][
 
 ## 9. Success Criteria (Definition of Done)
 
-By April 4, the project must have:
+By April 13, the project must have:
 
 - [ ] **Model**: Retrained PhysDeepSIF with AUC ≥ 0.70, temporal correlation ≥ 0.30, DLE < 20mm
 - [ ] **Data**: Fresh synthetic4 dataset generated with current code
@@ -488,14 +489,14 @@ By April 4, the project must have:
 
 ---
 
-## 10. Immediate Next Actions (Today, March 6)
+## 10. Immediate Next Actions (Starting March 17)
 
 | Person | Action |
 |--------|--------|
 | **Zik** | 1. Create branches. 2. Start data regeneration (W1) — kick off `scripts/02_generate_synthetic_data.py` overnight. 3. While waiting, vectorize Laplacian loss (W8). 4. Implement forward loss normalization (W1.5) — the core DC offset fix for training. |
 | **Hira** | 1. Pull latest main, create branch. 2. Review current `/analysis` page and `BrainVisualization` component. 3. Start designing EEG waveform component (mock data first, no backend dependency). |
 | **Shahliza** | 1. Pull latest main, create branch. 2. Read §5.2 of tech specs thoroughly. 3. Start implementing `src/phase3_inference/nmt_preprocessor.py` — test with `data/samples/0001082.edf`. |
-| **All** | Review and agree on interface contracts (Section 5 of this document) before starting code. |
+| **All** | By Mar 17: Review and agree on interface contracts (Section 5 of this document) before branching and starting code. |
 
 ---
 
