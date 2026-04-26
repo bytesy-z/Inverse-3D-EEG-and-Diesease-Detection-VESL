@@ -1351,10 +1351,10 @@ def generate_dataset(
             for w in range(n_w):
                 current_batch_eeg.append(result["eeg"][w])
                 current_batch_source.append(result["source_activity"][w])
-                current_batch_mask.append(result["epileptogenic_mask"])
-                current_batch_x0.append(result["x0_vector"])
+                current_batch_mask.append(result["epileptogenic_mask"][w])
+                current_batch_x0.append(result["x0_vector"][w])
                 current_batch_snr.append(result["snr_db"][w])
-                current_batch_coupling.append(result["global_coupling"])
+                current_batch_coupling.append(result["global_coupling"][w])
 
                 # Write batch to HDF5 when we reach batch_size
                 if len(current_batch_eeg) >= batch_size:

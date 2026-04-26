@@ -605,10 +605,32 @@ def validate_patient(
               timeout=timeout_seconds
           )
           return result
-      except asyncio.TimeoutError:
-          # Fall back to heuristic EI
-          return compute_heuristic_ei(patient_data)
+       except asyncio.TimeoutError:
+           # Fall back to heuristic EI
+           return compute_heuristic_ei(patient_data)
   ```
+
+- [ ] Add XAI evidence attribution MVP to biomarkers mode:
+  ```python
+  # New module
+  # src/xai/eeg_occlusion.py
+
+  def explain_biomarker_window(eeg_window, target_region_idx, run_pipeline):
+      """
+      Occlusion-based XAI for biomarkers.
+
+      For each channel/time segment, mask the EEG segment, rerun
+      PhysDeepSIF + biomarker scoring, and measure score drop for the
+      target epileptogenic region.
+      """
+  ```
+
+  Scope for MVP:
+  - Explain top-1 epileptogenic region only
+  - Run on top-1 to top-3 EDF windows only to keep latency acceptable
+  - Return `channel_importance`, `time_importance`, and `top_segments`
+  - Frontend overlays highlighted influential spans on the EEG waveform
+  - Validate plausibility against `data/samples/1082.csv` annotations (`FP2`, `F4`, `F8`)
 
 #### Day 5 — Thu May 1: End-to-End Testing
 
@@ -621,6 +643,7 @@ def validate_patient(
     -F "mode=biomarkers"
   ```
 - [ ] Run Shahliza's full validation suite
+- [ ] Test biomarker XAI on `data/samples/0001082.edf` and check whether top attributed channels overlap `Fp2`, `F4`, `F8`
 - [ ] Fix integration bugs (there will be some)
 
 #### Day 6-7 — Fri-Sat May 2-3: Polish + Submit
@@ -803,6 +826,17 @@ print('Duration:', raw.times[-1], 's')
 ```
 Already verified: 21 channels, 200 Hz, ~1806s (30 min).
 
+### Issue 11: XAI adds extra inference passes
+
+**Risk:** Occlusion-based attribution is computationally more expensive than a single forward pass because each explanation requires multiple masked re-runs of the biomarker pipeline.
+
+**Mitigation:**
+- Run XAI only in biomarkers mode
+- Explain top-1 region by default
+- Restrict to top-1 to top-3 EEG windows for EDF uploads
+- Use coarse occlusion first: 200 ms width, 100 ms stride
+- If latency is still high, expose XAI as an optional toggle in the frontend instead of always-on
+
 ---
 
 ## 5. Expected Results (Minimum Viable Thesis)
@@ -823,6 +857,7 @@ By May 3, we should have:
 - [ ] Patient validation showing normal vs. abnormal discrimination
 - [ ] CMA-ES convergence plots and EI heatmaps
 - [ ] Training loss curves comparing old vs. new loss function
+- [ ] Biomarker XAI showing which EEG channels/time segments most influenced a detected epileptogenic region
 
 ### Nice-to-Have (If Time Permits)
 - [ ] Optuna hyperparameter search (design only, not execution)
@@ -846,6 +881,7 @@ Figures to generate by end of sprint:
 8. **Brain heatmap screenshots** — Source localization (inferno) + biomarker (warm gradient)
 9. **EEG waveform + brain synchronization** — Side-by-side screenshot
 10. **Normal vs. abnormal EI comparison** — If 2+ NMT recordings available
+11. **XAI evidence overlay** — EEG waveform with highlighted influential segments and top channels for the selected biomarker region
 
 ---
 
@@ -892,4 +928,5 @@ By May 3, the project must have:
 - [ ] **Phase 4**: CMA-ES producing plausible EI on at least 1 patient
 - [ ] **Phase 5**: Validation metrics (DLE, AUC, temporal corr) computed on synthetic test set
 - [ ] **Integration**: Full pipeline testable via web UI (EDF upload → heatmap)
+- [ ] **Interpretability**: Biomarkers mode can show EEG evidence attribution for at least 1 analyzed recording
 - [ ] **Code**: All branches merged, all tests passing, `./start.sh --check` clean

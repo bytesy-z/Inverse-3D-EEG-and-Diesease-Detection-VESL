@@ -1158,6 +1158,62 @@ Output:
 - Interactive 3D HTML embedded in the web application via iframe
 - Top detected regions listed as labeled badges in the UI
 
+### 6.3.3 Explainable AI (XAI) for Biomarker Evidence
+
+To improve clinical interpretability, the biomarkers pipeline includes a lightweight post-hoc XAI module that identifies which parts of the EEG most influenced a detected epileptogenic region. The goal is not to explain the full TVB or neural dynamics mechanistically, but to expose the model evidence used by the biomarker score in a clinician-readable form.
+
+**Clinical question addressed**: "Which EEG channels and time intervals contributed most to this biomarker detection?"
+
+**Chosen method**: occlusion-based attribution on the input EEG.
+
+**Why this method**:
+1. It requires no retraining of PhysDeepSIF.
+2. It is model-agnostic and works with the existing post-hoc biomarker scoring function.
+3. It is easy to communicate clinically: if masking an EEG segment reduces the biomarker score, that segment supported the detection.
+4. It is more robust for this architecture than Grad-CAM-style methods, which are primarily designed for convolutional feature maps.
+
+**Target quantity to explain**:
+
+For a selected region of interest $r$ (typically the top-scoring epileptogenic region), define the scalar explanation target as:
+
+$$f_r(\mathbf{E}) = \text{EI}_r$$
+
+where $\mathbf{E} \in \mathbb{R}^{19 \times 400}$ is the EEG window and $\text{EI}_r$ is the final epileptogenicity score for region $r$ produced by the biomarkers pipeline.
+
+**Occlusion procedure**:
+
+Let $M_{c,\tau}$ denote a binary mask that suppresses channel $c$ over a short temporal segment centered at time index $\tau$. For each channel-time segment, we compute:
+
+$$A_{c,\tau}^{(r)} = f_r(\mathbf{E}) - f_r(\mathbf{E} \odot M_{c,\tau})$$
+
+where:
+- $A_{c,\tau}^{(r)} > 0$ means the masked segment was supporting the biomarker score for region $r$
+- $A_{c,\tau}^{(r)} \approx 0$ means the segment had little influence
+- $A_{c,\tau}^{(r)} < 0$ means the segment suppressed the score or introduced contradictory evidence
+
+**Default MVP settings**:
+- EEG window length for attribution: 2 s (same as model input)
+- Occlusion segment width: 40 samples (200 ms at 200 Hz)
+- Stride: 20 samples (100 ms)
+- Mask value: channel-local temporal mean or zeros after de-meaning
+- Explained regions: top 1 by default, optionally top 3
+- Explained EDF windows: top 1-3 highest-EI windows to control latency
+
+**Returned explanation outputs**:
+1. `channel_importance`: mean attribution per EEG channel, shape `(19,)`
+2. `time_importance`: attribution aggregated across channels, shape `(n_segments,)`
+3. `attribution_map`: full channel-time attribution matrix, shape `(19, n_segments)`
+4. `top_segments`: ranked list of the most influential channel/time intervals
+5. `target_region`: DK76 region code and full anatomical name being explained
+
+**Frontend presentation**:
+- EEG waveform view with highlighted influential time spans
+- Ranked channel list (for example Fp2, F4, F8)
+- Brain heatmap remains unchanged; XAI is shown as supporting evidence alongside the biomarker result
+
+**Interpretation boundary**:
+This module explains the model's decision evidence, not causal neurophysiology. In other words, it answers "what EEG evidence most influenced the prediction" rather than "where the seizure truly originated".
+
 ---
 
 # 7. Phase 5: Validation Framework
@@ -1224,6 +1280,16 @@ The NMT dataset provides binary normal/abnormal labels at the recording level. W
 | EEG PSD correlation | $\frac{1}{N_c}\sum_j \rho(\text{PSD}_j^{sim}, \text{PSD}_j^{real})$ | > 0.5 |
 | Relative EEG error | $\frac{\|EEG^{sim} - EEG^{real}\|_F}{\|EEG^{real}\|_F}$ | < 0.5 |
 | Convergence | Final $J$ value relative to initial | < 0.3 × initial |
+
+### 7.2.5 XAI Plausibility Validation
+
+For recordings with expert annotations or clearly abnormal channels, the EEG attribution map is evaluated qualitatively for plausibility:
+
+1. **Channel alignment**: influential channels should overlap known abnormal channels when such labels are available.
+2. **Temporal alignment**: highlighted time intervals should coincide with annotated epileptiform events where available.
+3. **Stability**: repeated runs on neighboring EDF windows should produce similar top channels and time spans.
+
+For the NMT sample `0001082.edf`, the expected abnormal channels are FP2/F4/F8 from the provided annotations CSV. A clinically plausible XAI result should elevate the corresponding standardized channels Fp2/F4/F8 among the highest-attribution electrodes.
 
 ---
 
@@ -1498,11 +1564,26 @@ Window timing uses centre-of-window convention: `startTime = centre − 1.0 s`, 
       "..."
     ]
   },
+  "xai": {
+    "method": "occlusion",
+    "target_region": "rAMYG",
+    "target_region_full": "rAMYG (Right Amygdala)",
+    "window_index": 0,
+    "occlusion_width_samples": 40,
+    "stride_samples": 20,
+    "channel_importance": { "Fp1": 0.04, "Fp2": 0.21, "F3": 0.05, "F4": 0.19 },
+    "time_importance": [0.01, 0.03, 0.15, 0.22, 0.08],
+    "top_segments": [
+      { "channel": "Fp2", "startTime": 12.4, "endTime": 12.6, "importance": 0.21 },
+      { "channel": "F4", "startTime": 12.5, "endTime": 12.7, "importance": 0.19 }
+    ]
+  },
   "processingTime": 1.87
 }
 ```
 
 `eegData` structure is identical to Source Localization mode (see above). For multi-window EDF uploads all sliding windows are included, enabling the same per-window waveform display in the Biomarker Detection view.
+The optional `xai` object is returned only when attribution is requested or enabled in the backend configuration.
 
 **Region Name Mapping**: The backend uses `src/region_names.py` which provides a 76-entry dictionary mapping DK76 region codes (e.g., `rAMYG`) to full anatomical names (e.g., `Right Amygdala`). Both short codes and full names are returned in every response via the `*_full` fields.
 
