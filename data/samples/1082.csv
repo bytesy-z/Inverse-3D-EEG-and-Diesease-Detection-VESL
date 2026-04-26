@@ -1,0 +1,125 @@
+Gender,Age,File Start,Start time,End time,Channel names,Comment
+Male,15 years,17:12:33,17:12:59:434,17:12:59:521,FP2,sharp wave
+,,,17:12:59:417,17:12:59:547,F4,sharp wave
+,,,17:13:00:417,17:13:00:660,FP2,spike wave
+,,,17:13:00:4,17:13:00:686,F4,spike wave
+,,,17:13:00:382,17:13:00:652,F8,spike wave
+,,,17:13:28,17:13:28:226,FP2,spike wave
+,,,17:13:28,17:13:28:226,F4,spike wave
+,,,17:13:28:026,17:13:28:243,F8,spike wave
+,,,17:14:03:634,17:14:03:965,FP2,sharp and slow wave
+,,,17:14:03:695,17:14:03:947,F4,sharp and slow wave
+,,,17:14:03:678,17:14:03:982,F8,sharp and slow wave
+,,,17:19:08:252,17:19:08:530,FP2,sharp and slow wave
+,,,17:19:08:252,17:19:08:486,F4,sharp and slow wave
+,,,17:19:08:208,17:19:08:513,F8,sharp and slow wave
+,,,17:19:35:173,17:19:35:469,FP2,sharp and slow wave
+,,,17:19:35:182,17:19:35:426,F4,sharp and slow wave
+,,,17:19:35:156,17:19:35:460,F8,sharp and slow wave
+,,,17:20:51:252,17:20:51:573,FP2,spike and wave
+,,,17:20:51:217,17:20:51:469,F4,spike and wave
+,,,17:20:58:417,17:20:58:773,FP2,sharp and slow wave
+,,,17:20:59:373,17:20:59:947,FP2,sharp and slow wave
+,,,17:21:44:339,17:21:44:704,FP2,sharp and slow wave
+,,,17:21:44:295,17:21:44:730,F4,sharp and slow wave
+,,,17:21:44:295,17:21:44:739,F8,sharp and slow wave
+,,,17:22:04:339,17:22:04:617,FP2,sharp and slow wave
+,,,17:22:11:573,17:22:11:826,FP2,spike and wave
+,,,17:22:11:6,17:22:11:834,F4,spike and wave
+,,,17:22:11:556,17:22:11:834,F8,spike and wave
+,,,17:22:11:6,17:22:11:834,FZ,spike and wave
+,,,17:22:15:773,17:22:16:086,FP2,spike and wave
+,,,17:22:15:791,17:22:16:078,F4,spike and wave
+,,,17:22:15:773,17:22:16:130,F8,spike and wave
+,,,17:22:23:565,17:22:23:808,FP2,spike and wave
+,,,17:22:23:530,17:22:23:834,F4,spike and wave
+,,,17:22:29:286,17:22:29:573,FP2,sharp and slow wave
+,,,17:22:29:286,17:22:29:608,F4,sharp and slow wave
+,,,17:22:48:173,17:22:48:739,FP2,spike and wave
+,,,17:22:48:226,17:22:48:808,F4,spike and wave
+,,,17:22:48:226,17:22:48:808,F8,spike and wave
+,,,17:22:49:339,17:22:49:913,FP2,sharp and slow wave
+,,,17:22:49:347,17:22:49:826,F4,sharp and slow wave
+,,,17:22:49:347,17:22:49:808,F8,sharp and slow wave
+,,,17:22:49:339,17:22:49:860,FZ,sharp and slow wave
+,,,17:23:03:478,17:23:03:826,FP2,sharp and slow wave
+,,,17:23:04:869,17:23:05:260,FP2,sharp and slow wave
+,,,17:23:04:852,17:23:05:260,F4,sharp and slow wave
+,,,17:23:09:730,17:23:10:156,FP2,sharp and slow wave
+,,,17:23:46:504,17:23:46:921,FP2,sharp and slow wave
+,,,17:23:46:556,17:23:46:895,F4,sharp and slow wave
+,,,17:23:57:695,17:23:57:913,FP2,spike and wave
+,,,17:24:10:991,17:24:11:460,FP2,sharp and slow wave
+,,,17:24:11:008,17:24:11:373,F4,sharp and slow wave
+,,,17:24:20:217,17:24:20:643,FP2,spike and wave
+,,,17:24:20:026,17:24:20:617,F8,spike and wave
+,,,17:24:37:426,17:24:37:730,FP2,sharp and slow wave
+,,,17:26:03:521,17:26:03:965,FP2,sharp and slow wave
+,,,17:26:15:504,17:26:15:965,FP2,sharp and slow wave
+,,,17:26:46:939,17:26:47:313,FP2,sharp and slow wave
+,,,17:26:57:226,17:26:57:469,FP2,spike and wave
+,,,17:26:57:243,17:26:57:530,F4,spike and wave
+,,,17:26:58:2,17:26:58:573,FP2,sharp and slow wave
+,,,17:26:58:182,17:26:58:547,F4,sharp and slow wave
+,,,17:27:25:678,17:27:25:939,FP2,sharp and slow wave
+,,,17:27:25:652,17:27:25:965,F4,sharp and slow wave
+,,,17:27:25:643,17:27:25:982,F8,sharp and slow wave
+,,,17:27:45:417,17:27:45:834,FP2,sharp and slow wave
+,,,17:27:45:4,17:27:45:721,F4,sharp and slow wave
+,,,17:27:45:956,17:27:46:269,FP2,sharp and slow wave
+,,,17:27:45:947,17:27:46:226,F4,sharp and slow wave
+,,,17:28:28:330,17:28:28:634,FP2,sharp and slow wave
+,,,17:30:12:591,17:30:12:904,FP2,sharp and slow wave
+,,,17:30:12:530,17:30:12:878,F4,sharp and slow wave
+,,,17:31:04,17:31:04:373,F4,sharp and slow wave
+,,,17:31:04,17:31:04:417,FP2,sharp and slow wave
+,,,17:31:04,17:31:04:417,F8,sharp and slow wave
+,,,17:31:36:765,17:31:37:130,FP2,spike and wave
+,,,17:31:36:782,17:31:37:078,F8,spike and wave
+,,,17:31:43:078,17:31:43:443,FP2,sharp and slow wave
+,,,17:31:43:078,17:31:43:469,F4,sharp and slow wave
+,,,17:32:25:086,17:32:25:4,F4,sharp and slow wave
+,,,17:33:33:730,17:33:33:852,FP2,sharp wave
+,,,17:33:33:739,17:33:33:834,F4,sharp wave
+,,,17:33:47:730,17:33:48:069,F4,sharp and slow wave
+,,,17:33:56:513,17:33:56:913,FP2,sharp wave
+,,,17:37:28:130,17:37:28:513,FP2,sharp and slow wave
+,,,17:37:28:173,17:37:28:460,F4,sharp and slow wave
+,,,17:37:28:121,17:37:28:426,F8,sharp and slow wave
+,,,17:37:54:773,17:37:55:078,FP2,spike and wave
+,,,17:37:54:826,17:37:55:113,F4,spike and wave
+,,,17:38:02:652,17:38:03:095,FP2,sharp and slow wave
+,,,17:38:02:695,17:38:02:991,F4,sharp and slow wave
+,,,17:38:02:643,17:38:03:026,F8,sharp and slow wave
+,,,17:38:25:356,17:38:25:765,FP2,sharp and slow wave
+,,,17:39:04:591,17:39:04:921,FP2,sharp and slow wave
+,,,17:39:04:573,17:39:04:878,F4,sharp and slow wave
+,,,17:39:04:565,17:39:04:878,FZ,sharp and slow wave
+,,,17:39:13:217,17:39:13:530,FP2,sharp and slow wave
+,,,17:39:16:504,17:39:16:895,FP2,sharp and slow wave
+,,,17:39:17:521,17:39:17:947,FP2,sharp and slow wave
+,,,17:39:17:521,17:39:17:895,F4,sharp and slow wave
+,,,17:39:23:026,17:39:23:313,FP2,sharp and slow wave
+,,,17:39:22:982,17:39:23:295,F4,sharp and slow wave
+,,,17:39:42:991,17:39:43:434,FP2,sharp and slow wave
+,,,17:39:43:034,17:39:43:417,F4,sharp and slow wave
+,,,17:39:50:721,17:39:51:260,FP1 FP2 F3 F4 C3 C4 P3 P4 O1 O2 F7 F8 T3 T4 T5 T6 FZ PZ CZ,sharp and slow wave
+,,,17:40:01:965,17:40:02:573,FP2,sharp and slow wave
+,,,17:40:02:165,17:40:02:573,F4,sharp and slow wave
+,,,17:40:02:165,17:40:02:617,F8,sharp and slow wave
+,,,17:40:02:2,17:40:02:660,FZ,sharp and slow wave
+,,,17:40:07:895,17:40:08:304,F4,sharp and slow wave
+,,,17:40:12:182,17:40:12:686,FP2,sharp and slow wave
+,,,17:40:12:173,17:40:12:573,F4,sharp and slow wave
+,,,17:40:41:243,17:40:41:608,FP2,sharp and slow wave
+,,,17:40:41:260,17:40:41:608,F4,sharp and slow wave
+,,,17:40:41:226,17:40:41:617,F8,sharp and slow wave
+,,,17:41:03:034,17:41:03:460,FP2,sharp and slow wave
+,,,17:41:03:034,17:41:03:547,F4,sharp and slow wave
+,,,17:41:03:034,17:41:03:504,F8,sharp and slow wave
+,,,17:41:24:817,17:41:25:339,FP2,sharp and slow wave
+,,,17:41:24:852,17:41:25:217,F4,sharp and slow wave
+,,,17:41:56:208,17:41:56:721,FP2,sharp and slow wave
+,,,17:42:12:573,17:42:13:478,FP2,sharp and slow wave
+,,,17:42:12:608,17:42:13:391,F4,sharp and slow wave
+,,,17:42:16:513,17:42:16:826,FP2,sharp and slow wave

@@ -81,9 +81,47 @@ check_python() {
     log_info "Checking Python environment..."
 
     if [[ ! -x "$PYTHON" ]]; then
-        log_error "Python not found at $PYTHON"
-        log_error "Expected conda env 'deepsif' at /home/tukl/anaconda3/envs/deepsif"
-        return 1
+        log_warn "Configured Python not found at $PYTHON"
+        log_info "Searching for a compatible Python/conda env on this machine..."
+        # Search common conda env locations for a python binary that can import required packages
+        candidates=(
+          /home/*/anaconda3/envs/*/bin/python
+          /home/*/miniconda3/envs/*/bin/python
+          /home/*/miniconda/*/envs/*/bin/python
+          /home/*/miniconda/envs/*/bin/python
+          /opt/conda/envs/*/bin/python
+          /usr/bin/python3
+          /usr/local/bin/python3
+          /home/zik/miniconda3/envs/*/bin/python
+        )
+        found=""
+        for ppat in "${candidates[@]}"; do
+            for cand in $ppat; do
+                if [[ -x "$cand" ]]; then
+                    # Quick import test
+                    if "$cand" - <<'PY' 2>/dev/null
+import sys
+try:
+    import torch, fastapi, uvicorn, h5py, numpy, scipy
+    print('OK')
+except Exception:
+    sys.exit(1)
+PY
+                    then
+                        found="$cand"
+                        break 2
+                    fi
+                fi
+            done
+        done
+        if [[ -n "$found" ]]; then
+            PYTHON="$found"
+            export PYTHON
+            log_success "Found compatible Python: $PYTHON"
+        else
+            log_error "No compatible Python/conda env found. Install required packages in a conda env and update start.sh PYTHON variable."
+            return 1
+        fi
     fi
     local py_version
     py_version=$("$PYTHON" --version 2>&1)
@@ -125,7 +163,7 @@ check_model() {
     local test_data="$PROJECT_ROOT/data/synthetic3/test_dataset.h5"
 
     local all_ok=true
-    for f in "$checkpoint" "$norm_stats" "$leadfield" "$connectivity" "$labels" "$centers" "$test_data"; do
+    for f in "$checkpoint" "$norm_stats" "$leadfield" "$connectivity" "$labels" "$centers"; do
         if [[ -f "$f" ]]; then
             log_success "Found: $(basename "$f")"
         else
@@ -133,6 +171,14 @@ check_model() {
             all_ok=false
         fi
     done
+
+    if [[ -f "$test_data" ]]; then
+        log_success "Found: $(basename "$test_data")"
+    else
+        log_warn "Missing optional test dataset: $test_data"
+        log_warn "sample_idx-based testing will be unavailable; file uploads still work"
+    fi
+
     $all_ok || return 1
 }
 

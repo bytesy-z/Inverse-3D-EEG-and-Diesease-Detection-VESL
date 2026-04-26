@@ -21,6 +21,7 @@ export async function POST(request: NextRequest) {
   try {
     const formData = await request.formData()
     const file = formData.get("file") as File | null
+    const includeEeg = formData.get("include_eeg") as string | null
 
     if (!file) {
       console.error("[EEG API] No file provided")
@@ -42,6 +43,7 @@ export async function POST(request: NextRequest) {
     const backendForm = new FormData()
     backendForm.append("file", file)
     backendForm.append("mode", "source_localization")
+    backendForm.append("include_eeg", includeEeg ?? "true")
 
     const backendUrl = `${PHYSDEEPSIF_BACKEND_URL}/api/analyze`
     console.log(`[EEG API] Backend URL: ${backendUrl}`)
@@ -85,6 +87,8 @@ export async function POST(request: NextRequest) {
       nWindowsProcessed: result.nWindowsProcessed,
       hasAnimation: result.hasAnimation,
       source: result.source,
+      // Pass through EEG data if backend included it
+      eegData: result.eegData ?? null,
     })
 
   } catch (error) {

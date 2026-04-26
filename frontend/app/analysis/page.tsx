@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback, useRef, useEffect } from "react"
+import { useState, useCallback, useEffect } from "react"
 import { RotateCcw, Brain, Activity } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { AppHeader, AppContainer, AppFooter } from "@/components/app-shell"
@@ -8,17 +8,32 @@ import { StepIndicator, type StepId } from "@/components/step-indicator"
 import { FileUploadSection } from "@/components/file-upload-section"
 import { ProcessingWindow } from "@/components/processing-window"
 import { BrainVisualization } from "@/components/brain-visualization"
+import { EegWaveformPlot } from "@/components/eeg-waveform-plot"
 import { ResultsMeta, DetectedRegions } from "@/components/results-summary"
 import { ErrorAlert } from "@/components/error-alert"
 import type { PhysDeepSIFResult } from "@/lib/job-store"
 
 /* ---- Result types for both modes ---- */
+interface EegWindowData {
+  channels: string[]
+  samplingRate: number
+  windowLength: number
+  windows: Array<{
+    startTime: number
+    endTime: number
+    data: number[][]
+  }>
+}
+
 interface ESIResult {
   fileName: string
   processingTime: number
   plotHtml: string
   nWindowsProcessed?: number
+  nWindowsTotal?: number
+  windowsTruncated?: boolean
   hasAnimation?: boolean
+  eegData?: EegWindowData | null
 }
 
 type ViewMode = "source" | "biomarkers"
@@ -45,6 +60,9 @@ export default function AnalysisPage() {
   // Playback speed state — passed to BrainVisualization for Plotly control
   const [playbackSpeed, setPlaybackSpeed] = useState<number>(1)
 
+  // EEG waveform window selection
+  const [selectedWindow, setSelectedWindow] = useState<number>(0)
+
   /* ---- File selected from upload ---- */
   const handleFileSelect = useCallback((file: File) => {
     setSelectedFile(file)
@@ -58,33 +76,42 @@ export default function AnalysisPage() {
     setError(null)
 
     try {
-      // Build form data for both requests
+      // Build form data for each request
       const makeForm = (mode: string) => {
         const fd = new FormData()
         fd.append("file", selectedFile)
+        if (mode === "source_localization") {
+          fd.append("include_eeg", "true")
+        }
         if (mode === "biomarkers") {
           fd.append("threshold_percentile", "87.5")
+          // Avoid duplicating huge EEG window payload in the second request.
+          // Biomarker view reuses the EEG data from source-localization result.
+          fd.append("include_eeg", "false")
         }
         return fd
       }
 
-      // Run both API calls in parallel for efficiency
-      const [esiRes, bioRes] = await Promise.all([
-        fetch("/api/analyze-eeg", { method: "POST", body: makeForm("source_localization") }),
-        fetch("/api/physdeepsif", { method: "POST", body: makeForm("biomarkers") }),
-      ])
+      // Run requests sequentially to avoid memory spikes on large EDF uploads.
+      const esiRes = await fetch("/api/analyze-eeg", {
+        method: "POST",
+        body: makeForm("source_localization"),
+      })
 
       // Check for errors on either response
       if (!esiRes.ok) {
         const errData = await esiRes.json().catch(() => ({ message: "ESI request failed" }))
         throw new Error(errData.message || `Source localization failed (${esiRes.status})`)
       }
+      const esiData = await esiRes.json()
+      const bioRes = await fetch("/api/physdeepsif", {
+        method: "POST",
+        body: makeForm("biomarkers"),
+      })
       if (!bioRes.ok) {
         const errData = await bioRes.json().catch(() => ({ message: "Biomarker request failed" }))
         throw new Error(errData.message || `Biomarker detection failed (${bioRes.status})`)
       }
-
-      const esiData = await esiRes.json()
       const bioData: PhysDeepSIFResult = await bioRes.json()
 
       setEsiResult({
@@ -92,10 +119,14 @@ export default function AnalysisPage() {
         processingTime: esiData.processingTime || 0,
         plotHtml: esiData.plotHtml,
         nWindowsProcessed: esiData.nWindowsProcessed,
+        nWindowsTotal: esiData.nWindowsTotal,
+        windowsTruncated: esiData.windowsTruncated,
         hasAnimation: esiData.hasAnimation,
+        eegData: esiData.eegData ?? null,
       })
       setBioResult(bioData)
       setViewMode("source") // Default to source localization view
+      setSelectedWindow(0)
       setStep("results")
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred during analysis")
@@ -111,7 +142,29 @@ export default function AnalysisPage() {
     setError(null)
     setSelectedFile(null)
     setPlaybackSpeed(1)
+    setSelectedWindow(0)
   }, [])
+
+  const handleBrainFrameChange = useCallback((frameIndex: number) => {
+    const total = esiResult?.eegData?.windows?.length ?? 0
+    if (total <= 0) return
+    const normalizedIndex = ((frameIndex % total) + total) % total
+    setSelectedWindow(normalizedIndex)
+  }, [esiResult?.eegData?.windows?.length])
+
+  // Keep selectedWindow valid when result data changes.
+  useEffect(() => {
+    const total = esiResult?.eegData?.windows?.length ?? 0
+    if (total <= 0) {
+      if (selectedWindow !== 0) {
+        setSelectedWindow(0)
+      }
+      return
+    }
+    if (selectedWindow >= total) {
+      setSelectedWindow(total - 1)
+    }
+  }, [esiResult?.eegData?.windows?.length, selectedWindow])
 
   /* ---- Derive detected regions from biomarker result ---- */
   const detectedRegions: string[] =
@@ -249,20 +302,30 @@ export default function AnalysisPage() {
                 </div>
               )}
 
-              {/* ---- Source Localization View ---- */}
+              {/* EEG window is synchronized with brain animation via shared selectedWindow state. */}
+              {/* ---- Source Localization View (layout adjusted) ---- */}
               {viewMode === "source" && esiResult && (
-                <div className="space-y-4">
-                  <BrainVisualization
-                    plotHtml={esiResult.plotHtml}
-                    label="3D Source Activity"
-                    className="h-[640px]"
-                    playbackSpeed={playbackSpeed}
-                  />
+                <div className="grid w-full grid-cols-1 gap-4 lg:grid-cols-2">
+                  {/* EEG Waveform */}
+                  {esiResult.eegData && (
+                    <EegWaveformPlot
+                      eegData={esiResult.eegData}
+                      selectedWindow={selectedWindow}
+                      onSelectedWindowChange={setSelectedWindow}
+                      className="w-full"
+                    />
+                  )}
 
-                  {esiResult.hasAnimation && esiResult.nWindowsProcessed && esiResult.nWindowsProcessed > 1 && (
-                    <p className="text-center text-xs text-muted-foreground">
-                      Use Play / Pause and the timeline slider to navigate {esiResult.nWindowsProcessed} time windows.
-                    </p>
+                  {/* 3D Brain Visualization (guarded by presence of plotHtml) */}
+                  {esiResult.plotHtml && (
+                    <BrainVisualization
+                      plotHtml={esiResult.plotHtml}
+                      label="3D Source Activity"
+                      className="h-[640px] w-full"
+                      playbackSpeed={playbackSpeed}
+                      currentFrame={selectedWindow}
+                      onFrameChange={handleBrainFrameChange}
+                    />
                   )}
                 </div>
               )}
@@ -270,10 +333,46 @@ export default function AnalysisPage() {
               {/* ---- Biomarker Detection View ---- */}
               {viewMode === "biomarkers" && bioResult && (
                 <div className="space-y-4">
+                  {/* Window selector for biomarker view */}
+                  {(esiResult?.eegData?.windows && esiResult.eegData.windows.length > 1) && (
+                    <div className="flex items-center gap-3 text-sm">
+                      <span className="text-muted-foreground">Window:</span>
+                      <div className="flex gap-1">
+                        {esiResult.eegData.windows.map((_, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => setSelectedWindow(idx)}
+                            className={`
+                              rounded-md px-3 py-1 text-xs font-medium transition-colors
+                              ${selectedWindow === idx
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-muted text-muted-foreground hover:text-foreground"
+                              }
+                            `}
+                          >
+                            {idx + 1}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* EEG Waveform */}
+                  {esiResult?.eegData && (
+                    <EegWaveformPlot
+                      eegData={esiResult.eegData}
+                      selectedWindow={selectedWindow}
+                      onSelectedWindowChange={setSelectedWindow}
+                      className="h-[500px]"
+                    />
+                  )}
+
                   <BrainVisualization
                     plotHtml={bioResult.plotHtml}
                     label="Epileptogenicity Map"
                     className="h-[640px]"
+                    currentFrame={selectedWindow}
+                    onFrameChange={handleBrainFrameChange}
                   />
 
                   <DetectedRegions

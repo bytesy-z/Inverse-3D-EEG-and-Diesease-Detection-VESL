@@ -29,6 +29,7 @@ export async function POST(request: NextRequest) {
     const file = formData.get("file") as File | null
     const sampleIdx = formData.get("sample_idx") as string | null
     const thresholdPct = formData.get("threshold_percentile") as string | null
+    const includeEeg = formData.get("include_eeg") as string | null
 
     if (file) {
       console.log(`[PHYSDEEPSIF API] Forwarding uploaded file: ${file.name} (${file.size} bytes)`)
@@ -45,6 +46,7 @@ export async function POST(request: NextRequest) {
     }
     // Biomarkers page uses epileptogenicity detection mode
     backendForm.append("mode", "biomarkers")
+    backendForm.append("include_eeg", includeEeg ?? "true")
 
     // Forward to Python FastAPI backend
     const backendUrl = `${PHYSDEEPSIF_BACKEND_URL}/api/analyze`

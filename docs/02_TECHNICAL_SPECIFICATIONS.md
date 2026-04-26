@@ -1447,37 +1447,62 @@ The frontend proxies all `/api/*` requests to the FastAPI backend via Next.js AP
 ```json
 {
   "status": "completed",
-  "heatmapHtml": "<html>...</html>",
-  "topRegions": ["rPFCM", "lCCA", "lCCS", "lIA", "lIP"],
-  "top_active_regions_full": [
-    "rPFCM (Right Prefrontal Cortex Medial)",
-    "lCCA (Left Cingulate Cortex Anterior)",
-    ...
-  ],
+  "plotHtml": "<script src=\"https://cdn.plot.ly/..."></script><div id=\"...\">...</div>",
+  "sourceLocalization": {
+    "top_active_regions": ["rPFCM", "lCCA", ...],
+    "top_active_regions_full": ["rPFCM (Right Prefrontal Cortex Medial)", ...],
+    "max_activity_region": "rPFCM",
+    "max_activity_score": 0.87
+  },
+  "eegData": {
+    "channels": ["Fp1", "Fp2", "F3", ...],
+    "samplingRate": 200,
+    "windowLength": 400,
+    "windows": [
+      { "startTime": 0.0, "endTime": 2.0, "data": [[...19 channels × 400 samples...]] },
+      { "startTime": 1.0, "endTime": 3.0, "data": [[...]] },
+      "..."
+    ]
+  },
   "processingTime": 2.34,
   "nWindowsProcessed": 50,
   "hasAnimation": true
 }
 ```
 
+`eegData` is `null` for single-window NPY/MAT inputs with only one window, and omitted entirely if EEG extraction fails.
+Each `windows[i].data` is a 2-D array of shape `[19][400]` (channels × samples), raw float32 values before normalization.
+Window timing uses centre-of-window convention: `startTime = centre − 1.0 s`, `endTime = centre + 1.0 s`.
+
 #### Biomarkers Mode
 
 ```json
 {
   "status": "completed",
-  "plotHtml": "<html>...</html>",
-  "epileptogenic_regions": ["rAMYG", "lAMYG", "lCCA", ...],
-  "epileptogenic_regions_full": [
-    "rAMYG (Right Amygdala)",
-    "lAMYG (Left Amygdala)",
-    "lCCA (Left Cingulate Cortex Anterior)",
-    ...
-  ],
-  "processingTime": 1.87,
-  "nWindowsProcessed": 50,
-  "hasAnimation": true
+  "plotHtml": "<script src=\"https://cdn.plot.ly/..."></script><div id=\"...\">...</div>",
+  "epileptogenicity": {
+    "epileptogenic_regions": ["rAMYG", "lAMYG", "lCCA", ...],
+    "epileptogenic_regions_full": ["rAMYG (Right Amygdala)", "lAMYG (Left Amygdala)", ...],
+    "scores": { "rAMYG": 0.91, "lAMYG": 0.84, ... },
+    "max_score_region": "rAMYG",
+    "max_score": 0.91,
+    "threshold": 0.72,
+    "threshold_percentile": 87.5
+  },
+  "eegData": {
+    "channels": ["Fp1", "Fp2", "F3", ...],
+    "samplingRate": 200,
+    "windowLength": 400,
+    "windows": [
+      { "startTime": 0.0, "endTime": 2.0, "data": [[...19 channels × 400 samples...]] },
+      "..."
+    ]
+  },
+  "processingTime": 1.87
 }
 ```
+
+`eegData` structure is identical to Source Localization mode (see above). For multi-window EDF uploads all sliding windows are included, enabling the same per-window waveform display in the Biomarker Detection view.
 
 **Region Name Mapping**: The backend uses `src/region_names.py` which provides a 76-entry dictionary mapping DK76 region codes (e.g., `rAMYG`) to full anatomical names (e.g., `Right Amygdala`). Both short codes and full names are returned in every response via the `*_full` fields.
 
@@ -1568,12 +1593,31 @@ Features: drag-and-drop with visual highlight, file type/extension validation, s
 | `label` | `string?` | Optional label above the visualization |
 | `className` | `string?` | Additional CSS classes |
 | `playbackSpeed` | `number` | Animation speed multiplier (default 1). Values: 0.5, 1, 2, 4. |
+| `onFrameChange` | `(frameIndex: number) => void` (optional) | Callback fired each time the Plotly animation advances to a new frame. `frameIndex` is the 0-based frame index parsed from the Plotly `plotly_animatingframe` event. Used by the analysis page to synchronize the EEG waveform window with the brain animation. |
 
 Features: Skeleton loader while Plotly scripts load, fullscreen toggle button (Maximize2/Minimize2), `resizePlotly` helper triggers `Plotly.Plots.resize()` on window resize, proper `.plotly-container` CSS class for consistent sizing, improved fullscreen with dynamic container height (`calc(100vh - 40px)`) and resize after toggle.
 
 **Playback speed control**: When `playbackSpeed` changes, a `useEffect` calls `Plotly.relayout()` to update `updatemenus[0].buttons[0].args[1].frame.duration` to `Math.round(200 / playbackSpeed)`. This dynamically adjusts animation frame duration without rebuilding the figure.
 
+**Frame synchronization**: After the Plotly HTML renders, a `plotly_animatingframe` event listener is attached to the `.plotly-graph-div` element. The listener extracts the frame index from the event `name` field (e.g., `"frame12"` → `12`) and calls `onFrameChange(12)`. This is the mechanism that drives `setSelectedWindow` in the analysis page, keeping the EEG waveform display in lockstep with the brain animation.
+
 **Important**: Plotly's native play/pause buttons and timeline slider are the only animation controls. No custom React-side play/pause button exists — React controls speed by adjusting Plotly's internal frame duration via `Plotly.relayout()`.
+
+### EEG Waveform Plot — `components/eeg-waveform-plot.tsx`
+
+| Prop | Type | Description |
+|------|------|-------------|
+| `eegData` | `EegData` | The `eegData` object from the API response. Contains `channels`, `samplingRate`, `windowLength`, and `windows` array. |
+| `selectedWindow` | `number` (optional, default 0) | 0-based index of the window to display. Controlled externally by the analysis page. |
+| `className` | `string?` | Additional CSS classes for the outer Card. |
+
+Renders a Plotly line-trace chart with one trace per EEG channel. Channels are stacked vertically with a fixed 100-unit offset between them; y-axis tick labels show channel names (Fp1 … Pz). The header bar shows `"EEG Waveform (Window N/Total)"` for multi-window recordings. Per-channel normalization (`scale = 100 / maxAbs`) is applied so every channel has comparable visual amplitude regardless of signal scale. Color coding by electrode region: prefrontal channels (Fp1, Fp2) in red, central/parietal (F–T range) in green, posterior (P–O range) in blue.
+
+**Fullscreen toggle**: Maximize2/Minimize2 button matches `BrainVisualization` behavior — calls `requestFullscreen()` on the parent element and updates card styling.
+
+**Memory management**: The useEffect cleanup function calls `Plotly.purge(container)` before cancelling, preventing canvas leaks on repeated analyses.
+
+**Exported skeleton**: `EegWaveformSkeleton` — a Card with a `Skeleton` placeholder, used while the API call is in flight.
 
 ### Processing Window — `components/processing-window.tsx`
 
@@ -1613,8 +1657,8 @@ Single dark-themed page that handles both Source Localization and Biomarker Dete
   - **ResultsMeta bar**: filename, processing time, window count (ESI only) + "New Analysis" button
   - **View mode toggle**: Tab bar with Source Localization (Brain icon) and Biomarker Detection (Activity icon)
   - **Playback speed control**: 0.5x, 1x, 2x, 4x buttons — only shown when ESI has animation (multi-window). Dynamically adjusts Plotly frame duration.
-  - **Source Localization view**: BrainVisualization (inferno colorscale, dark canvas) + animation hint
-  - **Biomarker Detection view**: BrainVisualization (warm gradient, dark canvas) + DetectedRegions badges (clinical red)
+  - **Source Localization view**: Side-by-side `lg:grid-cols-2` layout — `EegWaveformPlot` (left) + `BrainVisualization` (right, inferno colorscale). The `BrainVisualization` receives `onFrameChange={setSelectedWindow}`, so when Plotly's animation plays, the EEG waveform automatically updates to show the corresponding 2-second window.
+  - **Biomarker Detection view**: `EegWaveformPlot` (full-width, with per-window selector buttons when multiple windows exist) + `BrainVisualization` (warm gradient) + DetectedRegions badges (clinical red)
 - **Region display**: Uses `epileptogenic_regions_full` with fallback to `epileptogenic_regions`
 - **Threshold**: Top-K=5 hard threshold for biomarkers
 
@@ -1667,7 +1711,8 @@ For EDF recordings longer than a single 400-sample (2s) window:
 | `react` (19.x) | UI component library |
 | `tailwindcss` (v4) | Utility-first CSS |
 | `shadcn/ui` | Pre-built accessible UI components (alert, badge, progress, skeleton, tooltip, separator, button, card) |
-| `lucide-react` | Icon library (Upload, Loader2, Maximize2, Minimize2, Check, Brain, Activity) |
+| `lucide-react` | Icon library (Upload, Loader2, Maximize2, Minimize2, Check, Brain, Activity, RotateCcw) |
+| `plotly.js-dist-min` | Lightweight Plotly bundle used by `EegWaveformPlot` for in-browser EEG waveform rendering (imported dynamically via `import()` to avoid SSR issues) |
 | `geist` | Vercel's Geist font family (sans + mono) |
 
 ---
@@ -2098,9 +2143,9 @@ The per-frame adaptive approach (for alpha) is necessary because:
 - Classical baselines (eLORETA, MNE, dSPM, LCMV) ✅ [design complete]
 - Heatmap visualization with nilearn/pyvista ✅ [superseded by Plotly Mesh3d in web app]
 
-### Web Application (Demo Interface) — ✅ COMPLETE (v2 — Clinical UI Overhaul)
+### Web Application (Demo Interface) — ✅ COMPLETE (v3 — EEG Waveform + Frame Sync)
 
-**Status**: Fully functional two-mode demo with interactive 3D brain visualization and clinical-grade UI
+**Status**: Fully functional two-mode demo with interactive 3D brain visualization, clinical-grade UI, and synchronized EEG waveform display
 
 - ✅ FastAPI backend serving PhysDeepSIF model inference (CUDA)
 - ✅ Next.js 15 frontend with App Router and Tailwind v4
@@ -2118,6 +2163,11 @@ The per-frame adaptive approach (for alpha) is necessary because:
 - ✅ 3D brain rendering: fsaverage5 cortical surface via nibabel, Plotly Mesh3d, per-vertex coloring
 - ✅ Vertex-to-region assignment via Euclidean distance to DK76 region centers
 - ✅ Drag-and-drop file upload with validation, skeleton loading, fullscreen toggle
+- ✅ **EEG Waveform Display (W4b)**: `EegWaveformPlot` component renders 19-channel stacked waveform via `plotly.js-dist-min`. Per-channel color coding, channel-name y-axis labels, time axis in seconds, window header (`Window N/Total`). Fullscreen toggle (Maximize2/Minimize2). `Plotly.purge()` on unmount prevents canvas leaks.
+- ✅ **Side-by-side layout (W4d)**: Source Localization view uses `lg:grid-cols-2` to place EEG waveform and 3D brain side by side on wide screens.
+- ✅ **Frame synchronization (W4d)**: `BrainVisualization` listens to Plotly’s `plotly_animatingframe` event and calls `onFrameChange(frameIndex)`. The analysis page passes `onFrameChange={setSelectedWindow}`, so the EEG waveform automatically scrolls to the active window as the brain animation plays.
+- ✅ **Multi-window EEG in Biomarkers mode (W4c fix)**: Backend biomarkers branch now sends all sliding windows (not just the first) in the `eegData` payload, matching source localization mode behavior.
+- ✅ **`eegData` API field (W4c)**: Both `/api/analyze-eeg` and `/api/physdeepsif` proxy routes pass `eegData` through to the frontend; field documented in §9.2 response schemas.
 - ✅ Clean demo UI: no debug information, no threshold controls, no ground truth exposure
 - See Section 9 for full technical details
 

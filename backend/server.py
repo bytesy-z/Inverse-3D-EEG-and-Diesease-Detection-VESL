@@ -27,9 +27,12 @@ import uuid
 import warnings
 from pathlib import Path
 from typing import Dict, List, Optional
+from io import BytesIO
+import base64
 
 import numpy as np
 from numpy.typing import NDArray
+from pydantic import BaseModel
 
 # Suppress warnings before importing heavy libs
 warnings.filterwarnings('ignore', category=RuntimeWarning)
@@ -48,6 +51,14 @@ import h5py
 import torch
 import torch.nn as nn
 from scipy import linalg as la
+
+# Optional: for waveform rendering (MNE/matplotlib)
+try:
+    import matplotlib.pyplot as plt
+    _HAS_MPL = True
+except Exception:
+    plt = None
+    _HAS_MPL = False
 
 # Local imports — PhysDeepSIF model builder
 from src.phase2_network.physdeepsif import build_physdeepsif
@@ -70,6 +81,10 @@ N_REGIONS = 76              # Desikan-Killiany parcellation
 N_CHANNELS = 19             # Standard 10-20 EEG montage
 WINDOW_LENGTH = 400         # 2 seconds at 200 Hz
 SAMPLING_RATE = 200.0       # Hz
+# Hard caps to prevent OOM on long EDF uploads.
+# With 50% overlap (1-second step), 90 windows ~= 90 seconds of timeline.
+MAX_EDF_WINDOWS = 90
+MAX_EDF_UPLOAD_BYTES = 200 * 1024 * 1024
 
 # Channel order matching our dataset (Technical Specs §3.3.2)
 CHANNEL_NAMES = [
@@ -88,6 +103,61 @@ REGION_CENTERS_PATH = PROJECT_ROOT / "data" / "region_centers_76.npy"
 TEST_DATA_PATH = PROJECT_ROOT / "data" / "synthetic3" / "test_dataset.h5"
 RESULTS_DIR = PROJECT_ROOT / "outputs" / "frontend_results"
 
+class WaveformRequest(BaseModel):
+    eeg: List[List[float]]
+    samplingRate: float = 200.0
+    asDataURL: bool = True
+    title: Optional[str] = None
+
+
+def _render_waveform_png(eeg_data: NDArray[np.float32], sfreq: float) -> bytes:
+    """Render EEG waveforms into a PNG image using MNE when available.
+    Falls back to a matplotlib-based plot if MNE is unavailable or plotting fails.
+    """
+    import io
+    import numpy as np
+    try:
+        import mne
+        from mne.io import RawArray
+        n_ch = eeg_data.shape[0]
+        ch_names = CHANNEL_NAMES[:n_ch] if len(CHANNEL_NAMES) >= n_ch else [f"Ch{i+1}" for i in range(n_ch)]
+        info = mne.create_info(ch_names=ch_names, sfreq=float(sfreq), ch_types=['eeg'] * n_ch)
+        raw = RawArray(eeg_data.astype(np.float32), info)
+        fig, _ = raw.plot(n_channels=n_ch, duration=eeg_data.shape[1] / float(sfreq), show=False)
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', bbox_inches='tight')
+        buf.seek(0)
+        try:
+            import matplotlib.pyplot as plt
+            plt.close(fig)
+        except Exception:
+            pass
+        return buf.getvalue()
+    except Exception:
+        try:
+            import matplotlib.pyplot as plt
+            plt.switch_backend('Agg')
+            fig, ax = plt.subplots(figsize=(12, 6))
+            t = np.arange(eeg_data.shape[1]) / float(sfreq)
+            colors = plt.cm.viridis(np.linspace(0, 1, eeg_data.shape[0]))
+            ch_names_local = CHANNEL_NAMES[:eeg_data.shape[0]] if len(CHANNEL_NAMES) >= eeg_data.shape[0] else [f"Ch{i+1}" for i in range(eeg_data.shape[0])]
+            for i in range(eeg_data.shape[0]):
+                ax.plot(t, eeg_data[i, :], color=colors[i], lw=0.8, alpha=0.9, label=ch_names_local[i])
+            ax.set_xlabel("Time (s)")
+            ax.set_ylabel("Amplitude (µV)")
+            ax.legend(loc='upper right', fontsize='small', ncol=2)
+            buf = io.BytesIO()
+            fig.savefig(buf, format='png', bbox_inches='tight')
+            plt.close(fig)
+            buf.seek(0)
+            return buf.getvalue()
+        except Exception:
+            from PIL import Image
+            img = Image.new('RGB', (1, 1), color=(255, 255, 255))
+            buf = io.BytesIO()
+            img.save(buf, format='PNG')
+            buf.seek(0)
+            return buf.getvalue()
 # ========================================================================
 # Global model state (loaded once on startup)
 # ========================================================================
@@ -110,10 +180,17 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS — allow the Next.js dev server to call us
+# CORS — allow the frontend dev servers to call us
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5000",
+        "http://127.0.0.1:5000",
+        "http://localhost:3010",
+        "http://127.0.0.1:3010",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -878,12 +955,55 @@ async def health_check():
     }
 
 
+@app.post("/api/eeg_waveform")
+async def eeg_waveform(req: WaveformRequest):
+    """Render EEG waveforms into a PNG image using MNE (best effort).
+
+    Request body:
+      {
+        "eeg": [[...], [...], ...],  // shape (19, N)
+        "samplingRate": 200.0,
+        "asDataURL": true|false,
+        "title": "Optional title"
+      }
+    Returns either a data URL (PNG) or a path to a saved PNG under outputs/frontend_results.
+    """
+    try:
+        eeg_np = np.array(req.eeg, dtype=np.float32)
+        if eeg_np.ndim != 2 or eeg_np.shape[0] != N_CHANNELS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"eeg data must be shape ({N_CHANNELS}, N_samples). Got {eeg_np.shape}"
+            )
+
+        png_bytes = _render_waveform_png(eeg_np, sfreq=float(req.samplingRate))
+        if req.asDataURL:
+            import base64
+            b64 = base64.b64encode(png_bytes).decode("ascii")
+            data_url = f"data:image/png;base64,{b64}"
+            return JSONResponse({"jobId": str(uuid.uuid4()), "imageDataUrl": data_url})
+        else:
+            job_id = f"eeg_waveform_{uuid.uuid4().hex[:8]}"
+            job_dir = RESULTS_DIR / job_id
+            job_dir.mkdir(parents=True, exist_ok=True)
+            out_path = job_dir / "waveform.png"
+            with open(out_path, "wb") as f:
+                f.write(png_bytes)
+            return JSONResponse({"jobId": job_id, "imagePath": f"/api/results/{job_id}/waveform.png"})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("eeg_waveform rendering failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/analyze")
 async def analyze_eeg(
     file: Optional[UploadFile] = File(None),
     sample_idx: Optional[int] = Form(None),
     threshold_percentile: float = Form(87.5),
     mode: str = Form("biomarkers"),
+    include_eeg: bool = Form(True),
 ):
     """
     Full analysis pipeline: EEG → source localization → visualization.
@@ -908,8 +1028,10 @@ async def analyze_eeg(
         eeg_data = None
         mask = None
         source_label = ""
-        edf_all_windows = None       # Sliding window data (EDF only)
+        edf_all_windows = None        # Sliding window data (EDF only)
         edf_window_timestamps = None  # Timestamps for each window (EDF only)
+        total_edf_windows = 1
+        edf_windows_truncated = False
 
         if sample_idx is not None:
             # Load from synthetic test dataset
@@ -935,7 +1057,6 @@ async def analyze_eeg(
             logger.info(f"[{job_id}] Processing uploaded file: {file.filename}")
             source_label = file.filename
 
-            file_bytes = await file.read()
             file_ext = Path(file.filename).suffix.lower()
 
             if file_ext == '.edf':
@@ -943,8 +1064,23 @@ async def analyze_eeg(
                 import mne
                 import tempfile
 
+                bytes_written = 0
                 with tempfile.NamedTemporaryFile(suffix='.edf', delete=False) as tmp:
-                    tmp.write(file_bytes)
+                    while True:
+                        chunk = await file.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        bytes_written += len(chunk)
+                        if bytes_written > MAX_EDF_UPLOAD_BYTES:
+                            raise HTTPException(
+                                status_code=413,
+                                detail=(
+                                    f"EDF file too large ({bytes_written} bytes). "
+                                    f"Maximum allowed is {MAX_EDF_UPLOAD_BYTES} bytes "
+                                    "(~200MB)."
+                                ),
+                            )
+                        tmp.write(chunk)
                     tmp_path = tmp.name
 
                 try:
@@ -983,24 +1119,37 @@ async def analyze_eeg(
                         )
 
                     # Sliding window segmentation (50% overlap)
-                    # For short EDF files ≤ 1 window: single window
-                    # For longer files: multiple windows for animation
+                    # For short EDF files ≤ 1 window: single window.
+                    # For longer files: multiple windows for animation, capped
+                    # to keep memory bounded on long recordings.
                     step_samples = WINDOW_LENGTH // 2  # 200 samples = 1s step (50% overlap)
                     n_total_samples = data.shape[1]
-                    edf_windows = []
-                    window_timestamps = []  # Center time of each window in seconds
+                    start_indices = list(
+                        range(0, n_total_samples - WINDOW_LENGTH + 1, step_samples)
+                    )
+                    total_edf_windows = len(start_indices)
 
-                    for start in range(0, n_total_samples - WINDOW_LENGTH + 1, step_samples):
-                        end = start + WINDOW_LENGTH
-                        window_data = data[:, start:end].astype(np.float32)
-                        edf_windows.append(window_data)
-                        # Timestamp = center of the window
-                        center_sec = (start + WINDOW_LENGTH / 2) / SAMPLING_RATE
-                        window_timestamps.append(center_sec)
+                    if total_edf_windows > MAX_EDF_WINDOWS:
+                        keep_idx = np.linspace(
+                            0,
+                            total_edf_windows - 1,
+                            num=MAX_EDF_WINDOWS,
+                            dtype=int,
+                        )
+                        start_indices = [start_indices[i] for i in keep_idx]
+                        edf_windows_truncated = True
 
-                    # Process all windows (no cap) for full temporal resolution
+                    edf_windows = [
+                        data[:, start:start + WINDOW_LENGTH].astype(np.float32)
+                        for start in start_indices
+                    ]
+                    window_timestamps = [
+                        (start + WINDOW_LENGTH / 2) / SAMPLING_RATE
+                        for start in start_indices
+                    ]
+
                     logger.info(
-                        f"[{job_id}] EDF sliding window: {len(edf_windows)} windows "
+                        f"[{job_id}] EDF sliding window: using {len(edf_windows)} / {total_edf_windows} windows "
                         f"from {n_total_samples} samples ({n_total_samples / SAMPLING_RATE:.1f}s)"
                     )
 
@@ -1015,6 +1164,7 @@ async def analyze_eeg(
             elif file_ext == '.npy':
                 # Direct numpy array (19, 400)
                 import io
+                file_bytes = await file.read()
                 eeg_data = np.load(io.BytesIO(file_bytes)).astype(np.float32)
                 if eeg_data.shape != (N_CHANNELS, WINDOW_LENGTH):
                     raise HTTPException(
@@ -1028,6 +1178,7 @@ async def analyze_eeg(
                 import io
                 from scipy.io import loadmat
 
+                file_bytes = await file.read()
                 mat_data = loadmat(io.BytesIO(file_bytes))
 
                 # Try common variable names for EEG data
@@ -1188,6 +1339,42 @@ async def analyze_eeg(
             # Combine: Plotly script + body HTML (so frontend gets everything needed)
             plot_content = plotly_script + body_content
 
+            # Prepare EEG data payload for frontend (channels, samplingRate, windowLength, windows)
+            eeg_payload = None
+            if include_eeg:
+                try:
+                    if edf_all_windows is not None and edf_window_timestamps is not None:
+                        windows_payload = []
+                        for start_ts, win in zip(edf_window_timestamps, edf_all_windows):
+                            windows_payload.append({
+                                "startTime": float(start_ts - WINDOW_LENGTH / (2 * SAMPLING_RATE)),
+                                "endTime": float(start_ts + WINDOW_LENGTH / (2 * SAMPLING_RATE)),
+                                "data": win.tolist(),
+                            })
+                        eeg_payload = {
+                            "channels": CHANNEL_NAMES,
+                            "samplingRate": SAMPLING_RATE,
+                            "windowLength": WINDOW_LENGTH,
+                            "windows": windows_payload,
+                        }
+                    else:
+                        # Single-window EEG (use eeg_data)
+                        eeg_payload = {
+                            "channels": CHANNEL_NAMES,
+                            "samplingRate": SAMPLING_RATE,
+                            "windowLength": WINDOW_LENGTH,
+                            "windows": [
+                                {
+                                    "startTime": 0.0,
+                                    "endTime": WINDOW_LENGTH / SAMPLING_RATE,
+                                    "data": eeg_data.tolist(),
+                                }
+                            ],
+                        }
+                except Exception:
+                    logger.exception(f"[{job_id}] Failed to build eeg_payload")
+                    eeg_payload = None
+
             return JSONResponse({
                 "jobId": job_id,
                 "status": "completed",
@@ -1195,8 +1382,12 @@ async def analyze_eeg(
                 "processingTime": round(processing_time, 2),
                 "source": source_label,
                 "plotHtml": plot_content,
+                # Include raw EEG windows so frontend can render waveform comparisons
+                "eegData": eeg_payload,
                 "fullHtmlPath": f"/api/results/{job_id}/source_activity_heatmap.html",
                 "nWindowsProcessed": n_windows_processed,
+                "nWindowsTotal": total_edf_windows,
+                "windowsTruncated": edf_windows_truncated,
                 "hasAnimation": animated_frames is not None,
                 # Per-region activity scores
                 "sourceLocalization": {
@@ -1268,6 +1459,43 @@ async def analyze_eeg(
             # Combine: Plotly script + body HTML (so frontend gets everything needed)
             plot_content = plotly_script + body_content
 
+            # Prepare EEG payload — include all sliding windows for EDF uploads
+            # so the frontend can show each window's waveform in the biomarker view.
+            eeg_payload = None
+            if include_eeg:
+                try:
+                    if edf_all_windows is not None and edf_window_timestamps is not None:
+                        windows_payload = []
+                        for start_ts, win in zip(edf_window_timestamps, edf_all_windows):
+                            windows_payload.append({
+                                "startTime": float(start_ts - WINDOW_LENGTH / (2 * SAMPLING_RATE)),
+                                "endTime": float(start_ts + WINDOW_LENGTH / (2 * SAMPLING_RATE)),
+                                "data": win.tolist(),
+                            })
+                        eeg_payload = {
+                            "channels": CHANNEL_NAMES,
+                            "samplingRate": SAMPLING_RATE,
+                            "windowLength": WINDOW_LENGTH,
+                            "windows": windows_payload,
+                        }
+                    else:
+                        # Single-window input (NPY/MAT or single-window EDF)
+                        eeg_payload = {
+                            "channels": CHANNEL_NAMES,
+                            "samplingRate": SAMPLING_RATE,
+                            "windowLength": WINDOW_LENGTH,
+                            "windows": [
+                                {
+                                    "startTime": 0.0,
+                                    "endTime": WINDOW_LENGTH / SAMPLING_RATE,
+                                    "data": eeg_data.tolist(),
+                                }
+                            ],
+                        }
+                except Exception:
+                    logger.exception(f"[{job_id}] Failed to build eeg_payload for biomarkers")
+                    eeg_payload = None
+
             return JSONResponse({
                 "jobId": job_id,
                 "status": "completed",
@@ -1275,7 +1503,10 @@ async def analyze_eeg(
                 "processingTime": round(processing_time, 2),
                 "source": source_label,
                 "plotHtml": plot_content,
+                "eegData": eeg_payload,
                 "fullHtmlPath": f"/api/results/{job_id}/brain_heatmap.html",
+                "nWindowsTotal": total_edf_windows,
+                "windowsTruncated": edf_windows_truncated,
                 # Epileptogenicity scores
                 "epileptogenicity": {
                     "scores": ei_result['scores'],

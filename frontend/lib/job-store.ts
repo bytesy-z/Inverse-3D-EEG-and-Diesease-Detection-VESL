@@ -37,6 +37,17 @@ export interface PhysDeepSIFResult {
     max_score: number
     region_labels: string[]
   }
+  // Optional raw EEG windows returned by the backend for waveform display
+  eegData?: {
+    channels: string[]
+    samplingRate: number
+    windowLength: number
+    windows: Array<{
+      startTime: number
+      endTime: number
+      data: number[][]
+    }>
+  } | null
   sourceLocalization?: {
     scores: Record<string, number>
     scores_array: number[]
