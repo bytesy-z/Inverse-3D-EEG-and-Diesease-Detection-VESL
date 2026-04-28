@@ -10,7 +10,7 @@ most influential for the detection.
 
 import numpy as np
 from numpy.typing import NDArray
-from typing import Dict, List, Callable
+from typing import Dict, Callable
 import logging
 
 logger = logging.getLogger(__name__)

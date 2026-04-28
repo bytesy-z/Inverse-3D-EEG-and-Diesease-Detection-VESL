@@ -1804,6 +1804,31 @@ async def _process_analysis_async(
                 epileptogenic_mask=mask,
                 threshold_percentile=threshold_percentile,
             )
+
+            # ── XAI: Explain top detected region via occlusion ──
+            xai_result = None
+            try:
+                from src.xai.eeg_occlusion import explain_biomarker
+                scores_array = np.array(ei_result['scores_array'])
+                top_region_idx = int(np.argmax(scores_array))
+                top_region_code = region_labels[top_region_idx]
+                def _ei_pipeline(win):
+                    sources = run_inference(win)
+                    ei = compute_epileptogenicity_index(sources)
+                    return {"scores": np.array(ei["scores_array"])}
+                xai_result = explain_biomarker(
+                    eeg_window=eeg_data.astype(np.float32),
+                    target_region_idx=top_region_idx,
+                    run_pipeline_fn=_ei_pipeline,
+                    occlusion_width=40, stride=20,
+                )
+                xai_result["target_region"] = top_region_code
+                xai_result["target_region_full"] = format_region_for_display(top_region_code)
+                logger.info(f"[{job_id}] XAI complete: top region {top_region_code} explained")
+            except Exception as e:
+                logger.warning(f"[{job_id}] XAI skipped: {e}")
+                xai_result = None
+
             heatmap_html = generate_heatmap_html(
                 ei_scores=np.array(ei_result['scores_array']),
                 title="Epileptogenic Zone Detection",
@@ -1826,6 +1851,7 @@ async def _process_analysis_async(
                     "status": "completed",
                     "mode": "biomarkers",
                     "fullHtmlPath": f"/api/results/{job_id}/brain_heatmap.html",
+                    "xai": xai_result,
                     "epileptogenicity": {
                         "scores": list(ei_result.get('scores', {}).items()),
                         "epileptogenic_regions": ei_result.get('epileptogenic_regions', []),
