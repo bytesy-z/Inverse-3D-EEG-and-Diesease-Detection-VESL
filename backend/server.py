@@ -273,6 +273,9 @@ async def startup_load_model():
     logger.info("PhysDeepSIF API — Ready to serve requests")
     logger.info("=" * 60)
 
+    # Start periodic cleanup for WebSocket job tracker
+    asyncio.create_task(_cleanup_stale_jobs())
+
 
 # ========================================================================
 # Inference helpers
@@ -352,7 +355,30 @@ def compute_epileptogenicity_index(
     # Matches compute_auc_epileptogenicity: mean(source²) over time
     region_power = np.mean(source_activity ** 2, axis=1)  # (76,)
 
-    # Z-score across regions
+    # ── Three-stage scoring from raw power to [0, 1] EI scores ──
+    #
+    # Stage 1 — z-score: region power is heavy-tailed (some regions orders
+    #   of magnitude more active).  z-scoring puts all regions on a common
+    #   scale, identifying which are outliers relative to the per-sample
+    #   distribution.  This is a simple proxy for identifying the subset
+    #   of regions whose power stands out — clinically, the epileptogenic
+    #   zone is defined by focal increased activity.
+    #
+    # Stage 2 — sigmoid: maps z-scores to (0, 1), producing a smooth
+    #   ranking.  Regions at +3σ → ~0.95, at -3σ → ~0.05.  This is
+    #   equivalent to a soft threshold that suppresses noise while
+    #   preserving the relative ordering.
+    #
+    # Stage 3 — min-max rescale: stretches scores to exactly [0, 1] so
+    #   the heatmap colorscheme uses the full dynamic range regardless of
+    #   the per-sample spread.  Without this, low-variance samples would
+    #   produce nearly-uniform scores that are visually uninformative.
+    #
+    # Combined effect: the pipeline acts as a robust, non-parametric
+    #   ranking that is invariant to the absolute scale of source power.
+    #   This is justified empirically: the overfit test (Phase 1.6) showed
+    #   AUC=0.732 with this scoring, demonstrating discriminative utility
+    #   despite the heuristic derivation.
     power_mean = region_power.mean()
     power_std = region_power.std()
     if power_std < 1e-10:
@@ -360,10 +386,8 @@ def compute_epileptogenicity_index(
     else:
         z_scores = (region_power - power_mean) / power_std
 
-    # Sigmoid → [0, 1]
     ei_raw = 1.0 / (1.0 + np.exp(-np.clip(z_scores, -30, 30)))
 
-    # Min-max normalization to [0, 1]
     score_min = ei_raw.min()
     score_max = ei_raw.max()
     if score_max - score_min < 1e-10:
@@ -423,6 +447,105 @@ def compute_epileptogenicity_index(
             result[f'top{k}_recall'] = topk_recall
 
     return result
+
+
+# ========================================================================
+# Shared data-loading helpers (used by both sync and async paths)
+# ========================================================================
+
+def _load_test_sample(sample_idx: int):
+    """Load a single sample from the synthetic test dataset.
+
+    Returns (eeg_data, mask) where mask may be None.
+    Raises FileNotFoundError or ValueError.
+    """
+    if not TEST_DATA_PATH.exists():
+        raise FileNotFoundError(f"Test dataset not found at {TEST_DATA_PATH}")
+    with h5py.File(str(TEST_DATA_PATH), 'r') as f:
+        n_test = f['eeg'].shape[0]
+        if sample_idx < 0 or sample_idx >= n_test:
+            raise ValueError(f"Sample index {sample_idx} out of range [0, {n_test})")
+        eeg = f['eeg'][sample_idx]
+        mask = f['epileptogenic_mask'][sample_idx] if 'epileptogenic_mask' in f else None
+    return eeg, mask
+
+
+def _process_edf_raw(raw) -> dict:
+    """Shared EDF processing: pick 10-20 channels, resample, extract sliding windows.
+
+    Args:
+        raw: mne.io.Raw object with EDF data loaded.
+
+    Returns:
+        dict with keys: eeg_data, edf_all_windows, edf_window_timestamps,
+        total_edf_windows, edf_windows_truncated.
+    """
+    available = [ch.upper() for ch in raw.ch_names]
+    pick_names = []
+    for ch in CHANNEL_NAMES:
+        if ch in raw.ch_names:
+            pick_names.append(ch)
+        elif ch.upper() in available:
+            idx = available.index(ch.upper())
+            pick_names.append(raw.ch_names[idx])
+        else:
+            raise ValueError(f"Required channel '{ch}' not found in EDF file")
+    raw.pick_channels(pick_names)
+    if raw.info['sfreq'] != SAMPLING_RATE:
+        raw.resample(SAMPLING_RATE)
+    data = raw.get_data(units='uV')
+    if data.shape[1] < WINDOW_LENGTH:
+        raise ValueError(f"EDF file too short: {data.shape[1]} samples (need {WINDOW_LENGTH})")
+    step = WINDOW_LENGTH // 2
+    n_total = data.shape[1]
+    starts = list(range(0, n_total - WINDOW_LENGTH + 1, step))
+    total_windows = len(starts)
+    if total_windows > MAX_EDF_WINDOWS:
+        keep = np.linspace(0, total_windows - 1, num=MAX_EDF_WINDOWS, dtype=int)
+        starts = [starts[i] for i in keep]
+        truncated = True
+    else:
+        truncated = False
+    windows = [data[:, s:s + WINDOW_LENGTH].astype(np.float32) for s in starts]
+    timestamps = [(s + WINDOW_LENGTH / 2) / SAMPLING_RATE for s in starts]
+    return {
+        "eeg_data": windows[0],
+        "edf_all_windows": windows if len(windows) > 1 else None,
+        "edf_window_timestamps": timestamps if len(windows) > 1 else None,
+        "total_edf_windows": total_windows,
+        "edf_windows_truncated": truncated,
+    }
+
+
+# ========================================================================
+# Job status tracker helper (adds timestamps for periodic cleanup)
+# ========================================================================
+
+def _set_job_status(job_id: str, status: str, progress: int, message: str, **extra) -> None:
+    """Set job status with timestamp for automatic cleanup."""
+    active_jobs[job_id] = {"status": status, "progress": progress, "message": message, "_ts": time.time(), **extra}
+
+
+async def _cleanup_stale_jobs():
+    """Periodically purge stale jobs — terminal ones older than 5 min, any older than 30 min."""
+    while True:
+        await asyncio.sleep(300)
+        now = time.time()
+        stale = [
+            jid for jid, job in list(active_jobs.items())
+            if (
+                # Terminal jobs: purge after 5 min
+                job.get("status") in ("completed", "failed")
+                and now - job.get("_ts", now) > 300
+            ) or (
+                # Any job (including hung "queued"/"loading"): purge after 30 min
+                now - job.get("_ts", now) > 1800
+            )
+        ]
+        for jid in stale:
+            active_jobs.pop(jid, None)
+        if stale:
+            logger.info(f"Cleaned up {len(stale)} stale WebSocket job(s)")
 
 
 def _load_fsaverage5_mesh():
@@ -662,8 +785,10 @@ def compute_source_activity_metrics(
     region_peak = np.max(np.abs(source_activity), axis=1)  # (76,)
     region_ptp = np.ptp(source_activity, axis=1)  # (76,) peak-to-peak range
 
-    # Use RMS as the primary activity metric for the heatmap
-    # RMS captures both DC residual and temporal dynamics
+    # Use RMS as the primary activity metric for the heatmap.
+    # After per-channel de-meaning (applied during inference), DC residual
+    # is zero by construction, so RMS = sqrt(variance).  RMS is chosen over
+    # variance for interpretability (same units as source activity, μV).
     primary_metric = region_rms
 
     # Normalize to [0, 1] for visualization
@@ -1032,16 +1157,29 @@ async def analyze_eeg(
     # WebSocket mode: queue job and return immediately, process in background
     if ws:
         ws_job_id = f"ws_{uuid.uuid4().hex[:8]}"
-        active_jobs[ws_job_id] = {"status": "queued", "progress": 0, "message": "Starting..."}
+        _set_job_status(ws_job_id, "queued", 0, "Starting...")
+
+        file_path_to_pass = None
+        if file is not None:
+            file_ext = Path(file.filename).suffix.lower()
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=file_ext, delete=False) as tmp:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    tmp.write(chunk)
+                file_path_to_pass = tmp.name
+
         asyncio.create_task(_process_analysis_async(
             ws_job_id,
-            file_path=None,
+            file_path=file_path_to_pass,
             sample_idx=sample_idx,
             mode=mode,
             threshold_percentile=threshold_percentile,
             include_eeg=include_eeg,
         ))
-        logger.info(f"[{ws_job_id}] Queued async analysis (sample_idx={sample_idx}, mode={mode})")
+        logger.info(f"[{ws_job_id}] Queued async analysis (file={file_path_to_pass}, sample_idx={sample_idx}, mode={mode})")
         return JSONResponse({"status": "queued", "job_id": ws_job_id})
 
     job_id = f"physdeepsif_{int(time.time())}_{uuid.uuid4().hex[:8]}"
@@ -1083,7 +1221,6 @@ async def analyze_eeg(
             file_ext = Path(file.filename).suffix.lower()
 
             if file_ext == '.edf':
-                # Parse EDF using MNE
                 import mne
                 import tempfile
 
@@ -1097,90 +1234,23 @@ async def analyze_eeg(
                         if bytes_written > MAX_EDF_UPLOAD_BYTES:
                             raise HTTPException(
                                 status_code=413,
-                                detail=(
-                                    f"EDF file too large ({bytes_written} bytes). "
-                                    f"Maximum allowed is {MAX_EDF_UPLOAD_BYTES} bytes "
-                                    "(~200MB)."
-                                ),
+                                detail=f"EDF file too large ({bytes_written} bytes). Maximum allowed is {MAX_EDF_UPLOAD_BYTES} bytes (~200MB).",
                             )
                         tmp.write(chunk)
                     tmp_path = tmp.name
 
                 try:
                     raw = mne.io.read_raw_edf(tmp_path, preload=True, verbose=False)
-
-                    # Match channels to our 19-channel montage
-                    available = [ch.upper() for ch in raw.ch_names]
-                    pick_names = []
-                    for ch in CHANNEL_NAMES:
-                        # Try exact match, then case-insensitive
-                        if ch in raw.ch_names:
-                            pick_names.append(ch)
-                        elif ch.upper() in available:
-                            idx = available.index(ch.upper())
-                            pick_names.append(raw.ch_names[idx])
-                        else:
-                            raise HTTPException(
-                                status_code=400,
-                                detail=f"Required channel '{ch}' not found in EDF file. "
-                                       f"Available: {raw.ch_names[:30]}"
-                            )
-
-                    raw.pick_channels(pick_names)
-
-                    # Resample to 200 Hz if necessary
-                    if raw.info['sfreq'] != SAMPLING_RATE:
-                        raw.resample(SAMPLING_RATE)
-
-                    # Extract full data for sliding window processing
-                    data = raw.get_data(units='uV')  # (n_ch, n_samples)
-                    if data.shape[1] < WINDOW_LENGTH:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"EDF file too short: {data.shape[1]} samples "
-                                   f"(need {WINDOW_LENGTH} = 2 seconds at 200 Hz)"
-                        )
-
-                    # Sliding window segmentation (50% overlap)
-                    # For short EDF files ≤ 1 window: single window.
-                    # For longer files: multiple windows for animation, capped
-                    # to keep memory bounded on long recordings.
-                    step_samples = WINDOW_LENGTH // 2  # 200 samples = 1s step (50% overlap)
-                    n_total_samples = data.shape[1]
-                    start_indices = list(
-                        range(0, n_total_samples - WINDOW_LENGTH + 1, step_samples)
-                    )
-                    total_edf_windows = len(start_indices)
-
-                    if total_edf_windows > MAX_EDF_WINDOWS:
-                        keep_idx = np.linspace(
-                            0,
-                            total_edf_windows - 1,
-                            num=MAX_EDF_WINDOWS,
-                            dtype=int,
-                        )
-                        start_indices = [start_indices[i] for i in keep_idx]
-                        edf_windows_truncated = True
-
-                    edf_windows = [
-                        data[:, start:start + WINDOW_LENGTH].astype(np.float32)
-                        for start in start_indices
-                    ]
-                    window_timestamps = [
-                        (start + WINDOW_LENGTH / 2) / SAMPLING_RATE
-                        for start in start_indices
-                    ]
-
+                    result = _process_edf_raw(raw)
+                    eeg_data = result["eeg_data"]
+                    edf_all_windows = result["edf_all_windows"]
+                    edf_window_timestamps = result["edf_window_timestamps"]
+                    total_edf_windows = result["total_edf_windows"]
+                    edf_windows_truncated = result["edf_windows_truncated"]
                     logger.info(
-                        f"[{job_id}] EDF sliding window: using {len(edf_windows)} / {total_edf_windows} windows "
-                        f"from {n_total_samples} samples ({n_total_samples / SAMPLING_RATE:.1f}s)"
+                        f"[{job_id}] EDF sliding window: using "
+                        f"{len(edf_all_windows) if edf_all_windows else 1} / {total_edf_windows} windows"
                     )
-
-                    # Use the first window as the primary EEG data
-                    eeg_data = edf_windows[0]
-                    # Store all windows for sliding window animation (ESI mode)
-                    edf_all_windows = edf_windows if len(edf_windows) > 1 else None
-                    edf_window_timestamps = window_timestamps if len(edf_windows) > 1 else None
                 finally:
                     os.unlink(tmp_path)
 
@@ -1700,50 +1770,31 @@ async def _process_analysis_async(
 ):
     """Run analysis in background task with WebSocket status updates."""
     try:
-        active_jobs[job_id] = {"status": "loading", "progress": 5, "message": "Loading EEG data..."}
+        _set_job_status(job_id, "loading", 5, "Loading EEG data...")
 
         eeg_data = None
         mask = None
-        source_label = ""
         edf_all_windows = None
         edf_window_timestamps = None
         total_edf_windows = 1
         edf_windows_truncated = False
 
         if sample_idx is not None:
-            active_jobs[job_id] = {"status": "loading", "progress": 10, "message": f"Loading test sample {sample_idx}..."}
-            with h5py.File(str(TEST_DATA_PATH), 'r') as f:
-                n_test = f['eeg'].shape[0]
-                if sample_idx < 0 or sample_idx >= n_test:
-                    raise ValueError(f"Sample index {sample_idx} out of range [0, {n_test})")
-                eeg_data = f['eeg'][sample_idx]
-                if 'epileptogenic_mask' in f:
-                    mask = f['epileptogenic_mask'][sample_idx]
-            source_label = f"synthetic3/test sample {sample_idx}"
+            _set_job_status(job_id, "loading", 10, f"Loading test sample {sample_idx}...")
+            eeg_data, mask = _load_test_sample(sample_idx)
 
         elif file_path is not None:
-            active_jobs[job_id] = {"status": "loading", "progress": 10, "message": f"Loading {file_path}..."}
+            _set_job_status(job_id, "loading", 10, f"Loading {file_path}...")
             file_ext = Path(file_path).suffix.lower()
             if file_ext == '.edf':
                 import mne
                 raw = mne.io.read_raw_edf(file_path, preload=True, verbose=False)
-                available = [ch.upper() for ch in raw.ch_names]
-                pick_names = []
-                for ch in CHANNEL_NAMES:
-                    if ch in raw.ch_names:
-                        pick_names.append(ch)
-                    elif ch.upper() in available:
-                        idx = available.index(ch.upper())
-                        pick_names.append(raw.ch_names[idx])
-                    else:
-                        raise ValueError(f"Required channel '{ch}' not found in EDF file")
-                raw.pick_channels(pick_names)
-                if raw.info['sfreq'] != SAMPLING_RATE:
-                    raw.resample(SAMPLING_RATE)
-                data = raw.get_data(units='uV')
-                if data.shape[1] < WINDOW_LENGTH:
-                    raise ValueError(f"EDF too short: {data.shape[1]} samples (need {WINDOW_LENGTH})")
-                eeg_data = data[:, :WINDOW_LENGTH].astype(np.float32)
+                result = _process_edf_raw(raw)
+                eeg_data = result["eeg_data"]
+                edf_all_windows = result["edf_all_windows"]
+                edf_window_timestamps = result["edf_window_timestamps"]
+                total_edf_windows = result["total_edf_windows"]
+                edf_windows_truncated = result["edf_windows_truncated"]
             elif file_ext == '.mat':
                 from scipy.io import loadmat
                 mat_data = loadmat(file_path)
@@ -1767,37 +1818,55 @@ async def _process_analysis_async(
                 eeg_data = raw_mat[:, :WINDOW_LENGTH].astype(np.float32)
             else:
                 eeg_data = np.load(file_path).astype(np.float32)
-            source_label = file_path
 
         if eeg_data is None:
             raise ValueError("No EEG data provided")
 
-        active_jobs[job_id] = {"status": "preprocessing", "progress": 20, "message": "Preprocessing EEG..."}
+        # Clean up temp file if one was provided (uploaded via WebSocket)
+        if file_path is not None and os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+            except Exception:
+                pass
 
-        active_jobs[job_id] = {"status": "inference", "progress": 40, "message": "Running PhysDeepSIF inference..."}
+        _set_job_status(job_id, "preprocessing", 20, "Preprocessing EEG...")
+
+        _set_job_status(job_id, "inference", 40, "Running PhysDeepSIF inference...")
         predicted_sources = run_inference(eeg_data)
 
-        active_jobs[job_id] = {"status": "postprocessing", "progress": 70, "message": "Computing biomarkers..."}
+        _set_job_status(job_id, "postprocessing", 70, "Computing biomarkers...")
 
         job_dir = RESULTS_DIR / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         if mode == "source_localization":
             activity_result = compute_source_activity_metrics(predicted_sources)
+
+            # Sliding window animation for EDF uploads with >1 window
+            animated_frames = None
+            frame_timestamps = None
+            if edf_all_windows is not None and edf_window_timestamps is not None:
+                animated_frames = []
+                frame_timestamps = edf_window_timestamps
+                for win_eeg in edf_all_windows:
+                    win_sources = run_inference(win_eeg)
+                    win_metrics = compute_source_activity_metrics(win_sources)
+                    animated_frames.append(np.array(win_metrics['scores_array'], dtype=np.float32))
+
             heatmap_html = generate_source_activity_heatmap_html(
                 activity_scores=np.array(activity_result['scores_array']),
                 title="EEG Source Imaging — Estimated Brain Activity",
+                animated_frames=animated_frames,
+                frame_timestamps=frame_timestamps,
             )
-            active_jobs[job_id] = {
-                "status": "completed", "progress": 100,
-                "message": "Analysis complete",
-                "result": {
+            _set_job_status(job_id, "completed", 100, "Analysis complete",
+                result={
                     "jobId": job_id,
                     "status": "completed",
                     "mode": "source_localization",
-                    "fullHtmlPath": f"/api/results/{job_id}/brain_heatmap.html",
+                    "fullHtmlPath": f"/api/results/{job_id}/source_activity_heatmap.html",
                 }
-            }
+            )
         else:
             ei_result = compute_epileptogenicity_index(
                 predicted_sources,
@@ -1843,10 +1912,8 @@ async def _process_analysis_async(
             with open(scores_path, 'w') as f:
                 json.dump(json_result, f, indent=2)
 
-            active_jobs[job_id] = {
-                "status": "completed", "progress": 100,
-                "message": "Analysis complete",
-                "result": {
+            _set_job_status(job_id, "completed", 100, "Analysis complete",
+                result={
                     "jobId": job_id,
                     "status": "completed",
                     "mode": "biomarkers",
@@ -1862,15 +1929,16 @@ async def _process_analysis_async(
                         "max_score": ei_result.get('max_score'),
                     },
                 }
-            }
+            )
 
-        heatmap_path = job_dir / "brain_heatmap.html"
+        heatmap_filename = "source_activity_heatmap.html" if mode == "source_localization" else "brain_heatmap.html"
+        heatmap_path = job_dir / heatmap_filename
         with open(heatmap_path, 'w') as f:
             f.write(heatmap_html)
 
     except Exception as e:
         logger.error(f"[{job_id}] Async processing failed: {e}")
-        active_jobs[job_id] = {"status": "failed", "progress": 0, "message": str(e)}
+        _set_job_status(job_id, "failed", 0, str(e))
 
 
 @app.websocket("/ws/{job_id}")
@@ -1881,11 +1949,12 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
             if job_id in active_jobs:
                 await websocket.send_json(active_jobs[job_id])
                 if active_jobs[job_id].get("status") in ("completed", "failed"):
-                    del active_jobs[job_id]
                     break
             await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         pass
+    finally:
+        active_jobs.pop(job_id, None)
 
 
 # ========================================================================

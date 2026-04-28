@@ -1063,7 +1063,7 @@ WINDOW_LENGTH = 400
 
 
 def explain_biomarker(
-    eeg_window: NDArray,                # (19, 400) single window, z-scored
+    eeg_window: NDArray,                # (19, 400) single window, raw (pre-de-mean)
     target_region_idx: int,             # 0-75 DK region index
     run_pipeline_fn,                    # callable(eeg_window) → dict with "scores"
     occlusion_width: int = OCCLUSION_WIDTH_SAMPLES,
@@ -1429,15 +1429,15 @@ python3 -m pytest tests/ -v --tb=short
   - [ ] Monitoring metrics improving across epochs
 - [ ] Phase 2.3: Results copied back to laptop
 
-### ⚠️ Phase 3 — Backend Features (PARTIALLY DONE)
-- [ ] Phase 3.1: WebSocket endpoint implemented in `backend/server.py`
+### ✅ Phase 3 — Backend Features (ALL DONE)
+- [x] Phase 3.1: WebSocket endpoint implemented in `backend/server.py`
   - [x] `/ws/{job_id}` accepts connections
   - [x] `_process_analysis_async` function exists
   - [x] `ws: bool = Form(False)` declared
-  - [ ] **`if ws:` dispatch block missing** — async background processing never triggered
-- [ ] Phase 3.2: XAI occlusion module created in `src/xai/eeg_occlusion.py`
+  - [x] **`if ws:` dispatch block implemented** — async background processing triggers correctly
+- [x] Phase 3.2: XAI occlusion module created in `src/xai/eeg_occlusion.py`
   - [x] `explain_biomarker()` function exists
-  - [ ] **Wired into biomarkers handler** — never imported/called in `server.py`
+  - [x] **Wired into biomarkers handler** — imported/called in both sync and async paths
 - [x] Phase 3.3: Test suite scaffold in `tests/`
   - [x] `tests/conftest.py` with fixtures
   - [x] `tests/test_model.py` (4 tests)

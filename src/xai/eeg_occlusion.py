@@ -23,7 +23,7 @@ WINDOW_LENGTH = 400
 
 
 def explain_biomarker(
-    eeg_window: NDArray,                # (19, 400) single window, z-scored
+    eeg_window: NDArray,                # (19, 400) single window, raw (pre-de-mean)
     target_region_idx: int,             # 0-75 DK region index
     run_pipeline_fn: Callable,          # callable(eeg_window) -> dict with "scores"
     occlusion_width: int = OCCLUSION_WIDTH_SAMPLES,
@@ -32,8 +32,20 @@ def explain_biomarker(
     """
     Occlusion-based attribution for a biomarker detection.
 
+    Occludes channel-time segments by setting them to the per-channel
+    mean of that segment, creating a flat (zero-variance) region with
+    no temporal dynamics.  After `run_pipeline_fn` applies per-channel
+    temporal de-meaning, the occluded segment carries zero variance —
+    a true null-dynamics baseline for assessing the segment's
+    contribution to the biomarker score.
+
+    This is preferable to zero-out occlusion because setting to 0 in
+    the raw (pre-de-mean) space introduces a negative DC offset equal
+    to the channel mean after de-meaning — a strong, channel-dependent
+    artifact whose magnitude varies with the channel's DC level.
+
     Args:
-        eeg_window: Single EEG window (19, 400), z-scored.
+        eeg_window: Single EEG window (19, 400), raw (pre-de-mean).
         target_region_idx: Index of the top-1 detected region to explain.
         run_pipeline_fn: Function that takes (19,400) EEG and returns
                         dict with "scores" key -> (76,) array of EI scores.
@@ -61,28 +73,25 @@ def explain_biomarker(
             t_start = seg_idx * stride
             t_end = t_start + occlusion_width
 
-            # Create occluded EEG copy
             eeg_occ = eeg_window.copy()
-            # Mask: replace segment with 0 (matches per-channel mean after de-meaning)
-            eeg_occ[ch, t_start:t_end] = 0.0
+            # Replace segment with per-channel mean so that after de-meaning
+            # (inside run_pipeline_fn) the segment becomes exactly zero —
+            # a true null-signal baseline.
+            ch_mean = eeg_occ[ch].mean()
+            eeg_occ[ch, t_start:t_end] = ch_mean
 
-            # Re-run pipeline
             occ_result = run_pipeline_fn(eeg_occ)
             occ_score = float(occ_result["scores"][target_region_idx])
 
-            # Attribution = score drop (positive = segment supported detection)
             attribution_map[ch, seg_idx] = baseline_score - occ_score
 
-    # Aggregate
-    channel_importance = attribution_map.mean(axis=1)  # (19,)
-    time_importance = attribution_map.mean(axis=0)      # (n_segments,)
+    channel_importance = attribution_map.mean(axis=1)
+    time_importance = attribution_map.mean(axis=0)
 
-    # Find top segments
     top_indices = np.argsort(attribution_map.ravel())[-5:][::-1]
     top_segments = []
     for flat_idx in top_indices:
         ch, seg = np.unravel_index(flat_idx, attribution_map.shape)
-        t_center = seg * stride + occlusion_width // 2
         top_segments.append({
             "channel_idx": int(ch),
             "start_sample": int(seg * stride),

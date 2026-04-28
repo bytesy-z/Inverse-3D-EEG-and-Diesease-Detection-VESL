@@ -1,3 +1,6 @@
+import torch
+
+
 def test_model_loads(model):
     """Model loads from checkpoint without error."""
     assert model is not None

@@ -43,7 +43,8 @@ def synthetic_sample():
 
 @pytest.fixture(scope="session")
 def test_client():
-    """FastAPI TestClient for API testing."""
+    """FastAPI TestClient for API testing (context manager triggers lifespan events)."""
     from fastapi.testclient import TestClient
     import backend.server as server_mod
-    return TestClient(server_mod.app)
+    with TestClient(server_mod.app) as client:
+        yield client
