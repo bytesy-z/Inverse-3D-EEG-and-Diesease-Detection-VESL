@@ -117,9 +117,10 @@ training:
   loss_weights:
     alpha_source: 1.0
     beta_forward: 0.5
-    gamma_physics: 0.1
+    gamma_physics: 0.01
+    delta_epi: 1.0
   physics_sub_weights:
-    lambda_laplacian: 0.5
+    lambda_laplacian: 0.0
     lambda_temporal: 0.3
     lambda_amplitude: 0.2
   amplitude_max: 3.0

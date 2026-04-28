@@ -51,7 +51,7 @@ Updated: 2026-04-20 — variance-normalised forward loss, vectorised Laplacian
 """
 
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -128,8 +128,9 @@ class PhysicsInformedLoss(nn.Module):
         connectivity_laplacian: torch.Tensor,
         alpha: float = 1.0,
         beta: float = 0.5,
-        gamma: float = 0.1,
-        lambda_laplacian: float = 0.5,
+        gamma: float = 0.01,
+        delta_epi: float = 1.0,
+        lambda_laplacian: float = 0.0,
         lambda_temporal: float = 0.3,
         lambda_amplitude: float = 0.2,
         amplitude_max: float = 3.0,
@@ -144,6 +145,7 @@ class PhysicsInformedLoss(nn.Module):
             beta: Weight for forward consistency loss (variance-normalised,
                   so L_forward ≈ O(1) — β=0.5 gives ~33% of total gradient)
             gamma: Weight for physics regularization loss
+            delta_epi: Weight for epileptogenic classification BCE loss
             lambda_laplacian: Sub-weight for Laplacian regularization
             lambda_temporal: Sub-weight for temporal smoothness
             lambda_amplitude: Sub-weight for amplitude bound
@@ -159,6 +161,7 @@ class PhysicsInformedLoss(nn.Module):
         self.alpha = alpha
         self.beta = beta
         self.gamma = gamma
+        self.delta_epi = delta_epi
         self.lambda_laplacian = lambda_laplacian
         self.lambda_temporal = lambda_temporal
         self.lambda_amplitude = lambda_amplitude
@@ -166,10 +169,12 @@ class PhysicsInformedLoss(nn.Module):
 
         # MSE loss for supervised terms
         self.mse_loss = nn.MSELoss()
+        # BCE loss for epileptogenic classification
+        self.bce_loss = nn.BCEWithLogitsLoss()
 
         logger.info(
             "PhysicsInformedLoss initialized with weights: "
-            f"α={alpha}, β={beta}, γ={gamma} | "
+            f"α={alpha}, β={beta}, γ={gamma}, δ_epi={delta_epi} | "
             f"λ_L={lambda_laplacian}, λ_T={lambda_temporal}, λ_A={lambda_amplitude} | "
             "L_forward is variance-normalised (scale-independent)"
         )
@@ -179,6 +184,7 @@ class PhysicsInformedLoss(nn.Module):
         predicted_sources: torch.Tensor,
         true_sources: torch.Tensor,
         eeg_input: torch.Tensor,
+        epileptogenic_mask: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Compute composite physics-informed loss.
@@ -187,21 +193,25 @@ class PhysicsInformedLoss(nn.Module):
             predicted_sources: Predicted source activity (batch, 76, 400)
             true_sources: Ground truth source activity (batch, 76, 400)
             eeg_input: Input EEG measurements (batch, 19, 400)
+            epileptogenic_mask: Boolean mask of epileptogenic regions (batch, 76)
 
         Returns:
             dict with keys:
             - 'loss_total': Total composite loss (scalar, ready to backprop)
-            - 'loss_source': Source reconstruction loss
+            - 'loss_source': Source reconstruction loss (region-weighted)
             - 'loss_forward': Forward consistency loss (variance-normalised)
             - 'loss_laplacian': Laplacian regularization
             - 'loss_temporal': Temporal smoothness
             - 'loss_amplitude': Amplitude bound
             - 'loss_physics': Total physics loss (physics sub-losses combined)
+            - 'loss_epi': Epileptogenic classification BCE loss
 
         All loss terms are PyTorch scalars (single-element tensors).
         """
-        # Loss 1: Source reconstruction (supervised)
-        loss_source = self._compute_source_loss(predicted_sources, true_sources)
+        # Loss 1: Source reconstruction (supervised, class-balanced)
+        loss_source = self._compute_source_loss(
+            predicted_sources, true_sources, epileptogenic_mask
+        )
 
         # Loss 2: Forward consistency (physics, variance-normalised)
         loss_forward = self._compute_forward_loss(predicted_sources, eeg_input)
@@ -218,11 +228,15 @@ class PhysicsInformedLoss(nn.Module):
             + self.lambda_amplitude * loss_amplitude
         )
 
+        # Loss 4: Epileptogenic classification (directly optimizes AUC)
+        loss_epi = self._compute_epi_loss(predicted_sources, epileptogenic_mask)
+
         # Composite total loss
         loss_total = (
             self.alpha * loss_source
             + self.beta * loss_forward
             + self.gamma * loss_physics
+            + self.delta_epi * loss_epi
         )
 
         return {
@@ -233,29 +247,80 @@ class PhysicsInformedLoss(nn.Module):
             'loss_temporal': loss_temporal,
             'loss_amplitude': loss_amplitude,
             'loss_physics': loss_physics,
+            'loss_epi': loss_epi,
         }
 
     def _compute_source_loss(
         self,
         predicted_sources: torch.Tensor,
         true_sources: torch.Tensor,
+        epileptogenic_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Compute source reconstruction loss (supervised MSE).
 
         L_source = (1/(N_r·T)) Σ_i Σ_t (Ŝ_{i,t} - S^true_{i,t})²
 
-        Directly compares predicted source activity to ground truth,
-        providing the main supervised training signal.
+        When epileptogenic_mask is provided, applies per-region class-balancing
+        weighting: epi-region MSE is up-weighted by ~76/n_epi to counteract
+        the severe class imbalance (healthy regions dominate gradient).
 
         Args:
             predicted_sources: (batch, 76, 400)
             true_sources: (batch, 76, 400)
+            epileptogenic_mask: (batch, 76) bool mask, optional
 
         Returns:
             Scalar loss tensor
         """
-        return self.mse_loss(predicted_sources, true_sources)
+        if epileptogenic_mask is None:
+            return self.mse_loss(predicted_sources, true_sources)
+
+        # Per-region MSE over time: (batch, 76)
+        per_region_mse = ((predicted_sources - true_sources) ** 2).mean(dim=-1)
+
+        # Compute per-sample class-balancing weight: 76 / n_epi
+        n_epi = epileptogenic_mask.sum(dim=-1, keepdim=True).float().clamp(min=1.0)
+        epi_weight = N_REGIONS / n_epi  # (batch, 1)
+
+        # Build weight matrix: epi regions get high weight, healthy get 1.0
+        weights = torch.ones_like(per_region_mse)
+        epi_weight_expanded = epi_weight.expand_as(per_region_mse)
+        weights[epileptogenic_mask] = epi_weight_expanded[epileptogenic_mask]
+
+        # Weighted average over all (batch, region) pairs
+        loss = (per_region_mse * weights).sum() / weights.sum()
+        return loss
+
+    def _compute_epi_loss(
+        self,
+        predicted_sources: torch.Tensor,
+        epileptogenic_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Compute epileptogenic classification loss (BCE on region power).
+
+        Uses predicted region power (mean squared amplitude over time) as a
+        proxy for epileptogenicity and optimises it via binary cross-entropy
+        against the ground-truth mask. This directly provides gradient signal
+        for localisation, countering regression-to-mean.
+
+        L_epi = BCEWithLogitsLoss(mean_t(Ŝ²), mask)
+
+        Args:
+            predicted_sources: (batch, 76, 400)
+            epileptogenic_mask: (batch, 76) bool mask; if None returns 0
+
+        Returns:
+            Scalar loss tensor
+        """
+        if epileptogenic_mask is None:
+            return torch.tensor(0.0, device=predicted_sources.device)
+
+        # Region power: (batch, 76)
+        power = predicted_sources.pow(2).mean(dim=-1)
+        target = epileptogenic_mask.float()
+        return self.bce_loss(power, target)
 
     def _compute_forward_loss(
         self,

@@ -16,18 +16,21 @@ This plan has been verified against the actual codebase on April 26, 2026. Key f
 | Model params | 419,004 trainable + 7,220 buffers | Tiny model — fits any GPU |
 | Checkpoint | epoch 24, val_loss 1.0377 | Trained WITH de-meaning |
 | Loss functions | Variance-normalized forward loss + vectorized Laplacian | Committed Apr 20 (commit eca8c3c) |
-| Disk space | 14 GB free | Enough for data (~3 GB) + models |
+| Disk space | 14 GB free (of 310 GB total) | Tight — synthetic data ~2-3 GB, models <20 MB |
 | GPU (laptop) | RTX 3050 Ti, 3.68 GB VRAM | Model+bs64 ≈ 100 MB — fits easily |
 | GPU (laptop) | Another training running until Apr 28 | Can't use laptop GPU until then |
 | GPU (lab) | RTX 3080 + 16 cores | **Primary compute target** |
 | Python env | `physdeepsif` conda env at `/home/zik/miniconda3/envs/physdeepsif` | Has tvb-library 2.10.0, torch 2.10.0+cu128, cmaes 0.12.0, MNE 1.11.0 |
-| Missing packages | `optuna` (not installed), `cma` (use `cmaes` instead) | Install `optuna` in conda env; use `cmaes.CMA` API |
+| Missing packages | `optuna` (NOT installed), `cmaes` 0.12.0 (installed, different API from `cma`) | Run `/home/zik/miniconda3/envs/physdeepsif/bin/pip install optuna` |
 | Sample data | `data/samples/0001082.edf` (14 MB, 21 ch, 200 Hz, 30 min) + `1082.csv` (annotations) | **Abnormal recording** — has sharp waves in FP2/F4/F8 |
 | EDF channels | 21 ch: FP1,FP2,F3,F4,C3,C4,P3,P4,O1,O2,F7,F8,T3,T4,T5,T6,FZ,PZ,CZ,A1,A2 | **Must map to 19 ch** (drop A1/A2, rename FP→Fp, FZ→Fz, etc.) |
-| Synthetic data | NONE on this machine (no HDF5 files found) | **Must be generated or copied from lab** |
-| `cmaes` API | `CMA.tell(list[tuple[array, float]])`, NOT `cma.fmin()` | Different from `cma` package — see verified example below |
+| Synthetic data | NONE on this machine (no HDF5 files found) | **Must be generated or copied from lab** — datagen code is VERIFIED WORKING |
+| Datagen code | ✅ VERIFIED WORKING (Apr 26 smoke test: 3 valid windows, all shapes correct) | No fix needed — just needs data to be generated |
+| Datagen failure rate | ~1 in 3 sims produces NaN (divergent Epileptor); handled by None return | `generate_one_simulation()` filters these out automatically |
+| `cmaes` API | `CMA.tell(list[tuple[array, float]])`, NOT `cma.fmin()` | Different from `cma` package — see verified example in plan |
 | Frontend | Complete (EEG waveform, unified dashboard, Plotly brain) | Only backend integration needed |
 | Backend | 4 endpoints: `/api/health`, `/api/analyze`, `/api/biomarkers`, `/api/eeg_waveform` | Need CMA-ES and NMT endpoints |
+| Leadfield bias | 55mm mean spatial error from DK-68 vs TVB-76 parcellation mismatch | ⚠️ Affects real EEG inference only — **does NOT affect synthetic data/training** (see Issue section) |
 
 ---
 

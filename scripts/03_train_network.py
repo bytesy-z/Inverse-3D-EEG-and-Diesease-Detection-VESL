@@ -721,12 +721,21 @@ def main() -> None:
     connectivity_laplacian = np.diag(connectivity_degree) - connectivity
     laplacian_tensor = torch.from_numpy(connectivity_laplacian).float()
     
+    # Extract physics sub-weights from config
+    loss_weights = train_config.get("loss_weights", {})
+    physics_weights = train_config.get("physics_sub_weights", {})
+    
     loss_fn = PhysicsInformedLoss(
         leadfield=leadfield_tensor,
         connectivity_laplacian=laplacian_tensor,
-        alpha=1.0,
-        beta=0.5,
-        gamma=0.1,
+        alpha=loss_weights.get("alpha_source", 1.0),
+        beta=loss_weights.get("beta_forward", 0.5),
+        gamma=loss_weights.get("gamma_physics", 0.01),
+        delta_epi=loss_weights.get("delta_epi", 1.0),
+        lambda_laplacian=physics_weights.get("lambda_laplacian", 0.0),
+        lambda_temporal=physics_weights.get("lambda_temporal", 0.3),
+        lambda_amplitude=physics_weights.get("lambda_amplitude", 0.2),
+        amplitude_max=train_config.get("amplitude_max", 3.0),
     )
     loss_fn = loss_fn.to(device)
     

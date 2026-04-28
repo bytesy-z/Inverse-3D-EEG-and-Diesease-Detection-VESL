@@ -322,8 +322,9 @@ class PhysDeepSIFTrainer:
                 if isinstance(batch, (list, tuple)):
                     if len(batch) == 2:
                         eeg, sources = batch
+                        mask = None
                     elif len(batch) == 3:
-                        eeg, sources, _ = batch  # Ignore mask in training
+                        eeg, sources, mask = batch
                     else:
                         raise ValueError(f"Unexpected batch format: {len(batch)} elements")
                 else:
@@ -331,6 +332,8 @@ class PhysDeepSIFTrainer:
                 
                 eeg = eeg.to(self.device)
                 sources = sources.to(self.device)
+                if mask is not None:
+                    mask = mask.to(self.device)
                 
                 # Data augmentation during training
                 eeg_augmented = self._augment_batch(eeg)
@@ -339,8 +342,8 @@ class PhysDeepSIFTrainer:
                 self.optimizer.zero_grad()
                 source_pred = self.model(eeg_augmented)
                 
-                # Compute loss
-                loss_dict = self.loss_fn(source_pred, sources, eeg_augmented)
+                # Compute loss (pass mask to enable epi-weighted terms)
+                loss_dict = self.loss_fn(source_pred, sources, eeg_augmented, mask)
                 loss = loss_dict['loss_total']
                 
                 # Backward pass
@@ -428,12 +431,14 @@ class PhysDeepSIFTrainer:
                         
                         eeg = eeg.to(self.device)
                         sources = sources.to(self.device)
+                        if epileptogenic_mask is not None:
+                            epileptogenic_mask = epileptogenic_mask.to(self.device)
                         
                         # Forward pass (no augmentation in validation)
                         source_pred = self.model(eeg)
                         
-                        # Compute loss
-                        loss_dict = self.loss_fn(source_pred, sources, eeg)
+                        # Compute loss (pass mask to enable epi-weighted terms)
+                        loss_dict = self.loss_fn(source_pred, sources, eeg, epileptogenic_mask)
                         loss = loss_dict['loss_total']
                         
                         total_loss += loss.item()
