@@ -644,22 +644,23 @@ cd /path/to/fyp-2.0
 # Verify repo is up to date with your loss-fix commits
 git pull origin main
 
-# Generate 5000 training simulations
+# Generate 5000 training simulations into a new directory
+# (use --output-dir to avoid overwriting existing data in data/synthetic3/)
 /home/zik/miniconda3/envs/physdeepsif/bin/python scripts/02_generate_synthetic_data.py \
-  --n-sims 5000 --n-jobs 16 --output-dir data/synthetic3/ --split train
+  --n-sims 5000 --n-jobs 16 --output-dir data/synthetic4/ --split train
 ```
 
 **Expected output:**
 - 5000 TVB simulations × ~5 windows each × ~70% pass rate ≈ **~17,500 train samples**
 - Runtime: ~4 minutes (5000 × 0.5s / 16 cores × 1.5× overhead for validation)
-- Saved incrementally to `data/synthetic3/train_dataset.h5` every 500 samples
+- Saved incrementally to `data/synthetic4/train_dataset.h5` every 500 samples
 
 **Monitor progress:**
 ```bash
 /home/zik/miniconda3/envs/physdeepsif/bin/python -c "
 import h5py
 try:
-    with h5py.File('data/synthetic3/train_dataset.h5', 'r') as f:
+    with h5py.File('data/synthetic4/train_dataset.h5', 'r') as f:
         print(f'Written: {f[\"eeg\"].shape[0]} samples')
 except: print('Not yet created')
 "
@@ -668,12 +669,12 @@ except: print('Not yet created')
 **After training data completes, generate validation set:**
 ```bash
 /home/zik/miniconda3/envs/physdeepsif/bin/python scripts/02_generate_synthetic_data.py \
-  --n-sims 500 --n-jobs 16 --output-dir data/synthetic3/ --split val
+  --n-sims 500 --n-jobs 16 --output-dir data/synthetic4/ --split val
 ```
 
 **Verify both exist:**
 ```bash
-ls -lh data/synthetic3/train_dataset.h5 data/synthetic3/val_dataset.h5
+ls -lh data/synthetic4/train_dataset.h5 data/synthetic4/val_dataset.h5
 ```
 
 **Data generated on the lab follow controls:** (from the config)
@@ -690,7 +691,7 @@ ls -lh data/synthetic3/train_dataset.h5 data/synthetic3/val_dataset.h5
 
 ```bash
 # Verify data exists
-ls -lh data/synthetic3/train_dataset.h5 data/synthetic3/val_dataset.h5
+ls -lh data/synthetic4/train_dataset.h5 data/synthetic4/val_dataset.h5
 
 # Launch training on RTX 3080
 /home/zik/miniconda3/envs/physdeepsif/bin/python scripts/03_train_network.py \
@@ -739,8 +740,9 @@ When training on the lab completes:
 
 ```bash
 # On lab machine, scp to laptop:
-scp data/synthetic3/train_dataset.h5       laptop:~/UniStuff/FYP/fyp-2.0/data/synthetic3/
-scp data/synthetic3/val_dataset.h5         laptop:~/UniStuff/FYP/fyp-2.0/data/synthetic3/
+# train/val from the new generation run; test stays at synthetic3 (pre-existing)
+scp data/synthetic4/train_dataset.h5       laptop:~/UniStuff/FYP/fyp-2.0/data/synthetic4/
+scp data/synthetic4/val_dataset.h5         laptop:~/UniStuff/FYP/fyp-2.0/data/synthetic4/
 scp data/synthetic3/test_dataset.h5        laptop:~/UniStuff/FYP/fyp-2.0/data/synthetic3/
 scp outputs/models/checkpoint_best.pt      laptop:~/UniStuff/FYP/fyp-2.0/outputs/models/
 scp outputs/models/normalization_stats.json laptop:~/UniStuff/FYP/fyp-2.0/outputs/models/
@@ -749,7 +751,8 @@ scp outputs/models/training.log            laptop:~/UniStuff/FYP/fyp-2.0/outputs
 
 Verify on laptop:
 ```bash
-ls -lh data/synthetic3/*.h5 outputs/models/checkpoint_best.pt outputs/models/normalization_stats.json
+ls -lh data/synthetic4/*.h5 data/synthetic3/test_dataset.h5 \
+   outputs/models/checkpoint_best.pt outputs/models/normalization_stats.json
 ```
 
 ---
@@ -1299,9 +1302,9 @@ python3 -m pytest tests/ -v --tb=short
 - [x] Docstring defaults: `γ=0.1→0.01`, `λ_L=0.5→0.0`, header formula mismatch (3 pre-existing bugs)
 
 ### ⏳ Phase 2 — Lab Compute (BLOCKED — needs data gen)
-- [ ] Phase 2.1: Data generation started on lab machine
-  - [ ] `data/synthetic3/train_dataset.h5` created (≥17,500 samples)
-  - [ ] `data/synthetic3/val_dataset.h5` created
+- [ ] Phase 2.1: Data generation started on lab machine (use --output-dir for a new directory)
+  - [ ] `data/synthetic4/train_dataset.h5` created (≥17,500 samples)
+  - [ ] `data/synthetic4/val_dataset.h5` created
 - [ ] Phase 2.2: Full training started on lab RTX 3080
   - [ ] Training launched with fixed loss (beta=0.1, combined denominator)
   - [ ] Monitoring metrics improving across epochs

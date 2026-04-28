@@ -170,6 +170,12 @@ def main() -> None:
         help="Override number of parallel jobs (default: from config)",
     )
     parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Override output directory (default: from config synthetic_data.output_dir)",
+    )
+    parser.add_argument(
         "--log-level",
         type=str,
         default="INFO",
@@ -185,6 +191,8 @@ def main() -> None:
     # Apply command-line overrides to config
     if args.n_jobs is not None:
         config.setdefault("synthetic_data", {})["n_jobs"] = args.n_jobs
+    if args.output_dir is not None:
+        config.setdefault("synthetic_data", {})["output_dir"] = args.output_dir
 
     # --- Load pre-computed data files ---
     # These were built by scripts/01_build_leadfield.py
