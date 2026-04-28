@@ -28,7 +28,7 @@ forward prediction perfectly matches EEG, L_forward = 0; when it has the
 same variance as EEG, L_forward ≈ 1.  This places L_forward and L_source
 on comparable scales so β=0.5 is a meaningful 33% contribution to the total.
 
-    L_forward = MSE(L@Ŝ, EEG) / (Var(L@Ŝ) + ε)
+    L_forward = MSE(L@Ŝ, EEG) / (Var(EEG) + ε)
 
 --- LAPLACIAN VECTORISATION (2026-04-20) ---
 The original implementation iterated over T=400 time steps in Python; this
@@ -84,15 +84,22 @@ class PhysicsInformedLoss(nn.Module):
        Ensures predicted sources are physically consistent with EEG generation
        while being on the same numerical scale as L_source.
 
-       L_forward = MSE(L @ Ŝ, EEG^input) / (Var(L @ Ŝ) + ε)
+        L_forward = MSE(L @ Ŝ, EEG^input) / (Var(EEG^input) + ε)
 
-       The raw MSE between L@Ŝ and EEG lives on the EEG amplitude scale
-       while L_source lives on the z-scored source scale.  Because the
-       leadfield (std≈22.7) projects 76 z-scored sources (each std≈1) onto
-       19 channels, L@Ŝ has RMS≈22.7×√76≈198 per channel while z-scored
-       EEG has std≈1.  Dividing raw MSE by Var(L@Ŝ) removes this
-       amplification factor and yields a dimensionless relative error ≈O(1),
-       placing L_forward on the same scale as L_source.
+         Why normalise by Var(EEG) and NOT by Var(L @ Ŝ)?
+        ─────────────────────────────────────────────────
+        At initialisation Ŝ≈0, raw MSE = MSE(0, EEG) = mean(EEG²).  Since
+        EEG is zero-mean after per-channel de-meaning, mean(EEG²) ≈ Var(EEG),
+        so L_forward = MSE / Var(EEG) ≈ 1.0 EXACTLY at init regardless of
+        input amplitude scale — the denominator cancels the input scale.
+        Var(L @ Ŝ) on the other hand is ≈ 0 at init (Ŝ≈0 ⇒ L@Ŝ≈0), so
+        L_forward ≈ 1e7 ⇒ gradient blow-up.
+
+        During training Var(EEG) is a stable per-batch constant (the same
+        EEG is both input and target), while Var(L @ Ŝ) fluctuates as source
+        estimates change scale.  Normalising by the input variance guarantees
+        L_forward ≈ O(1) at all stages of training regardless of dataset
+        scale, giving all loss components comparable gradient magnitude.
 
     3. **Physiological Regularization Loss (L_physics)**:
        Three sub-components enforcing biological realism:
@@ -330,33 +337,24 @@ class PhysicsInformedLoss(nn.Module):
         """
         Compute variance-normalised forward consistency loss.
 
-        L_forward = MSE(L @ Ŝ, EEG^input) / (Var(L @ Ŝ) + ε)
+        L_forward = MSE(L @ Ŝ, EEG^input) / (Var(EEG^input) + ε)
 
-        where L is the leadfield matrix (19×76).
-
-        Why normalise by Var(L @ Ŝ) and NOT by Var(EEG)?
+        Why normalise by Var(EEG) and NOT by Var(L @ Ŝ)?
         ─────────────────────────────────────────────────
-        Both EEG and sources are globally z-scored to std ≈ 1 before
-        training.  However the leadfield has std ≈ 22.7, so projecting 76
-        z-scored sources onto 19 channels produces:
+        At initialisation Ŝ≈0, raw MSE = MSE(0, EEG) = mean(EEG²).  Since
+        EEG is zero-mean after per-channel de-meaning, mean(EEG²) ≈ Var(EEG),
+        so L_forward = MSE / Var(EEG) ≈ 1.0 EXACTLY at init regardless of
+        input amplitude scale — the denominator cancels the input scale.
+        Var(L @ Ŝ) on the other hand is ≈ 0 at init (Ŝ≈0 ⇒ L@Ŝ≈0), so
+        L_forward ≈ 1e7 ⇒ gradient blow-up ⇒ model converges to L^T@EEG
+        (pseudo-inverse) in epoch 0 and freezes there permanently.
 
-            RMS(L@Ŝ) ≈ std(L) × √N_regions ≈ 22.7 × √76 ≈ 198
-
-        while z-scored EEG has std ≈ 1.  Without normalisation the raw
-        MSE ≈ 198² ≈ 40,000 while L_source ≈ O(1), making β·L_forward
-        dominate by a factor of ~41,000 and collapsing predicted source
-        amplitudes to near-zero (σ̂≈0.04 vs true σ≈0.22).
-
-        Dividing by Var(L@Ŝ) removes the leadfield amplification factor.
-        The denominator is computed detached so gradients only flow through
-        the numerator residual (MSE term).
-
-        Interpretation:
-          - L_forward = 0    →  L@Ŝ perfectly matches EEG (best case)
-          - L_forward ≈ 1    →  forward residual ≈ forward prediction variance
-                                 (model is at random-projection level)
-          - L_forward → 0    as training progresses and physics consistency
-                                improves
+        During training Var(EEG) is a stable per-batch constant (the same
+        EEG is both input and target), while Var(L @ Ŝ) fluctuates as source
+        estimates change scale.  Normalising by the input variance guarantees
+        L_forward ≈ O(1) at all stages of training regardless of dataset
+        scale, giving the source loss and epi loss comparable gradient
+        magnitude to the forward loss.
 
         Args:
             predicted_sources: (batch, 76, 400)
@@ -375,15 +373,11 @@ class PhysicsInformedLoss(nn.Module):
         # Raw MSE between forward prediction and target EEG
         raw_mse = ((eeg_predicted - eeg_input) ** 2).mean()
 
-        # Variance of the forward prediction (L@Ŝ), detached so it acts
-        # only as a scale normalisation — gradients flow only through the
-        # numerator raw_mse.
-        # This accounts for the leadfield amplification (std≈22.7, ×√76)
-        # and makes L_forward ≈ O(1) regardless of source amplitude scale.
-        fwd_var = eeg_predicted.var().detach()
-
-        # Variance-normalised forward loss
-        loss = raw_mse / (fwd_var + _EPS)
+        # Denominator is input EEG variance, detached — stable at ≈1.0
+        # after z-scoring throughout training (unlike Var(L@Ŝ) which blows
+        # up at init when Ŝ≈0).
+        eeg_var = eeg_input.var().detach()
+        loss = raw_mse / (eeg_var + _EPS)
 
         return loss
 
