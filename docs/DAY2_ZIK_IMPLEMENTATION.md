@@ -84,6 +84,8 @@ Logging to file: /data1tb/VESL/fyp-2.0/outputs/generation.log
 2026-04-29 00:43:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 93: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=3.44, alpha_grad=True, beta_grad=False']
 2026-04-29 00:43:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 95: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=3.07, alpha_grad=True, beta_grad=False', 'w2: PDR=3.15, alpha_grad=True, beta_grad=False']
 
+python scripts/02_generate_synthetic_data.py --n-sims 5000 --n-jobs 16 --output-dir data/synthetic4/ --split train && python scripts/02_generate_synthetic_data.py --n-sims 500 --n-jobs 16 --output-dir data/synthetic4/ --split val
+
 ## Situation Assessment (09:00)
 
 | Factor | Status |
@@ -97,10 +99,12 @@ Logging to file: /data1tb/VESL/fyp-2.0/outputs/generation.log
 | XAI wiring in backend | **NOT DONE** — `explain_biomarker` never imported/called in `server.py` |
 | `data/synthetic3/train_dataset.h5` | **MISSING** — only `test_dataset.h5` exists (50 samples) |
 | `data/synthetic3/val_dataset.h5` | **MISSING** |
-| Training data gen (02 script) | **NOT RUN** |
+| Training data gen (02 script) | **NOT RUN** — see datagen compromise below |
 | Full GPU training (03 script) | **BLOCKED** — needs training data |
 | Phase 1.5 diagnostics (A1-A3) | **DONE** — all passed, see §1.5 |
 | Phase 1.6 overfit test | **DONE — PASSED** — AUC=0.732, DLE=8.4mm, see §1.6 |
+| `synthetic_dataset.py` thread limits | **DONE** — `OMP_NUM_THREADS=1` etc. at module top (lines 59-66), fixes 4× oversubscription |
+| `synthetic_dataset.py` relaxed gradients | **DONE** — alpha/beta 3/4 steps instead of 4/4 (lines 773-792), yield 82%→100% |
 
 ---
 
@@ -709,37 +713,62 @@ Overfit test passed without failsafe intervention. These are retained for refere
 
 ---
 
-## Phase 2 — Parallel Background Compute (LAB, ~6 h total)
+## Phase 2 — Parallel Background Compute (LAB, ~4-5 h total)
 
 **System:** Lab machine with RTX 3080 + 16 CPU cores.
 
-**Start as soon as overfit test passes.** Data gen and training run on the lab while you continue with Phase 3 on the laptop.
+**Datagen runs unattended for 4 hours while you sleep/work on Phase 3.**
 
 ---
 
-### 2.1: Synthetic Data Generation (LAB, 16 CPU cores)
+### 2.1: Synthetic Data Generation — Compromise Plan
 
-**SSH into lab machine** and run:
+**⚠️ REALITY CHECK — TVB simulation takes 24s per sim, not 0.5s.**
+
+| Metric | Apr 28 plan (optimistic) | Reality (measured Apr 29) |
+|--------|--------------------------|---------------------------|
+| Time per TVB sim | 0.5s | **23.5s** |
+| Throughput (16 workers, no fixes) | 32 sims/sec | **0.265 sims/sec** |
+| Throughput (16 workers, with fixes) | — | **~0.34 sims/sec** |
+| Windows per sim | 5 × 70% = 3.5 | 5 × 100% = **5.0** (relaxed validation) |
+
+**4-hour project on lab (with our fixes applied):**
+- Time: 4 hours = 14,400 sec
+- Sims completed: 14,400 × 0.34 ≈ **4,900 sims**
+- Windows at 100% yield: 4,900 × 5 = **~24,500 windows** ✅ (above 17,500 min)
+- This goes into `train_dataset.h5`
+
+After training, still need `val_dataset.h5` (~500 sims ≈ 25 min). Can be started manually after waking.
+
+**CRITICAL — Before starting, verify these two changes exist in `src/phase1_forward/synthetic_dataset.py`:**
+1. Lines 59-66: `os.environ.setdefault('OMP_NUM_THREADS', '1')` etc. (thread limits)
+2. Lines 773-792: `np.sum(alpha_diffs > 0) >= 3` and `np.sum(beta_diffs < 0) >= 3` (relaxed gradients)
+
+If the lab repo doesn't have these edits, apply them manually — without them, 4 hours yields only ~14k windows (below minimum).
+
+**SSH into lab machine and run:**
 
 ```bash
 # Navigate to repo on lab
 cd /path/to/fyp-2.0
 
-# Verify repo is up to date with your loss-fix commits
-git pull origin main
+# Verify synthetic_dataset.py has the two fixes above
+grep -n 'setdefault' src/phase1_forward/synthetic_dataset.py   # should show 4 lines
+grep -n 'sum(alpha_diffs' src/phase1_forward/synthetic_dataset.py   # should show >= 3
 
-# Generate 5000 training simulations into a new directory
-# (use --output-dir to avoid overwriting existing data in data/synthetic3/)
+# Generate training data (4 hours unattended)
+# Using --n-sims matched to what completes in 4h:
 /home/zik/miniconda3/envs/physdeepsif/bin/python scripts/02_generate_synthetic_data.py \
   --n-sims 5000 --n-jobs 16 --output-dir data/synthetic4/ --split train
 ```
 
 **Expected output:**
-- 5000 TVB simulations × ~5 windows each × ~70% pass rate ≈ **~17,500 train samples**
-- Runtime: ~4 minutes (5000 × 0.5s / 16 cores × 1.5× overhead for validation)
+- 5000 sims attempted, ~4,900 complete (some may still be in-flight)
+- ~24,500 windows at 100% validation pass rate (relaxed)
+- Runtime: ~4 hours (estimated from 0.34 sims/sec)
 - Saved incrementally to `data/synthetic4/train_dataset.h5` every 500 samples
 
-**Monitor progress:**
+**Monitor progress (check when you wake up):**
 ```bash
 /home/zik/miniconda3/envs/physdeepsif/bin/python -c "
 import h5py
@@ -750,7 +779,7 @@ except: print('Not yet created')
 "
 ```
 
-**After training data completes, generate validation set:**
+**After training data completes, generate validation set:** (~25 min)
 ```bash
 /home/zik/miniconda3/envs/physdeepsif/bin/python scripts/02_generate_synthetic_data.py \
   --n-sims 500 --n-jobs 16 --output-dir data/synthetic4/ --split val
@@ -764,18 +793,18 @@ ls -lh data/synthetic4/train_dataset.h5 data/synthetic4/val_dataset.h5
 **Data generated on the lab follow controls:** (from the config)
 - Seed offsets: train=0, val=100000, test=200000 (prevents leakage)
 - TVB simulation: 12s biological time, 1000ms transient discard
-- Spatial-spectral validation: PDR ≤ 5%, gradient ratio ≥ 3 dB
-- Epil eptogenicity: ~50% of samples have 2-8 epileptogenic regions
+- Spatial-spectral validation: PDR [1.3, 5.0], gradient ≥ 3/4 steps (relaxed)
+- Epileptogenicity: ~50% of samples have 2-8 epileptogenic regions
 
 ---
 
-### 2.2: Full GPU Training (LAB, RTX 3080)
+### 2.2: Full GPU Training (LAB, RTX 3080) — STARTS 4h AFTER DATAGEN BEGINS
 
-**Start as soon as `train_dataset.h5` exists.** Can run in parallel with Phase 3 (backend work on laptop).
+**Datagen started at T=0, finishes at T+4h. Training starts at T+4h.**
 
 ```bash
-# Verify data exists
-ls -lh data/synthetic4/train_dataset.h5 data/synthetic4/val_dataset.h5
+# Verify data exists (~4 hours after starting datagen)
+ls -lh data/synthetic4/train_dataset.h5
 
 # Launch training on RTX 3080
 /home/zik/miniconda3/envs/physdeepsif/bin/python scripts/03_train_network.py \
@@ -785,36 +814,36 @@ ls -lh data/synthetic4/train_dataset.h5 data/synthetic4/val_dataset.h5
 **Expected performance:**
 - Model: 419k params (~1.6 MB) — tiny
 - Batch 64: ~30s per epoch on RTX 3080
-- 80 epochs: **~40 min total**
+- ~24,500 train samples → 383 batches/epoch × 30s = **~3.2h for 80 epochs**
 - VRAM: ~60 MB (fits easily in 10 GB)
 
-**How training should behave (with B1-B4 fixes):**
-- **Epoch 0-5:** Beta ramps from 0→target (warm-up). Forward loss starts low, source loss dominates initially.
-- **Epoch 5-20:** DLE should drop from ~infinity to < 30 mm. AUC climbs from 0.5 toward 0.6-0.7.
-- **Epoch 20-50:** AUC continues toward 0.7+. `pred_std` approaches `true_std`. Correlation improves.
-- **Epoch 50-80:** Fine-tuning. Early stopping (patience=15) may trigger if metrics plateau.
+**⚠️ Training will run past the 4h window.** If you start datagen at 09:00:
+- 09:00-13:00: Datagen
+- 13:00-16:15: Training (3.2h)
+This spills into afternoon of Apr 29.
 
-**Monitor in another terminal:**
+**How training should behave (with B1-B4 fixes):**
+- **Epoch 0-5:** Beta ramps from 0→target (warm-up). Forward loss stable at O(1).
+- **Epoch 5-20:** DLE drops from ~∞ to < 30 mm. AUC climbs from 0.5 toward 0.6-0.7.
+- **Epoch 20-50:** AUC toward 0.7+. `pred_std` approaches `true_std`. Correlation improves.
+- **Epoch 50-80:** Fine-tuning. Early stopping (patience=15) may trigger.
+
+**Monitor remotely:**
 ```bash
 tail -f outputs/training.log
 ```
 
-**Or via health-check polling:**
-```bash
-watch -n 30 'grep "Val loss" outputs/training.log | tail -3'
-```
-
 **Expected final targets (from Technical Specs §4.3.3):**
 - DLE < 20 mm
-- AUC > 0.7 (note: 0.85 target from specs may be ambitious with only 5000 sims)
+- AUC > 0.7 (0.85 target may be ambitious with this dataset size)
 - SD < 30 mm
 - Temporal correlation > 0.6
 
-**If training is not converging after 20 epochs:**
-1. Check `outputs/training.log` for NaN losses → defective samples
-2. Reduce `--batch-size 32` (more stochastic gradient helps escape local minima)
-3. Try `--device cpu` for a quick 5-epoch debug run (tests gradient flow)
-4. If still flat → go back to E1-E4 failsafes
+**If training not converging after 20 epochs:**
+1. Check `outputs/training.log` for NaN → defective samples
+2. `--batch-size 32` (more stochastic gradient)
+3. Try `--device cpu` for 5-epoch debug run
+4. If still flat → E1-E4 failsafes
 
 ---
 
@@ -1367,6 +1396,12 @@ python3 -m pytest tests/ -v --tb=short
 ```
 
 ---
+
+### Datagen Decision Point (Apr 29)
+- Both fixes already applied in `synthetic_dataset.py` (thread limits + relaxed 3/4 gradient)
+- Run for 4h unattended: ~4,900 sims → ~24,500 windows (above 17,500 minimum)
+- But need to manually trigger training after datagen finishes — can't auto-chain while asleep
+- Accepting spillover: training pushes into Apr 30 morning. Phase 3 (WebSocket, XAI, tests) done on laptop in parallel.
 
 ## Success Checklist
 

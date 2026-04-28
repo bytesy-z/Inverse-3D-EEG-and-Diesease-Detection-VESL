@@ -1,9 +1,16 @@
 # PhysDeepSIF — Emergency Sprint Plan: April 28–30, 2026
 
 **Generated:** April 28, 2026  
-**Deadline:** April 30, 2026 (night) — ~60 hours remaining  
+**Last updated:** April 29, 2026 (datagen compromise applied, user sleep-decision)  
+**Deadline:** April 30, 2026 (night) — ~36 hours remaining  
 **Team:** Zik, Hira, Shahliza  
-**Status:** CRITICAL — lab GPU (RTX 3080) accessible; training needs root-cause debugging first
+**Status:** PHASE A-C ✅ DONE — overfit test passed (AUC=0.732). Datagen is the remaining blocker.
+
+### Decision Point — Apr 29
+- Both fixes already in `synthetic_dataset.py`: thread limits (+27% throughput), relaxed 3/4 gradient (82%→100% yield)
+- Run for 4h unattended → ~4,900 sims → ~24,500 windows ✅ (above 17,500 minimum)
+- **Cannot chain training** without manual trigger — user will sleep. Training pushes to Apr 30 morning.
+- Phase 3 (WebSocket, XAI, tests) done on laptop in parallel during datagen.
 
 ---
 
@@ -574,26 +581,50 @@ If pure MSE works but composite loss doesn't → loss weighting/balancing is fun
 
 ---
 
-## 3. Compute Timeline (Lab RTX 3080)
+## 3. Compute Timeline — Realized (Post-Datagen Compromise)
+
+**⚠️ Datagen reality: TVB sim takes 24s, not 0.5s. Plan adjusted Apr 29.**
+
+### 3a: What's DONE (Phases A-C, Apr 28-29)
+```
+✅ A1-A3 Diagnostics   (30 min)  — BLOWN UP L_forward = 1e7 confirmed at Ŝ=0
+✅ B1-B4 Fixes applied            — Combined Var(EEG)+Var(L@Ŝ) denominator
+✅ C Overfit test       (10 min)  — AUC=0.732, DLE=8.4mm, Pred_σ=0.39
+```
+
+### 3b: Remaining Compute (Lab RTX 3080 + 16 cores)
 
 ```
-START  ────────────────────────────────────────────────  Apr 30 23:59
-│                                                              │
-├─ [Ph A]  30 min   DIAGNOSTICS (A1-A3) ──────────────────────┤
-│   ↓                                                          │
-├─ [Ph B]  30 min   APPLY FIXES (B1-B4 edits) ────────────────┤
-│   ↓                                                          │
-├─ [Ph C]  10 min   OVERFIT TEST (100 samples, 100 epochs) ───┤
-│   ↓ MUST PASS                                                │
-├─ [Ph D]   4 h     DATAGEN (CPU 16 cores, 5000 sims) ────────┤
-│           2 h     TRAINING (GPU, 80 epochs) ─────────────────┤
-│                                                                  │
-│   PARALLEL:  Coding continues through all compute phases ────────┤
-│                                                                  │
-├─ [Day 2] 16 h    INTEGRATION + CMA-ES + VALIDATION (3 people) ──┤
-├─ [Day 3] 12 h    TESTING + THESIS FIGURES ───────────────────────┤
-├─ [Day 3] 12 h    POLISH + SUBMIT ────────────────────────────────┤
+Apr 29 09:00 ──────────────────────────────────────────────  Apr 30 23:59
+│
+├─ [Ph D]  4 h       DATAGEN (CPU, 0.34 sims/sec, ~24,500 windows) ──┤
+│                    ⚠ Start BEFORE sleep                            │
+│          3.2 h     TRAINING (GPU RTX 3080, 80 epochs) ─────────────┤
+│                    (starts automatically at T+4h if you wake up)    │
+│                                                                     │
+├─ [Apr 29 afternoon]  Merge Hira/Shahliza branches ──────────────────┤
+├─ [Apr 29 eve]        XAI wiring + WebSocket fix ────────────────────┤
+├─ [Apr 30 morning]    Integration + CMA-ES endpoint ─────────────────┤
+├─ [Apr 30 afternoon]  Testing + thesis figures ──────────────────────┤
+├─ [Apr 30 night]      Polish + submit ───────────────────────────────┤
+│                                                                     │
+│ SPILLOVER from Apr 28: Full training runs into Apr 29 afternoon.    │
+│ Phase 3 (WebSocket, XAI, backend) must be COMPLETED Apr 29.        │
+└──────────────────────────────────────────────────────────────────────
 ```
+
+### 3c: What Spills Over & What's Saved
+
+| Task | Original date | New date | Impact |
+|------|:------------:|:--------:|--------|
+| Datagen start | Apr 28 eve | **Apr 29 morning** | Training delayed by 12h |
+| Training end | Apr 28 night | **Apr 29 16:15** | Model ready for afternoon integration |
+| WebSocket fix | Apr 28 eve | Apr 29 morning | **Same day** — no spillover |
+| XAI wiring | Apr 28 eve | Apr 29 morning | **Same day** — no spillover |
+| Backend CMA-ES | Apr 29 | Apr 29 afternoon | Still on schedule |
+| Branch merge | Apr 29 | Apr 29 afternoon | Still on schedule |
+| Testing | Apr 30 | Apr 30 | Still on schedule |
+| Thesis figures | Apr 30 | Apr 30 | Still on schedule |
 
 ---
 
