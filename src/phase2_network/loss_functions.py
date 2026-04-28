@@ -284,8 +284,8 @@ class PhysicsInformedLoss(nn.Module):
         L_source = (1/(N_r·T)) Σ_i Σ_t (Ŝ_{i,t} - S^true_{i,t})²
 
         When epileptogenic_mask is provided, applies per-region class-balancing
-        weighting: epi-region MSE is up-weighted by ~76/n_epi to counteract
-        the severe class imbalance (healthy regions dominate gradient).
+        weighting: epi-region MSE is up-weighted to match healthy-region total
+        contribution, achieving equal gradient influence from both classes.
 
         Args:
             predicted_sources: (batch, 76, 400)
@@ -301,9 +301,10 @@ class PhysicsInformedLoss(nn.Module):
         # Per-region MSE over time: (batch, 76)
         per_region_mse = ((predicted_sources - true_sources) ** 2).mean(dim=-1)
 
-        # Compute per-sample class-balancing weight: 76 / n_epi
+        # Compute per-sample class-balancing weight: n_healthy/n_epi
         n_epi = epileptogenic_mask.sum(dim=-1, keepdim=True).float().clamp(min=1.0)
-        epi_weight = N_REGIONS / n_epi  # (batch, 1)
+        n_healthy = N_REGIONS - n_epi
+        epi_weight = n_healthy / n_epi  # (batch, 1)
 
         # Build weight matrix: epi regions get high weight, healthy get 1.0
         weights = torch.ones_like(per_region_mse)

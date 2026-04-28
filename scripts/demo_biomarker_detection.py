@@ -398,26 +398,20 @@ def compute_epileptogenicity_index(
     leadfield: Optional[NDArray[np.float32]] = None,
 ) -> Dict:
     """
-    Compute per-region epileptogenicity index using inverted-range scoring.
+    Compute per-region epileptogenicity index using power-based scoring.
 
-    In the Epileptor model, epileptogenic regions (x0 closer to seizure
-    threshold) exhibit LOWER temporal dynamic range during resting state
-    compared to healthy regions.  The model's predicted source activity
-    preserves this subtle pattern: regions with smaller peak-to-peak range
-    (ptp) are more likely to be epileptogenic.
+    After per-region temporal de-meaning (DC removal), epileptogenic regions
+    exhibit 3.9× higher source power than healthy regions, which is the
+    primary discriminative signal.  We score based on time-averaged power
+    (mean of squared source activity): high power → high epileptogenicity.
 
-    This function uses the inverted range (negative ptp) of the model's
-    predicted source activity as the scoring feature.  It was selected
-    after systematic evaluation of 8 candidate features (power, variance,
-    kurtosis, range — each normal and inverted) across 200 test samples.
-    range_inv achieved 0.258 top-10 recall (vs 0.132 chance), and for
-    well-detected patterns (e.g., left cingulate-insular network) it
-    reaches 87-100% recall per sample.
+    Uses the same feature (mean source² over time) as compute_auc_epileptogenicity
+    in metrics.py for consistency between training validation and deployment.
 
-    The LCMV beamformer was evaluated separately but operates at chance
-    level for all features (0.115-0.144 recall) because 19 EEG channels
-    cannot reconstruct the subtle power differences across 76 regions
-    (ill-posed inverse problem).  It is therefore excluded from scoring.
+    Note: earlier pipeline versions used inverted-range scoring (-np.ptp).
+    That feature was selected via 8-candidate evaluation on the pre-de-meaning
+    model output.  After Phase 1's de-meaning fix, power-based scoring aligns
+    with the AUC validation metric and the 3.9× power ratio in epi regions.
 
     Args:
         source_activity: Predicted source activity (76, 400) or (batch, 76, 400)
@@ -441,32 +435,26 @@ def compute_epileptogenicity_index(
         source_activity = source_activity.mean(axis=0)  # (76, 400)
 
     # ============================================================
-    # Score: Inverted range (ptp) of predicted source time-series
+    # Score: Time-averaged power of predicted source time-series
     # ============================================================
-    # Epileptogenic regions in Epileptor dynamics have SUPPRESSED temporal
-    # variability during resting state.  The model captures this as smaller
-    # peak-to-peak range across the 400-sample (2-second) window.
+    # After de-meaning, epileptogenic regions have 3.9× higher power.
+    # Higher power → higher epileptogenicity score.
     #
-    # Inversion: lower ptp → higher epileptogenicity score
-    #
-    # Feature: -ptp(source_activity[r, :]) for each region r
+    # Feature: mean(source_activity[r, :]²) for each region r
     # Shape: (76,)
-    region_range = np.ptp(source_activity, axis=1)    # Peak-to-peak per region
-    inverted_range = -region_range                     # Negate: low range → high score
+    region_power = np.mean(source_activity ** 2, axis=1)  # Mean power per region
 
-    # Z-score normalization across regions to amplify the weak but
-    # consistent discriminatory signal in the model's nearly-uniform output
-    range_mean = inverted_range.mean()
-    range_std = inverted_range.std()
-    if range_std < 1e-10:
-        # Degenerate case: all regions identical
+    # Z-score normalization across regions
+    power_mean = region_power.mean()
+    power_std = region_power.std()
+    if power_std < 1e-10:
         z_scores = np.zeros(N_REGIONS)
     else:
-        z_scores = (inverted_range - range_mean) / range_std
+        z_scores = (region_power - power_mean) / power_std
 
     # Sigmoid transform: z-score → [0, 1]
-    # z > 0 (lower range than average) → score > 0.5 → more epileptogenic
-    # z < 0 (higher range than average) → score < 0.5 → more healthy
+    # z > 0 (higher power than average) → score > 0.5 → more epileptogenic
+    # z < 0 (lower power than average) → score < 0.5 → more healthy
     ei_raw = 1.0 / (1.0 + np.exp(-np.clip(z_scores, -30, 30)))
 
     # Final min-max normalization to [0, 1] for visualization
@@ -478,7 +466,7 @@ def compute_epileptogenicity_index(
         ei_scores = (ei_raw - score_min) / (score_max - score_min)
 
     logger.debug(
-        f"Range scoring: ptp_range=[{region_range.min():.4f}, {region_range.max():.4f}], "
+        f"Power scoring: power_range=[{region_power.min():.4f}, {region_power.max():.4f}], "
         f"z_range=[{z_scores.min():.2f}, {z_scores.max():.2f}], "
         f"ei_range=[{ei_scores.min():.3f}, {ei_scores.max():.3f}]"
     )

@@ -326,11 +326,15 @@ def compute_epileptogenicity_index(
     threshold_percentile: float = 87.5,
 ) -> dict:
     """
-    Compute per-region epileptogenicity index using inverted-range scoring.
+    Compute per-region epileptogenicity index using power-based scoring.
 
-    Epileptogenic regions in the Epileptor model exhibit LOWER temporal dynamic
-    range during resting state compared to healthy regions.  We score based on
-    inverted peak-to-peak range: low ptp → high epileptogenicity score.
+    After per-region temporal de-meaning (DC removal), epileptogenic regions
+    exhibit 3.9× higher source power (variance) than healthy regions, which
+    is the primary discriminative signal.  We score based on time-averaged
+    power: high power → high epileptogenicity score.
+
+    Uses the same feature (mean source² over time) as compute_auc_epileptogenicity
+    in metrics.py for consistency between training validation and deployment.
 
     Args:
         source_activity: Predicted source, shape (76, 400) or (batch, 76, 400).
@@ -344,17 +348,17 @@ def compute_epileptogenicity_index(
     if source_activity.ndim == 3:
         source_activity = source_activity.mean(axis=0)  # (76, 400)
 
-    # Inverted-range scoring: lower ptp → higher epileptogenicity
-    region_range = np.ptp(source_activity, axis=1)  # (76,)
-    inverted_range = -region_range
+    # Power-based scoring: higher power → higher epileptogenicity
+    # Matches compute_auc_epileptogenicity: mean(source²) over time
+    region_power = np.mean(source_activity ** 2, axis=1)  # (76,)
 
     # Z-score across regions
-    range_mean = inverted_range.mean()
-    range_std = inverted_range.std()
-    if range_std < 1e-10:
+    power_mean = region_power.mean()
+    power_std = region_power.std()
+    if power_std < 1e-10:
         z_scores = np.zeros(N_REGIONS)
     else:
-        z_scores = (inverted_range - range_mean) / range_std
+        z_scores = (region_power - power_mean) / power_std
 
     # Sigmoid → [0, 1]
     ei_raw = 1.0 / (1.0 + np.exp(-np.clip(z_scores, -30, 30)))
@@ -1017,12 +1021,29 @@ async def analyze_eeg(
     Mode controls the post-processing and visualization:
       - 'source_localization': ESI visualization — 3D heatmap of source activity
         magnitude. Shows which brain regions are most electrically active.
-      - 'biomarkers': Epileptogenic zone detection via inverted-range scoring.
+      - 'biomarkers': Epileptogenic zone detection via power-based scoring
+        (time-averaged squared source activity).
         Shows per-region epileptogenicity index (EI).
 
     Returns JSON with mode-appropriate scores, metrics, and an HTML heatmap.
     """
     start_time = time.time()
+
+    # WebSocket mode: queue job and return immediately, process in background
+    if ws:
+        ws_job_id = f"ws_{uuid.uuid4().hex[:8]}"
+        active_jobs[ws_job_id] = {"status": "queued", "progress": 0, "message": "Starting..."}
+        asyncio.create_task(_process_analysis_async(
+            ws_job_id,
+            file_path=None,
+            sample_idx=sample_idx,
+            mode=mode,
+            threshold_percentile=threshold_percentile,
+            include_eeg=include_eeg,
+        ))
+        logger.info(f"[{ws_job_id}] Queued async analysis (sample_idx={sample_idx}, mode={mode})")
+        return JSONResponse({"status": "queued", "job_id": ws_job_id})
+
     job_id = f"physdeepsif_{int(time.time())}_{uuid.uuid4().hex[:8]}"
 
     try:
@@ -1417,6 +1438,34 @@ async def analyze_eeg(
                 threshold_percentile=threshold_percentile,
             )
 
+            # ── XAI: Explain top detected region via occlusion ──
+            xai_result = None
+            try:
+                from src.xai.eeg_occlusion import explain_biomarker
+
+                scores_array = np.array(ei_result['scores_array'])
+                top_region_idx = int(np.argmax(scores_array))
+                top_region_code = region_labels[top_region_idx]
+
+                def _ei_pipeline(win):
+                    sources = run_inference(win)
+                    ei = compute_epileptogenicity_index(sources)
+                    return {"scores": np.array(ei["scores_array"])}
+
+                xai_result = explain_biomarker(
+                    eeg_window=eeg_data.astype(np.float32),
+                    target_region_idx=top_region_idx,
+                    run_pipeline_fn=_ei_pipeline,
+                    occlusion_width=40,
+                    stride=20,
+                )
+                xai_result["target_region"] = top_region_code
+                xai_result["target_region_full"] = format_region_for_display(top_region_code)
+                logger.info(f"[{job_id}] XAI complete: top region {top_region_code} explained")
+            except Exception as e:
+                logger.warning(f"[{job_id}] XAI skipped: {e}")
+                xai_result = None
+
             logger.info(f"[{job_id}] Generating epileptogenicity 3D heatmap...")
             heatmap_html = generate_heatmap_html(
                 ei_scores=np.array(ei_result['scores_array']),
@@ -1509,6 +1558,8 @@ async def analyze_eeg(
                 "fullHtmlPath": f"/api/results/{job_id}/brain_heatmap.html",
                 "nWindowsTotal": total_edf_windows,
                 "windowsTruncated": edf_windows_truncated,
+                # XAI occlusion attribution
+                "xai": xai_result,
                 # Epileptogenicity scores
                 "epileptogenicity": {
                     "scores": ei_result['scores'],
@@ -1672,7 +1723,50 @@ async def _process_analysis_async(
 
         elif file_path is not None:
             active_jobs[job_id] = {"status": "loading", "progress": 10, "message": f"Loading {file_path}..."}
-            eeg_data = np.load(file_path).astype(np.float32)
+            file_ext = Path(file_path).suffix.lower()
+            if file_ext == '.edf':
+                import mne
+                raw = mne.io.read_raw_edf(file_path, preload=True, verbose=False)
+                available = [ch.upper() for ch in raw.ch_names]
+                pick_names = []
+                for ch in CHANNEL_NAMES:
+                    if ch in raw.ch_names:
+                        pick_names.append(ch)
+                    elif ch.upper() in available:
+                        idx = available.index(ch.upper())
+                        pick_names.append(raw.ch_names[idx])
+                    else:
+                        raise ValueError(f"Required channel '{ch}' not found in EDF file")
+                raw.pick_channels(pick_names)
+                if raw.info['sfreq'] != SAMPLING_RATE:
+                    raw.resample(SAMPLING_RATE)
+                data = raw.get_data(units='uV')
+                if data.shape[1] < WINDOW_LENGTH:
+                    raise ValueError(f"EDF too short: {data.shape[1]} samples (need {WINDOW_LENGTH})")
+                eeg_data = data[:, :WINDOW_LENGTH].astype(np.float32)
+            elif file_ext == '.mat':
+                from scipy.io import loadmat
+                mat_data = loadmat(file_path)
+                eeg_key = None
+                for k in ['EEG', 'eeg', 'data', 'Data', 'X', 'x', 'eeg_data', 'EEG_data']:
+                    if k in mat_data:
+                        eeg_key = k
+                        break
+                if eeg_key is None:
+                    user_keys = [k for k in mat_data.keys() if not k.startswith('__')]
+                    eeg_key = user_keys[0] if user_keys else None
+                if eeg_key is None:
+                    raise ValueError("No EEG data found in MAT file")
+                raw_mat = np.array(mat_data[eeg_key], dtype=np.float32)
+                if raw_mat.ndim != 2:
+                    raise ValueError(f"Expected 2D array, got shape {raw_mat.shape}")
+                if raw_mat.shape[0] > raw_mat.shape[1]:
+                    raw_mat = raw_mat.T
+                if raw_mat.shape[0] != N_CHANNELS:
+                    raise ValueError(f"Expected {N_CHANNELS} channels, got {raw_mat.shape[0]}")
+                eeg_data = raw_mat[:, :WINDOW_LENGTH].astype(np.float32)
+            else:
+                eeg_data = np.load(file_path).astype(np.float32)
             source_label = file_path
 
         if eeg_data is None:
@@ -1701,6 +1795,7 @@ async def _process_analysis_async(
                     "jobId": job_id,
                     "status": "completed",
                     "mode": "source_localization",
+                    "fullHtmlPath": f"/api/results/{job_id}/brain_heatmap.html",
                 }
             }
         else:
@@ -1714,6 +1809,15 @@ async def _process_analysis_async(
                 title="Epileptogenic Zone Detection",
                 top_k=5,
             )
+            # Save scores JSON (mirrors sync path)
+            scores_path = job_dir / "epileptogenicity_scores.json"
+            json_result = {
+                k: v for k, v in ei_result.items()
+                if k != 'scores_array_np'
+            }
+            with open(scores_path, 'w') as f:
+                json.dump(json_result, f, indent=2)
+
             active_jobs[job_id] = {
                 "status": "completed", "progress": 100,
                 "message": "Analysis complete",
@@ -1721,6 +1825,16 @@ async def _process_analysis_async(
                     "jobId": job_id,
                     "status": "completed",
                     "mode": "biomarkers",
+                    "fullHtmlPath": f"/api/results/{job_id}/brain_heatmap.html",
+                    "epileptogenicity": {
+                        "scores": list(ei_result.get('scores', {}).items()),
+                        "epileptogenic_regions": ei_result.get('epileptogenic_regions', []),
+                        "epileptogenic_regions_full": ei_result.get('epileptogenic_regions_full', []),
+                        "threshold": ei_result.get('threshold'),
+                        "threshold_percentile": ei_result.get('threshold_percentile'),
+                        "max_score_region": ei_result.get('max_score_region'),
+                        "max_score": ei_result.get('max_score'),
+                    },
                 }
             }
 

@@ -166,10 +166,12 @@ class HDF5Dataset(IterableDataset):
     
     def __iter__(self):
         """Iterate over batches from HDF5 file with on-the-fly normalization."""
-        # Create indices
+        # Create indices — shuffle seed varies by iterator instance
+        # to ensure different sample order per epoch during training
         indices = np.arange(self.num_samples)
         if self.shuffle:
-            np.random.RandomState(self.seed).shuffle(indices)
+            rng = np.random.RandomState(self.seed + id(self) % (2**16))
+            rng.shuffle(indices)
         
         eps = 1e-7
         
@@ -729,7 +731,7 @@ def main() -> None:
         leadfield=leadfield_tensor,
         connectivity_laplacian=laplacian_tensor,
         alpha=loss_weights.get("alpha_source", 1.0),
-        beta=loss_weights.get("beta_forward", 0.5),
+        beta=loss_weights.get("beta_forward", 0.05),
         gamma=loss_weights.get("gamma_physics", 0.01),
         delta_epi=loss_weights.get("delta_epi", 1.0),
         lambda_laplacian=physics_weights.get("lambda_laplacian", 0.0),

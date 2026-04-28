@@ -25,7 +25,7 @@ Date: 2026-02-18
 """
 
 import logging
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -42,6 +42,7 @@ def compute_dipole_localization_error(
     predicted_sources: NDArray[np.float32],
     true_sources: NDArray[np.float32],
     region_centers: NDArray[np.float32],
+    epileptogenic_mask: Optional[NDArray[np.bool_]] = None,
 ) -> float:
     """
     Compute Dipole Localization Error (DLE) between predicted and true sources.
@@ -51,44 +52,46 @@ def compute_dipole_localization_error(
     standard metric in EEG source imaging (Molins et al., 2008) that indicates
     how accurately we localize the seizure focus.
     
+    CRITICAL — asymmetric mask application:
+    ──────────────────────────────────────
+    The predicted centroid uses ALL predicted power (unmasked), while the true
+    centroid uses ONLY epileptogenic regions' power (masked). This asymmetry
+    is intentional and scientifically necessary:
+    
+      - Predicted centroid: the model doesn't know which regions are epi, so
+        its "center of mass" must be evaluated using everything it outputs.
+        Uniform noise across 76 regions gives a centroid at brain center.
+    
+      - True centroid: only the actual epileptogenic focus matters for the
+        reference location. A model that puts power everywhere is correctly
+        penalized with a large DLE (brain-center → epi-focus distance).
+    
+    Applying the mask to BOTH would let a uniform-noise model achieve low DLE
+    (both centroids collapse to the epi region geometric center), inflating
+    the metric.
+    
+    For healthy-only samples (zero epi regions, mask.all() == False per sample),
+    falls back to all-region centroid for both.
+    
     Algorithm:
         1. Compute time-averaged power for each region:
            power_i = mean(source_i(t)^2)
-        2. Compute power-weighted centroid:
-           centroid = Σ_i (power_i * center_i) / Σ_i power_i
-        3. Euclidean distance between predicted and true centroids
+        2. Predicted centroid: power-weighted using ALL regions
+        3. True centroid: power-weighted using ONLY epi regions (when mask given)
+        4. Euclidean distance between them
     
     Args:
         predicted_sources: Predicted source activity, shape (batch, 76, 400)
-            - Expected range: normalized, typically [-3, +3] after z-scoring
-            - Units: arbitrary normalized units
         true_sources: Ground truth source activity, shape (batch, 76, 400)
-            - Same format as predicted_sources
-        region_centers: 3D coordinates of region centroids, shape (76, 3)
-            - Units: millimeters (mm), MNI space
-            - Expected coordinate range: brain space (±100mm from center)
+        region_centers: 3D coordinates of region centroids, shape (76, 3), in mm
+        epileptogenic_mask: Boolean mask (batch, 76). Applied to TRUE centroid
+                           only. Predicted centroid always uses all regions.
+                           If None, true centroid also uses all regions.
     
     Returns:
         float: Average DLE across batch in millimeters. Lower is better.
         Target threshold: < 20 mm (Molins et al., 2008)
-    
-    Raises:
-        ValueError: If shapes don't match specification
-        RuntimeError: If all power is zero (degenerate source localization)
-    
-    References:
-        Molins et al. (2008): "Kernel on integrated functional spaces for
-        enhanced source imaging with EEG/MEG" NeuroImage.
-        Technical Specs Section 4.3.3.
-    
-    Example:
-        >>> pred_sources = np.random.randn(10, 76, 400).astype(np.float32)
-        >>> true_sources = np.random.randn(10, 76, 400).astype(np.float32)
-        >>> centers = np.random.randn(76, 3).astype(np.float32) * 50
-        >>> dle = compute_dipole_localization_error(pred_sources, true_sources, centers)
-        >>> print(f"DLE: {dle:.2f} mm")
     """
-    # Validate input shapes
     if predicted_sources.shape != true_sources.shape:
         raise ValueError(
             f"Shape mismatch: predicted {predicted_sources.shape} vs "
@@ -110,52 +113,48 @@ def compute_dipole_localization_error(
     dle_values = []
     
     for sample_idx in range(batch_size):
-        # Step 1: Extract source time series for this sample
-        # Shape: (76, 400)
-        pred_ts = predicted_sources[sample_idx]  
+        pred_ts = predicted_sources[sample_idx]
         true_ts = true_sources[sample_idx]
         
-        # Step 2: Compute time-averaged power for each region
-        # Power = mean of squared activity across time dimension
-        # Shape: (76,)
-        # Interpretation: higher power indicates stronger/more sustained activity
-        pred_power = np.mean(pred_ts ** 2, axis=1)  
-        true_power = np.mean(true_ts ** 2, axis=1)
+        pred_power = np.mean(pred_ts ** 2, axis=1)      # all regions
+        true_power = np.mean(true_ts ** 2, axis=1)      # all regions initially
         
-        # Step 3: Compute power-weighted centroid of predicted sources
-        # This represents the "center of mass" of the predicted epileptogenic zone
-        # weighted by source strength at each region
-        total_pred_power = np.sum(pred_power)  # Normalization factor
+        # True centroid: mask restricts to epileptogenic regions only
+        # This prevents 68-74 healthy regions from dominating the reference.
+        if epileptogenic_mask is not None:
+            sample_mask = epileptogenic_mask[sample_idx]
+            if sample_mask.any():
+                true_power_masked = true_power * sample_mask.astype(np.float32)
+            else:
+                # Healthy-only sample — no epi regions, fall back to all
+                true_power_masked = true_power
+        else:
+            true_power_masked = true_power
         
+        # Predicted centroid: ALL predicted power (no mask)
+        # The model doesn't know which regions are epi, so its center-of-mass
+        # must be evaluated using everything it outputs. Symmetric masking
+        # would let a uniform-noise model achieve low DLE.
+        total_pred_power = np.sum(pred_power)
         if total_pred_power < 1e-10:
-            # Degenerate case: no predicted activity
-            # Use uniform weighting fallback (geometric center)
             pred_centroid = np.mean(region_centers, axis=0)
         else:
-            # Weighted average of region positions by their power
-            # Formula: centroid = Σ(power_i * center_i) / Σ(power_i)
-            # Broadcasting: (76, 1) * (76, 3) = (76, 3) → sum over regions → (3,)
             pred_centroid = np.sum(
                 pred_power[:, np.newaxis] * region_centers, axis=0
             ) / total_pred_power
         
-        # Step 4: Compute true epileptogenic centroid (same method)
-        total_true_power = np.sum(true_power)
-        
+        # True centroid: epi-restricted (when mask available)
+        total_true_power = np.sum(true_power_masked)
         if total_true_power < 1e-10:
-            # Degenerate case: no true activity
             true_centroid = np.mean(region_centers, axis=0)
         else:
             true_centroid = np.sum(
-                true_power[:, np.newaxis] * region_centers, axis=0
+                true_power_masked[:, np.newaxis] * region_centers, axis=0
             ) / total_true_power
         
-        # Step 5: Euclidean distance between the two centroids
-        # This is our DLE metric - how far off was our spatial localization?
-        dle = np.linalg.norm(pred_centroid - true_centroid)  # Distance in mm
+        dle = np.linalg.norm(pred_centroid - true_centroid)
         dle_values.append(dle)
     
-    # Return average DLE across batch
     avg_dle = np.mean(dle_values)
     return float(avg_dle)
 
@@ -163,6 +162,7 @@ def compute_dipole_localization_error(
 def compute_spatial_dispersion(
     source_estimate: NDArray[np.float32],
     region_centers: NDArray[np.float32],
+    epileptogenic_mask: Optional[NDArray[np.bool_]] = None,
 ) -> float:
     """
     Compute Spatial Dispersion (SD) of source localization.
@@ -172,35 +172,31 @@ def compute_spatial_dispersion(
     candidate selection). A large SD indicates diffuse activity (widespread
     epileptogenicity).
     
+    CRITICAL — asymmetric mask application:
+    ──────────────────────────────────────
+    The reference centroid is computed from TRUE epileptogenic regions (when
+    mask is available), but the dispersion is measured using ALL predicted
+    power. This asymmetry is intentional: the model is evaluated on how well
+    it concentrates its activity around the epileptic focus, not just within
+    a subset of regions. Symmetric masking would let a uniform-noise model
+    achieve low SD (dispersion only measured within epi regions).
+    
     Algorithm:
-        1. Compute time-averaged power per region
-        2. Compute power-weighted centroid
-        3. Compute weighted spatial variance around centroid:
-           SD = sqrt(Σ_i power_i * distance(center_i, centroid)^2 / Σ_i power_i)
+        1. Compute time-averaged power per region (all regions for dispersion)
+        2. Reference centroid from TRUE epi-region power (when mask given)
+        3. Measure weighted SD of ALL predicted power around that centroid
     
     Args:
         source_estimate: Estimated source activity, shape (batch, 76, 400)
-            - Same format as compute_dipole_localization_error
         region_centers: 3D region coordinates, shape (76, 3), in mm
+        epileptogenic_mask: Boolean mask (batch, 76). Applied to reference
+                           centroid only. Dispersion uses all predicted power.
+                           If None, centroid uses all predicted power.
     
     Returns:
         float: Average spatial dispersion across batch in millimeters.
-        Lower is better (more focal).
-        Target threshold: < 30 mm (focal seizure focus)
-    
-    Raises:
-        ValueError: If shapes don't match
-    
-    References:
-        Technical Specs Section 4.3.3.
-    
-    Example:
-        >>> sources = np.random.randn(10, 76, 400).astype(np.float32)
-        >>> centers = np.random.randn(76, 3).astype(np.float32) * 50
-        >>> sd = compute_spatial_dispersion(sources, centers)
-        >>> print(f"Spatial Dispersion: {sd:.2f} mm")
+        Target threshold: < 30 mm
     """
-    # Validate inputs
     if source_estimate.shape[1] != N_REGIONS:
         raise ValueError(
             f"Expected {N_REGIONS} regions, got {source_estimate.shape[1]}"
@@ -216,34 +212,35 @@ def compute_spatial_dispersion(
     sd_values = []
     
     for sample_idx in range(batch_size):
-        # Extract source time series
-        source_ts = source_estimate[sample_idx]  # (76, 400)
-        
-        # Compute power per region
-        power = np.mean(source_ts ** 2, axis=1)  # (76,)
+        source_ts = source_estimate[sample_idx]
+        power = np.mean(source_ts ** 2, axis=1)  # all regions (for dispersion)
         total_power = np.sum(power)
         
-        if total_power < 1e-10:
-            # Degenerate case: use uniform weighting
-            centroid = np.mean(region_centers, axis=0)
+        # Reference centroid: geometric center of epileptogenic regions when
+        # mask is available. This is the known true focus location.
+        # Dispersion is then measured as how far ALL predicted power (unmasked)
+        # extends from this reference.
+        if epileptogenic_mask is not None:
+            sample_mask = epileptogenic_mask[sample_idx]
+            if sample_mask.any():
+                epi_centers = region_centers[sample_mask]
+                centroid = epi_centers.mean(axis=0)
+            else:
+                centroid = np.mean(region_centers, axis=0)
         else:
-            # Compute weighted centroid
-            centroid = np.sum(
-                power[:, np.newaxis] * region_centers, axis=0
-            ) / total_power
+            # No mask: centroid from predicted power (legacy behavior)
+            if total_power < 1e-10:
+                centroid = np.mean(region_centers, axis=0)
+            else:
+                centroid = np.sum(
+                    power[:, np.newaxis] * region_centers, axis=0
+                ) / total_power
         
-        # Compute power-weighted variance around centroid
-        # Distance from each region center to the centroid
         distances = np.linalg.norm(region_centers - centroid[np.newaxis, :], axis=1)
-        
-        # Weighted variance: Σ(power_i * distance_i^2) / Σ(power_i)
         weighted_variance = np.sum(power * distances ** 2) / (total_power + 1e-10)
-        
-        # Standard deviation (spatial dispersion)
         sd = np.sqrt(weighted_variance)
         sd_values.append(sd)
     
-    # Return average SD across batch
     avg_sd = np.mean(sd_values)
     return float(avg_sd)
 
@@ -337,6 +334,7 @@ def compute_auc_epileptogenicity(
 def compute_temporal_correlation(
     predicted_sources: NDArray[np.float32],
     true_sources: NDArray[np.float32],
+    epileptogenic_mask: Optional[NDArray[np.bool_]] = None,
 ) -> float:
     """
     Compute Pearson temporal correlation between predicted and true sources.
@@ -345,34 +343,24 @@ def compute_temporal_correlation(
     ground truth. High correlation indicates the model captures the temporal
     structure of seizure evolution.
     
+    When epileptogenic_mask is provided, correlation is computed ONLY on
+    epileptogenic regions, excluding healthy background noise (which has
+    near-zero correlation) that would otherwise dilute the average.
+    
     Algorithm:
         1. For each region and sample: compute Pearson correlation across time
-        2. Average correlations across regions and batch
+        2. (Optional) Skip non-epileptogenic regions when mask is provided
+        3. Average correlations across remaining region-sample pairs
     
     Args:
         predicted_sources: Predicted activity, shape (batch, 76, 400)
-            - Expected range: normalized units after z-scoring
         true_sources: Ground truth activity, shape (batch, 76, 400)
-            - Same format as predicted
+        epileptogenic_mask: Boolean mask (batch, 76). When provided, only
+                           epi regions contribute to the average.
     
     Returns:
         float: Average Pearson correlation in [-1, 1]. Higher is better.
         Target threshold: > 0.7
-        - 1.0 = perfect positivelinear correlation
-        - 0.0 = no linear correlation
-        - -1.0 = perfect negative linear correlation
-    
-    Raises:
-        ValueError: If shapes don't match
-    
-    References:
-        Technical Specs Section 4.3.3.
-    
-    Example:
-        >>> pred = np.random.randn(10, 76, 400).astype(np.float32)
-        >>> true = np.random.randn(10, 76, 400).astype(np.float32)
-        >>> corr = compute_temporal_correlation(pred, true)
-        >>> print(f"Correlation: {corr:.3f}")
     """
     # Validate inputs
     if predicted_sources.shape != true_sources.shape:
@@ -386,12 +374,23 @@ def compute_temporal_correlation(
             f"Expected {N_REGIONS} regions, got {predicted_sources.shape[1]}"
         )
     
+    if epileptogenic_mask is not None:
+        if epileptogenic_mask.shape != predicted_sources.shape[:2]:
+            raise ValueError(
+                f"Mask shape {epileptogenic_mask.shape} doesn't match "
+                f"sources batch×regions {predicted_sources.shape[:2]}"
+            )
+    
     batch_size, n_regions, n_samples = predicted_sources.shape
     correlations = []
     
     # For each sample and region, compute correlation across time
     for sample_idx in range(batch_size):
         for region_idx in range(n_regions):
+            # Skip non-epileptogenic regions when mask is provided
+            if epileptogenic_mask is not None and not epileptogenic_mask[sample_idx, region_idx]:
+                continue
+            
             pred_ts = predicted_sources[sample_idx, region_idx, :]  # (400,)
             true_ts = true_sources[sample_idx, region_idx, :]      # (400,)
             

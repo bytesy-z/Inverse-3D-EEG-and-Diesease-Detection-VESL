@@ -491,39 +491,50 @@ class PhysDeepSIFTrainer:
             logger.error(f"Pred shapes: {[p.shape for p in all_pred_sources[:3]]}")
             raise
         
+        # Build full epileptogenic mask if available (used by DLE, SD, AUC, correlation)
+        if len(all_epileptogenic_masks) > 0:
+            full_mask = np.concatenate(all_epileptogenic_masks, axis=0)
+        else:
+            full_mask = None
+
         # Compute metrics using dedicated functions
         try:
-            # DLE: Dipole Localization Error
+            # DLE: Dipole Localization Error (mask filters true centroid to epi regions only)
             dle = compute_dipole_localization_error(
-                pred_sources, true_sources, self.region_centers
+                pred_sources, true_sources, self.region_centers,
+                epileptogenic_mask=full_mask
             )
         except Exception as e:
             logger.warning(f"Failed to compute DLE: {e}")
             dle = 0.0
         
         try:
-            # SD: Spatial Dispersion
-            sd = compute_spatial_dispersion(pred_sources, self.region_centers)
+            # SD: Spatial Dispersion (mask filters power to epi regions only)
+            sd = compute_spatial_dispersion(
+                pred_sources, self.region_centers,
+                epileptogenic_mask=full_mask
+            )
         except Exception as e:
             logger.warning(f"Failed to compute SD: {e}")
             sd = 0.0
         
         try:
             # AUC: Area Under ROC for epileptogenicity classification
-            if len(all_epileptogenic_masks) > 0:
-                epileptogenic_mask = np.concatenate(all_epileptogenic_masks, axis=0)
-                auc = compute_auc_epileptogenicity(pred_sources, epileptogenic_mask)
+            if full_mask is not None:
+                auc = compute_auc_epileptogenicity(pred_sources, full_mask)
             else:
-                # No epileptogenic masks available; AUC undefined
                 logger.debug("No epileptogenic masks available for AUC computation")
-                auc = 0.5  # Random baseline
+                auc = 0.5
         except Exception as e:
             logger.warning(f"Failed to compute AUC: {e}")
             auc = 0.5
         
         try:
-            # Temporal correlation
-            corr = compute_temporal_correlation(pred_sources, true_sources)
+            # Temporal correlation (mask limits to epi regions only, excluding noise)
+            corr = compute_temporal_correlation(
+                pred_sources, true_sources,
+                epileptogenic_mask=full_mask
+            )
         except Exception as e:
             logger.warning(f"Failed to compute correlation: {e}")
             corr = 0.0

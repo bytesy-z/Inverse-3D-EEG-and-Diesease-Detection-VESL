@@ -116,9 +116,9 @@ training:
     T_mult: 2
   loss_weights:
     alpha_source: 1.0
-    beta_forward: 0.5
+    beta_forward: 0.05
     gamma_physics: 0.01
-    delta_epi: 1.0
+    delta_epi: 0.1
   physics_sub_weights:
     lambda_laplacian: 0.0
     lambda_temporal: 0.3
