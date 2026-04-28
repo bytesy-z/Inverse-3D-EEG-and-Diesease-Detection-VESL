@@ -1,5 +1,89 @@
 # ZIK Day 2 — Mon Apr 28: Training Fix + Backend + XAI + Tests
 
+(deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ python scripts/02_generate_synthetic_data.py \
+  --n-sims 5000 --n-jobs 16 --output-dir data/synthetic4/ --split train
+Logging to file: /data1tb/VESL/fyp-2.0/outputs/generation.log
+2026-04-29 00:38:49 - __main__ - INFO - Loaded configuration from /data1tb/VESL/fyp-2.0/config.yaml
+2026-04-29 00:38:49 - __main__ - INFO - Loading source space data...
+2026-04-29 00:38:49 - src.phase1_forward.source_space - INFO - Loaded source space data from /data1tb/VESL/fyp-2.0/data: connectivity (76, 76), centers (76, 3), 76 labels, tract_lengths (76, 76)
+2026-04-29 00:38:49 - __main__ - INFO - Loading leadfield matrix...
+2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO - Validating leadfield matrix...
+2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO -   Shape check: PASS ((19, 76))
+2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO -   Finite check: PASS
+2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO -   Rank check: PASS (rank=18)
+2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO -   Column norm check: PASS (max/median = 2.7)
+2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO - Leadfield validation PASSED
+2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO - Loaded leadfield: /data1tb/VESL/fyp-2.0/data/leadfield_19x76.npy (shape (19, 76))
+2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - ============================================================
+2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - GENERATING SYNTHETIC DATASET: 5000 simulations
+2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - Output: /data1tb/VESL/fyp-2.0/data/synthetic4/train_dataset.h5
+2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - ============================================================
+2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - ✓ HDF5 file created: /data1tb/VESL/fyp-2.0/data/synthetic4/train_dataset.h5
+2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - Running 5000 simulations...
+2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - Using 16 worker processes
+2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - Processing results and writing to HDF5 incrementally...
+2026-04-29 00:39:31 - src.phase1_forward.synthetic_dataset - INFO - Simulation 13: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w4: PDR=3.33, alpha_grad=True, beta_grad=False']
+2026-04-29 00:39:31 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 1/5000 | Current batch: 4 samples (not yet written) | Total so far: 4/25,000 | Speed: 0/sec | ETA: 4354.5m
+2026-04-29 00:39:32 - src.phase1_forward.synthetic_dataset - INFO - Simulation 3: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.70, alpha_grad=True, beta_grad=False', 'w4: PDR=2.66, alpha_grad=True, beta_grad=False']
+2026-04-29 00:39:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 1: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.14, alpha_grad=False, beta_grad=False']
+2026-04-29 00:39:33 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 5 produced invalid values (NaN=137566, Inf=0). Discarding.
+2026-04-29 00:39:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 10: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.68, alpha_grad=True, beta_grad=False']
+2026-04-29 00:39:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 6: 2/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.14, alpha_grad=True, beta_grad=False', 'w2: PDR=3.10, alpha_grad=True, beta_grad=False']
+2026-04-29 00:39:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 7: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.25, alpha_grad=True, beta_grad=False', 'w4: PDR=3.03, alpha_grad=True, beta_grad=False']
+2026-04-29 00:39:34 - src.phase1_forward.synthetic_dataset - INFO - Simulation 0: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.89, alpha_grad=True, beta_grad=False']
+2026-04-29 00:39:34 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 8 produced invalid values (NaN=148000, Inf=0). Discarding.
+2026-04-29 00:39:34 - src.phase1_forward.synthetic_dataset - INFO - Simulation 11: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=3.05, alpha_grad=True, beta_grad=False', 'w2: PDR=3.24, alpha_grad=True, beta_grad=False']
+2026-04-29 00:40:14 - src.phase1_forward.synthetic_dataset - INFO - Simulation 17: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.64, alpha_grad=False, beta_grad=False']
+2026-04-29 00:40:14 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 15/5000 | Current batch: 61 samples (not yet written) | Total so far: 61/25,000 | Speed: 1/sec | ETA: 581.2m
+2026-04-29 00:40:16 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 25 produced invalid values (NaN=141899, Inf=0). Discarding.
+2026-04-29 00:40:16 - src.phase1_forward.synthetic_dataset - INFO - Simulation 21: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.40, alpha_grad=True, beta_grad=False']
+2026-04-29 00:40:17 - src.phase1_forward.synthetic_dataset - INFO - Simulation 18: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w4: PDR=3.13, alpha_grad=True, beta_grad=False']
+2026-04-29 00:40:17 - src.phase1_forward.synthetic_dataset - INFO - Simulation 24: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.98, alpha_grad=True, beta_grad=False']
+2026-04-29 00:40:17 - src.phase1_forward.synthetic_dataset - INFO - Simulation 30: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=3.00, alpha_grad=True, beta_grad=False']
+2026-04-29 00:40:18 - src.phase1_forward.synthetic_dataset - INFO - Simulation 26: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.82, alpha_grad=True, beta_grad=False']
+2026-04-29 00:40:58 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 30/5000 | Current batch: 131 samples (not yet written) | Total so far: 131/25,000 | Speed: 1/sec | ETA: 406.5m
+2026-04-29 00:41:00 - src.phase1_forward.synthetic_dataset - INFO - Simulation 35: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.30, alpha_grad=True, beta_grad=False', 'w4: PDR=3.02, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:00 - src.phase1_forward.synthetic_dataset - INFO - Simulation 38: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.11, alpha_grad=True, beta_grad=False', 'w4: PDR=3.10, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:00 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 40 produced invalid values (NaN=136207, Inf=0). Discarding.
+2026-04-29 00:41:01 - src.phase1_forward.synthetic_dataset - INFO - Simulation 44: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.92, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:01 - src.phase1_forward.synthetic_dataset - INFO - Simulation 42: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.93, alpha_grad=True, beta_grad=False', 'w4: PDR=2.86, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:01 - src.phase1_forward.synthetic_dataset - INFO - Simulation 41: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.17, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:01 - src.phase1_forward.synthetic_dataset - INFO - Simulation 43: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.86, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:02 - src.phase1_forward.synthetic_dataset - INFO - Simulation 45: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.93, alpha_grad=True, beta_grad=False', 'w4: PDR=3.53, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:02 - src.phase1_forward.synthetic_dataset - INFO - Simulation 46: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w4: PDR=3.06, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:41 - src.phase1_forward.synthetic_dataset - INFO - Simulation 48: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.96, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:41 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 45/5000 | Current batch: 193 samples (not yet written) | Total so far: 193/25,000 | Speed: 1/sec | ETA: 367.3m
+2026-04-29 00:41:43 - src.phase1_forward.synthetic_dataset - INFO - Simulation 56: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.47, alpha_grad=True, beta_grad=False', 'w1: PDR=3.25, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:44 - src.phase1_forward.synthetic_dataset - INFO - Simulation 52: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.36, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:44 - src.phase1_forward.synthetic_dataset - INFO - Simulation 55: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.88, alpha_grad=True, beta_grad=False', 'w1: PDR=2.51, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:44 - src.phase1_forward.synthetic_dataset - INFO - Simulation 51: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.65, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:44 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 53 produced invalid values (NaN=131654, Inf=0). Discarding.
+2026-04-29 00:41:44 - src.phase1_forward.synthetic_dataset - INFO - Simulation 50: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.88, alpha_grad=False, beta_grad=True', 'w4: PDR=2.84, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:45 - src.phase1_forward.synthetic_dataset - INFO - Simulation 63: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=3.10, alpha_grad=True, beta_grad=False', 'w3: PDR=2.64, alpha_grad=False, beta_grad=False']
+2026-04-29 00:41:46 - src.phase1_forward.synthetic_dataset - INFO - Simulation 59: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.12, alpha_grad=True, beta_grad=False']
+2026-04-29 00:41:46 - src.phase1_forward.synthetic_dataset - INFO - Simulation 62: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.51, alpha_grad=True, beta_grad=False']
+2026-04-29 00:42:30 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 64 produced invalid values (NaN=51844, Inf=0). Discarding.
+2026-04-29 00:42:32 - src.phase1_forward.synthetic_dataset - INFO - Simulation 65: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.58, alpha_grad=True, beta_grad=False']
+2026-04-29 00:42:32 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 60/5000 | Current batch: 255 samples (not yet written) | Total so far: 255/25,000 | Speed: 1/sec | ETA: 360.1m
+2026-04-29 00:42:34 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 66 produced invalid values (NaN=115165, Inf=0). Discarding.
+2026-04-29 00:42:35 - src.phase1_forward.synthetic_dataset - INFO - Simulation 70: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.96, alpha_grad=True, beta_grad=False', 'w3: PDR=3.00, alpha_grad=True, beta_grad=False']
+2026-04-29 00:42:36 - src.phase1_forward.synthetic_dataset - INFO - Simulation 67: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=3.00, alpha_grad=True, beta_grad=False']
+2026-04-29 00:42:36 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 71 produced invalid values (NaN=144427, Inf=0). Discarding.
+2026-04-29 00:42:36 - src.phase1_forward.synthetic_dataset - INFO - Simulation 73: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.43, alpha_grad=True, beta_grad=False']
+2026-04-29 00:42:38 - src.phase1_forward.synthetic_dataset - INFO - Simulation 72: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.14, alpha_grad=True, beta_grad=False']
+2026-04-29 00:42:39 - src.phase1_forward.synthetic_dataset - INFO - Simulation 78: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.23, alpha_grad=True, beta_grad=False']
+2026-04-29 00:43:25 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 73/5000 | Current batch: 314 samples (not yet written) | Total so far: 314/25,000 | Speed: 1/sec | ETA: 360.9m
+2026-04-29 00:43:25 - src.phase1_forward.synthetic_dataset - INFO - Simulation 81: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.71, alpha_grad=True, beta_grad=False']
+2026-04-29 00:43:29 - src.phase1_forward.synthetic_dataset - INFO - Simulation 83: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.82, alpha_grad=True, beta_grad=False']
+2026-04-29 00:43:30 - src.phase1_forward.synthetic_dataset - INFO - Simulation 84: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.26, alpha_grad=True, beta_grad=False']
+2026-04-29 00:43:30 - src.phase1_forward.synthetic_dataset - INFO - Simulation 86: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=3.04, alpha_grad=True, beta_grad=False']
+2026-04-29 00:43:31 - src.phase1_forward.synthetic_dataset - INFO - Simulation 85: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.44, alpha_grad=True, beta_grad=False']
+2026-04-29 00:43:31 - src.phase1_forward.synthetic_dataset - INFO - Simulation 89: 2/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=3.20, alpha_grad=True, beta_grad=False', 'w2: PDR=3.17, alpha_grad=True, beta_grad=False']
+2026-04-29 00:43:32 - src.phase1_forward.synthetic_dataset - INFO - Simulation 90: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w4: PDR=2.97, alpha_grad=True, beta_grad=False']
+2026-04-29 00:43:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 91: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.46, alpha_grad=True, beta_grad=False']
+2026-04-29 00:43:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 93: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=3.44, alpha_grad=True, beta_grad=False']
+2026-04-29 00:43:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 95: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=3.07, alpha_grad=True, beta_grad=False', 'w2: PDR=3.15, alpha_grad=True, beta_grad=False']
+
 ## Situation Assessment (09:00)
 
 | Factor | Status |
