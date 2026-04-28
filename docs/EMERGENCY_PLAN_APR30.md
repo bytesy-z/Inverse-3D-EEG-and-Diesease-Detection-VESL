@@ -603,19 +603,25 @@ START  ────────────────────────�
 
 ---
 
-#### Task Z1: Training Debug + Fix (Hours 0-2)
+#### 📅 APRIL 28 (TODAY) — Critical Path: Fix Model + Start Compute
+
+---
+
+##### Z1-APR28: Training Debug + Fix (Start immediately)
 
 **Files to edit:**
 1. `src/phase2_network/loss_functions.py` — B1, B2, B3, B4 edits (see Section 2 above)
 2. `src/phase2_network/trainer.py` — B4 epoch passing (see Section 2 above)
 
-**Verification:** Run Phase A diagnostics, apply B1-B4, run Phase C overfit test.
+**Verification:** Run Phase A diagnostics (A1-A3), apply B1-B4, run Phase C overfit test.
 
-**Handoff:** Commit all edits with message `fix(loss): stabilise forward loss denominator, per-channel de-mean, class-balanced epi MSE, beta warm-up`. Push to `main`.
+**⚠️ BLOCKER:** Overfit test MUST PASS (AUC > 0.6, DLE decreasing) before any other task.
+
+**Handoff:** Commit with message `fix(loss): stabilise forward loss denominator, per-channel de-mean, class-balanced epi MSE, beta warm-up`. Push to `main`.
 
 ---
 
-#### Task Z2: Synthetic Data Generation (Hours 2-6, background)
+##### Z2-APR28: Synthetic Data Generation (Background — start AS SOON as overfit test passes)
 
 ```bash
 # Run on lab machine (16 cores). This is a blocking dependency for training.
@@ -625,7 +631,6 @@ START  ────────────────────────�
 
 **Monitor progress:**
 ```bash
-# Check how many samples have been written so far:
 /home/zik/miniconda3/envs/physdeepsif/bin/python -c "
 import h5py
 try:
@@ -635,24 +640,24 @@ except: print('Not yet created')
 "
 ```
 
-**Verification:** After completion, train_dataset.h5 should exist with ≥ 17,500 samples.
+**Verification:** After completion, `train_dataset.h5` must have ≥ 17,500 samples.
 
 ---
 
-#### Task Z3: Full Training (Hours 6-8, GPU)
+##### Z3-APR28: Full Training (GPU — start AS SOON as data gen completes)
 
 ```bash
 /home/zik/miniconda3/envs/physdeepsif/bin/python scripts/03_train_network.py \
   --epochs 80 --batch-size 64 --device cuda
 ```
 
-**Monitor:** Watch for AUC > 0.5 increasing, DLE < 20mm decreasing across epochs.
+**Monitor:** AUC must increase from 0.5 → 0.7+, DLE must decrease, SD must improve.
 
-**Handoff:** Copy `outputs/models/checkpoint_best.pt` and `outputs/models/normalization_stats.json` to accessible location. Commit both files.
+**Handoff:** Copy `outputs/models/checkpoint_best.pt` and `normalization_stats.json`. Commit both.
 
 ---
 
-#### Task Z4: WebSocket Endpoint (Hours 2-5, while datagen runs)
+##### Z4-APR28: WebSocket Endpoint (While datagen/training runs)
 
 **File:** `backend/server.py`
 
@@ -715,7 +720,7 @@ curl -X POST "http://127.0.0.1:8000/api/analyze?ws=true" \
 
 ---
 
-#### Task Z5: XAI Occlusion Module (Hours 5-7)
+##### Z5-APR28: XAI Occlusion Module + Test Suite (While datagen/training runs)
 
 **File to create:** `src/xai/__init__.py` (empty)
 **File to create:** `src/xai/eeg_occlusion.py`
@@ -1014,11 +1019,155 @@ def test_analyze_edf(test_client):
 
 ---
 
+#### 📅 APRIL 29 — Backend Integration + CMA-ES Wiring + XAI Integration
+
+---
+
+##### Z7-APR29: Backend CMA-ES + NMT Integration
+
+**File:** `backend/server.py`
+
+1. Merge Hira's CMA-ES modules (`fit_patient`, `compute_ei` from `src/phase4_inversion/`)
+2. Merge Shahliza's NMT preprocessor (replace simple EDF segmentation in `/api/analyze`)
+3. Add `POST /api/biomarkers-cmaes` endpoint:
+
+```python
+@app.post("/api/biomarkers-cmaes")
+async def analyze_biomarkers_cmaes(
+    file: UploadFile = File(...),
+    mode: str = Form("biomarkers"),
+    include_xai: bool = Form(False),
+):
+    """
+    Full CMA-ES epileptogenicity analysis.
+    Pipeline: EDF → NMTPreprocessor → PhysDeepSIF → CMA-ES → EI heatmap
+    Timeout: 5 minutes. Falls back to heuristic EI on timeout.
+    """
+    # 1. Save uploaded EDF
+    # 2. Preprocess via NMTPreprocessor.process()
+    # 3. Run inference via run_patient_inference()
+    # 4. Compute target PSD via Welch
+    # 5. Run CMA-ES with timeout (asyncio.to_thread + asyncio.wait_for)
+    # 6. Compute EI from fitted x0
+    # 7. Generate Plotly heatmap
+    # 8. Optionally run XAI
+    # 9. Return JSON with eegData, plotHtml, scores, cmaes_info, xai
+```
+
+4. Add CMA-ES timeout handling:
+```python
+import asyncio
+
+async def run_cmaes_with_timeout(patient_data, timeout_seconds=300):
+    from src.phase4_inversion.cmaes_optimizer import fit_patient
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(fit_patient, **patient_data),
+            timeout=timeout_seconds
+        )
+        return result, None
+    except asyncio.TimeoutError:
+        # Fall back to heuristic EI (already in server.py)
+        return None, "CMA-ES timed out — using heuristic EI fallback"
+```
+
+**Verification:**
+```bash
+curl -X POST http://127.0.0.1:8000/api/biomarkers-cmaes \
+  -F "file=@data/samples/0001082.edf" \
+  -F "mode=biomarkers"
+# Should return JSON with plotHtml, scores, cmaes_info
+```
+
+---
+
+##### Z8-APR29: Frontend XAI Integration
+
+**File:** `frontend/app/analysis/page.tsx` (or equivalent)
+
+1. Add XAI display section in Biomarkers tab:
+   - Parse `xai` object from API response
+   - Display `channel_importance` as horizontal bar chart (top channels highlighted)
+   - Overlay `top_segments` on EEG waveform (colored spans)
+   - Show `target_region_full` name
+
+2. Add XAI toggle checkbox in upload form: "Show EEG evidence attribution"
+
+**Verification:** Upload 0001082.edf, select biomarkers, toggle XAI, verify Fp2/F4/F8 rank high in channel importance.
+
+---
+
+##### Z9-APR29: Branch Merge + Conflict Resolution
+
+```bash
+git checkout main
+git merge hira/cmaes
+git merge shahliza/phase35
+# Resolve conflicts in:
+#   - backend/server.py (endpoint additions)
+#   - config.yaml (separate sections)
+#   - src/ imports
+```
+
+---
+
+#### 📅 APRIL 30 — Testing + Polish + Submit
+
+---
+
+##### Z10-APR30: Integration Testing (Morning)
+
+```bash
+# 1. End-to-end CMA-ES pipeline
+curl -X POST http://127.0.0.1:8000/api/biomarkers-cmaes \
+  -F "file=@data/samples/0001082.edf" -F "mode=biomarkers"
+
+# 2. WebSocket status updates
+# Connect ws://127.0.0.1:8000/ws/{job_id} during processing
+
+# 3. XAI attributions validate against 1082.csv annotations
+# Check that top attributed channels include Fp2, F4, F8
+
+# 4. Source localization mode still works
+curl -X POST http://127.0.0.1:8000/api/analyze \
+  -F "file=@data/samples/0001082.edf" -F "mode=source_localization"
+```
+
+---
+
+##### Z11-APR30: Test Suite Completion + Smoke Test
+
+```bash
+pytest tests/ -v --tb=short
+bash scripts/smoke_test.sh
+./start.sh --check
+cd frontend && npm run build
+```
+
+Fix any failing tests.
+
+---
+
+##### Z12-APR30: Final Commit + Tag + Submit
+
+```bash
+git add -A
+git commit -m "feat: complete PhysDeepSIF v2.0 — CMA-ES, XAI, WebSockets, test suite"
+git tag v2.0-submission
+# Generate thesis figures (see Shahliza S7-APR30)
+```
+
+---
+
 ### 4.2 HIRA — CMA-ES Phase 4
 
 ---
 
-#### Task H1: Objective Function (Hours 0-4)
+#### 📅 APRIL 28 (TODAY) — Objective Function + CMA-ES Optimizer
+
+---
+
+##### H1-APR28: Objective Function
 
 **File to create:** `src/phase4_inversion/__init__.py` (empty)  
 **File to create:** `src/phase4_inversion/objective_function.py`
@@ -1196,7 +1345,9 @@ print('OK — objective function runs without error')
 
 ---
 
-#### Task H2: CMA-ES Optimizer (Hours 4-8)
+---
+
+##### H2-APR28: CMA-ES Optimizer + EI Computation
 
 **File to create:** `src/phase4_inversion/cmaes_optimizer.py`
 
@@ -1219,117 +1370,9 @@ Uses the cmaes v0.12.0 package (NOT cma).  The API is:
       cma.tell(solutions)
       if cma.should_stop():
           break
-  best_x = cma.best_x  # or min(solutions, key=lambda s: s[1])[0]
+  best_x = cma.best_x
 """
-
-import numpy as np
-from numpy.typing import NDArray
-from typing import Dict, List, Tuple
-import logging
-from cmaes import CMA
-
-logger = logging.getLogger(__name__)
-
-N_REGIONS = 76
-
-
-def fit_patient(
-    target_source_power: NDArray,    # (76,) source power from PhysDeepSIF
-    target_eeg_psd: NDArray,         # (19, n_freqs) PSD of real EEG
-    leadfield: NDArray,              # (19, 76)
-    connectivity: NDArray,           # (76, 76)
-    simulation_params: Dict,
-    freqs: NDArray = None,           # Welch frequency bins
-    initial_x0: float = -2.1,        # Start all regions near healthy
-    initial_sigma: float = 0.3,
-    bounds: Tuple[float, float] = (-2.4, -1.0),
-    max_generations: int = 50,       # Reduced from 200 for MVP
-    seed: int = 42,
-) -> Dict:
-    """
-    Run CMA-ES to fit patient excitability x0.
-
-    Args:
-        target_source_power: (76,) region power from PhysDeepSIF inference
-        target_eeg_psd: (19, n_freqs) PSD of real patient EEG
-        leadfield, connectivity: Forward model matrices
-        simulation_params: Dict with sim config
-        freqs: Welch frequency bins
-        initial_x0: Starting point for all regions
-        initial_sigma: Initial search sigma
-        bounds: (lower, upper) for each x0 element
-        max_generations: Maximum CMA-ES generations
-        seed: Random seed
-
-    Returns:
-        dict with:
-            x0_fitted: (76,) best excitability vector
-            ei: (76,) epileptogenicity index per region
-            best_score: float (lowest objective value)
-            convergence_history: list[float] (best score per generation)
-            n_evaluations: total TVB simulations run
-            n_generations: generations completed
-    """
-    from .objective_function import objective
-
-    lo = np.full(N_REGIONS, bounds[0])
-    hi = np.full(N_REGIONS, bounds[1])
-    mean_init = np.full(N_REGIONS, initial_x0)
-
-    cma = CMA(mean=mean_init, sigma=initial_sigma, bounds=(lo, hi), seed=seed)
-    logger.info(f"CMA-ES initialized: pop_size={cma.population_size}, dim={N_REGIONS}")
-
-    convergence_history = []
-    n_evaluations = 0
-
-    for gen in range(max_generations):
-        solutions = []
-
-        for _ in range(cma.population_size):
-            x = cma.ask()
-            score = objective(
-                x, target_source_power, target_eeg_psd,
-                leadfield, connectivity, simulation_params, freqs
-            )
-            solutions.append((x, score))
-            n_evaluations += 1
-
-        cma.tell(solutions)  # list[tuple[array, float]]
-        best_gen_score = min(s for _, s in solutions)
-        convergence_history.append(best_gen_score)
-
-        logger.info(
-            f"Gen {gen+1:3d}/{max_generations}: "
-            f"best={best_gen_score:.4f}, "
-            f"mean={np.mean([s for _, s in solutions]):.4f}"
-        )
-
-        if cma.should_stop():
-            logger.info(f"CMA-ES converged at generation {gen+1}")
-            break
-
-    # Best solution: minimum across ALL evaluated candidates
-    # cmaes provides best_x directly
-    try:
-        best_x = cma.best_x
-        best_score = cma.best_value
-    except AttributeError:
-        # Fallback: extract from last generation
-        best_solution = min(solutions, key=lambda s: s[1])
-        best_x = best_solution[0]
-        best_score = best_solution[1]
-
-    # Compute EI from fitted x0
-    ei = compute_ei(best_x)
-
-    return {
-        "x0_fitted": best_x,
-        "ei": ei,
-        "best_score": float(best_score),
-        "convergence_history": [float(h) for h in convergence_history],
-        "n_evaluations": n_evaluations,
-        "n_generations": len(convergence_history),
-    }
+# ... (full implementation as specified below)
 ```
 
 **File to create:** `src/phase4_inversion/epileptogenicity_index.py`
@@ -1342,102 +1385,117 @@ Purpose: Map fitted x0 to Epileptogenicity Index (EI ∈ [0, 1]).
 
 Uses sigmoid mapping centered at healthy baseline (-2.2):
   EI_i = sigmoid((x0_i + 2.2) / 0.15)
-
-The scale parameter 0.15 controls transition sharpness:
-  x0 = -2.4 (hyperpolarized)  → EI ≈ 0.13
-  x0 = -2.2 (healthy baseline) → EI ≈ 0.50
-  x0 = -1.8 (mildly epi)       → EI ≈ 0.92
-  x0 = -1.2 (highly epi)       → EI ≈ 1.00
 """
 
 import numpy as np
 from numpy.typing import NDArray
 
-X0_BASELINE = -2.2   # Healthy threshold from Epileptor literature
-EI_SCALE = 0.15       # Transition sharpness (smaller = sharper)
-
+X0_BASELINE = -2.2
+EI_SCALE = 0.15
 
 def compute_ei(x0_vector: NDArray) -> NDArray:
-    """
-    Compute Epileptogenicity Index from fitted x0.
-
-    Args:
-        x0_vector: (76,) fitted excitability per region
-
-    Returns:
-        (76,) EI values in [0, 1]
-    """
+    """Compute EI from fitted x0. Returns (76,) values in [0, 1]."""
     return 1.0 / (1.0 + np.exp(-(x0_vector - X0_BASELINE) / EI_SCALE))
 ```
 
-**Verification — run CMA-ES on 1 synthetic test sample:**
+**⚠️ Verification — run CMA-ES on 1 synthetic test sample BEFORE sleep:**
 ```bash
 /home/zik/miniconda3/envs/physdeepsif/bin/python -c "
-import numpy as np
-import torch, h5py, json, sys
+import numpy as np, torch, h5py, json, sys
 sys.path.insert(0, '.')
 from src.phase4_inversion.cmaes_optimizer import fit_patient
-from src.phase4_inversion.objective_function import objective
-
-# Get PhysDeepSIF predictions as 'patient' target
 from src.phase2_network.physdeepsif import build_physdeepsif
+
 model = build_physdeepsif('data/leadfield_19x76.npy', 'data/connectivity_76.npy')
 ckpt = torch.load('outputs/models/checkpoint_best.pt', map_location='cpu', weights_only=False)
-model.load_state_dict(ckpt['model_state'])
-model.eval()
+model.load_state_dict(ckpt['model_state']); model.eval()
 
 with h5py.File('data/synthetic3/test_dataset.h5', 'r') as f:
     idx = np.random.randint(0, f['eeg'].shape[0])
     eeg_raw = torch.from_numpy(f['eeg'][idx:idx+1].astype(np.float32))
-    src_raw = torch.from_numpy(f['source_activity'][idx:idx+1].astype(np.float32))
     true_mask = f['epileptogenic_mask'][idx:idx+1]
 
-with open('outputs/models/normalization_stats.json') as f:
-    stats = json.load(f)
+with open('outputs/models/normalization_stats.json') as f: stats = json.load(f)
 eps = 1e-7
-src_ac = src_raw - src_raw.mean(dim=-1, keepdim=True)
 eeg_ac = eeg_raw - eeg_raw.mean(dim=-1, keepdim=True)
 eeg_n = (eeg_ac - stats['eeg_mean']) / (stats['eeg_std'] + eps)
 
-# Run inference
-with torch.no_grad():
-    sources = model(eeg_n).numpy()[0]  # (76, 400)
-
-# Target power
+with torch.no_grad(): sources = model(eeg_n).numpy()[0]
 target_power = np.mean(sources ** 2, axis=1)
 
-# Target PSD
 from scipy.signal import welch
-target_psd = []
-for ch in range(eeg_n.shape[1]):
-    f, p = welch(eeg_n[0, ch].numpy(), fs=200, nperseg=200, noverlap=100)
-    target_psd.append(p)
-target_psd = np.array(target_psd)
+target_psd = np.array([welch(eeg_n[0, ch].numpy(), fs=200, nperseg=200, noverlap=100)[1] for ch in range(19)])
 
-# Run CMA-ES
-leadfield = np.load('data/leadfield_19x76.npy')
-conn = np.load('data/connectivity_76.npy')
-tract = np.load('data/tract_lengths_76.npy') if __import__('os').path.exists('data/tract_lengths_76.npy') else None
+result = fit_patient(target_power, target_psd,
+    np.load('data/leadfield_19x76.npy'), np.load('data/connectivity_76.npy'),
+    {'simulation_length_ms': 4000, 'transient_ms': 1000, 'dt': 0.1, 'global_coupling': 1.0, 'noise_intensity': 0.0005},
+    max_generations=30)
 
-params = {
-    'simulation_length_ms': 4000, 'transient_ms': 1000, 'dt': 0.1,
-    'global_coupling': 1.0, 'noise_intensity': 0.0005,
-    'tract_lengths': tract
-}
-
-result = fit_patient(
-    target_power, target_psd, leadfield, conn, params,
-    freqs=f, max_generations=30
-)
-
-print(f'CMA-ES complete: {result[\"n_generations\"]} gens, {result[\"n_evaluations\"]} evals')
-print(f'Best score: {result[\"best_score\"]:.4f}')
-print(f'Top EI regions: {np.argsort(result[\"ei\"])[-5:][::-1]}')
-print(f'True epi regions: {np.where(true_mask[0])[0]}')
-print(f'Overlap: {len(set(np.argsort(result[\"ei\"])[-5:]) & set(np.where(true_mask[0])[0]))}/5')
+print(f'CMA-ES: {result[\"n_generations\"]} gens, best_score={result[\"best_score\"]:.4f}')
+top5 = np.argsort(result['ei'])[-5:][::-1]
+true5 = np.where(true_mask[0])[0]
+print(f'Top EI: {top5} | True epi: {true5}')
+print(f'Overlap: {len(set(top5) & set(true5))}/5')
 "
 ```
 **Expected:** CMA-ES completes in < 5 min. Top EI regions should overlap with true epi regions.
+
+---
+
+#### 📅 APRIL 29 — CMA-ES Testing + Backend Integration + Real Patient
+
+---
+
+##### H3-APR29: CMA-ES on 3 Synthetic Samples + Tuning
+
+Run CMA-ES on synthetic test samples (indices 10, 25, 51):
+- Verify x0 converges toward ground truth epileptogenic regions
+- Measure convergence time per patient (target: < 15 min)
+- If too slow: reduce `sim_length_ms` to 2000, `max_generations` to 30
+- Tune objective weights (w_source, w_eeg, w_reg) if needed
+
+---
+
+##### H4-APR29: CMA-ES on 0001082.edf Real Patient
+
+**Prerequisite:** Shahliza must complete S1+S2 (preprocessing + inference on 0001082.edf).
+
+```bash
+/home/zik/miniconda3/envs/physdeepsif/bin/python -c "
+# Load preprocessed EEG from Shahliza's output
+# Run CMA-ES with patient targets
+# Compare EI hotspots against 1082.csv annotations (FP2/F4/F8 channels)
+# Generate thesis convergence plot (J vs generation)
+"
+```
+
+**Handoff to Zik:** Export `fit_patient()`, `compute_ei()`, `objective()` as importable functions for `backend/server.py`.
+
+---
+
+##### H5-APR29: Backend CMA-ES Helpers + Thesis Convergence Plot
+
+Create helper functions that Zik imports into `backend/server.py`:
+```python
+# In backend/server.py or a shared module:
+from src.phase4_inversion.cmaes_optimizer import fit_patient
+from src.phase4_inversion.epileptogenicity_index import compute_ei
+from src.phase4_inversion.objective_function import objective
+```
+
+Generate CMA-ES convergence plot for thesis (Figure 6).
+
+---
+
+#### 📅 APRIL 30 — Bug Fixes + Polish
+
+---
+
+##### H6-APR30: Bug Fixes + Integration Support
+
+- Fix any CMA-ES issues found during Zik's integration testing
+- Help with end-to-end pipeline testing
+- Final CMA-ES documentation for thesis
 
 ---
 
@@ -1445,7 +1503,11 @@ print(f'Overlap: {len(set(np.argsort(result[\"ei\"])[-5:]) & set(np.where(true_m
 
 ---
 
-#### Task S1: NMT Preprocessor (Hours 0-4)
+#### 📅 APRIL 28 (TODAY) — NMT Preprocessor + Inference Engine
+
+---
+
+##### S1-APR28: NMT Preprocessor (6-step pipeline)
 
 **Files to create:**
 1. `src/phase3_inference/__init__.py` (empty)
@@ -1646,137 +1708,15 @@ print('OK — preprocessing works')
 ```
 **Expected:** n_epochs > 0, shape = (n_epochs, 19, 400), channels = 19 standard names.
 
----
-
-#### Task S2: Inference Engine (Hours 4-8)
-
-**File to create:** `src/phase3_inference/inference_engine.py`
-
-```python
-"""
-Module: inference_engine.py
-Phase: 3 — Real EEG Preprocessing and Inference
-Purpose: Run PhysDeepSIF on preprocessed patient EEG.
-
-Applies identical preprocessing to training (de-meaning + z-score),
-runs batched inference, and aggregates results.
-"""
-
-import numpy as np
-from numpy.typing import NDArray
-from typing import Dict, List
-import torch
-import logging
-
-logger = logging.getLogger(__name__)
-
-N_REGIONS = 76
-
-
-def run_patient_inference(
-    preprocessed_eeg: NDArray,       # (n_epochs, 19, 400)
-    model: torch.nn.Module,
-    normalization_stats: Dict,
-    device: str = "cpu",
-    batch_size: int = 32,
-) -> Dict:
-    """
-    Run PhysDeepSIF inference on preprocessed patient EEG.
-
-    The preprocessed_eeg must already be de-meaned and z-scored
-    (as done by NMTPreprocessor).  This function applies NO additional
-    normalization — it feeds data directly to the model.
-
-    Args:
-        preprocessed_eeg: (n_epochs, 19, 400) preprocessed EEG
-        model: Loaded PhysDeepSIF model
-        normalization_stats: dict with eeg_mean, eeg_std, src_mean, src_std
-        device: "cuda" or "cpu"
-        batch_size: Batch size for inference
-
-    Returns:
-        dict with:
-            source_estimates: (n_epochs, 76, 400) per-epoch source activity
-            mean_source_power: (76,) time- and epoch-averaged power
-            peak_to_peak: (76,) max - min per region
-            variance: (76,) mean temporal variance per region
-            activation_consistency: (76,) fraction of epochs where region is active
-    """
-    model.eval()
-    model.to(device)
-
-    n_epochs = preprocessed_eeg.shape[0]
-    all_sources = []
-
-    with torch.no_grad():
-        for i in range(0, n_epochs, batch_size):
-            batch = torch.from_numpy(
-                preprocessed_eeg[i:i + batch_size].astype(np.float32)
-            ).to(device)
-            sources = model(batch)  # (batch, 76, 400)
-            all_sources.append(sources.cpu().numpy())
-
-    sources_all = np.concatenate(all_sources, axis=0)  # (n_epochs, 76, 400)
-
-    # Aggregate
-    power_per_epoch_region = np.mean(sources_all ** 2, axis=-1)  # (n_epochs, 76)
-    mean_source_power = np.mean(power_per_epoch_region, axis=0)  # (76,)
-    variance = np.var(sources_all, axis=-1).mean(axis=0)          # (76,)
-    peak_to_peak = np.max(sources_all, axis=-1) - np.min(sources_all, axis=-1)
-    peak_to_peak = peak_to_peak.mean(axis=0)  # average across epochs
-
-    # Activation consistency: fraction of epochs where region power > median
-    median_power = np.median(power_per_epoch_region, axis=1, keepdims=True)
-    above_median = (power_per_epoch_region > median_power).astype(np.float32)
-    activation_consistency = above_median.mean(axis=0)  # (76,)
-
-    return {
-        "source_estimates": sources_all,
-        "mean_source_power": mean_source_power,
-        "variance": variance,
-        "peak_to_peak": peak_to_peak,
-        "activation_consistency": activation_consistency,
-    }
-```
-
-**Verification:**
-```bash
-/home/zik/miniconda3/envs/physdeepsif/bin/python -c "
-import torch, sys
-sys.path.insert(0, '.')
-from src.phase3_inference.nmt_preprocessor import NMTPreprocessor
-from src.phase3_inference.inference_engine import run_patient_inference
-from src.phase2_network.physdeepsif import build_physdeepsif
-import json
-
-# Preprocess
-preprocessor = NMTPreprocessor()
-result = preprocessor.process('data/samples/0001082.edf')
-
-# Load model
-model = build_physdeepsif('data/leadfield_19x76.npy', 'data/connectivity_76.npy')
-ckpt = torch.load('outputs/models/checkpoint_best.pt', map_location='cpu', weights_only=False)
-model.load_state_dict(ckpt['model_state'])
-
-with open('outputs/models/normalization_stats.json') as f:
-    stats = json.load(f)
-
-# Run inference (use first 10 epochs for speed)
-inf_result = run_patient_inference(
-    result['preprocessed_eeg'][:10],
-    model, stats, device='cpu', batch_size=4
-)
-
-print(f'Sources shape: {inf_result[\"source_estimates\"].shape}')
-print(f'Mean power range: [{inf_result[\"mean_source_power\"].min():.4f}, {inf_result[\"mean_source_power\"].max():.4f}]')
-print(f'Top-5 regions by power: {np.argsort(inf_result[\"mean_source_power\"])[-5:][::-1]}')
-print('OK — inference engine works')
-"
-```
+**⚠️ This is a BLOCKING handoff to Hira for H4-APR29** (CMA-ES on real patient). Hira needs `target_source_power` and `target_eeg_psd` from this pipeline.
 
 ---
 
-#### Task S3: Validation Metrics (Hours 16-20, Day 2)
+#### 📅 APRIL 29 — Validation Metrics + Baselines + Patient Validation
+
+---
+
+##### S3-APR29: Synthetic Validation Metrics
 
 **File to create:** `src/phase5_validation/__init__.py` (empty)  
 **File to create:** `src/phase5_validation/synthetic_metrics.py`
@@ -1847,6 +1787,10 @@ def compute_all_metrics(
         "f1_score": float(f1),
     }
 ```
+
+---
+
+##### S4-APR29: Classical Baselines
 
 **File to create:** `src/phase5_validation/classical_baselines.py`
 
@@ -2036,7 +1980,7 @@ print('OK — all baselines work')
 
 ---
 
-#### Task S4: Patient Validation (Hours 28-36, Day 2-3)
+##### S5-APR29: Patient Validation
 
 **File to create:** `src/phase5_validation/patient_validation.py`
 
@@ -2191,6 +2135,33 @@ def bootstrap_stability(
 ```
 
 **Verification:** Run patient_validation.py on 0001082.edf output.
+
+---
+
+#### 📅 APRIL 30 — Thesis Figures + Final Delivery
+
+---
+
+##### S6-APR30: Thesis Figures Generation
+
+Generate all 11 thesis figures:
+1. Architecture diagram
+2. Training loss curves
+3. DLE per-region heatmap
+4. AUC vs SNR curve
+5. Baselines comparison table
+6. CMA-ES convergence plot (with Hira)
+7. Patient EI profile (0001082.edf)
+8. Brain heatmap screenshots (both modes)
+9. EEG waveform + brain synchronized screenshot
+10. XAI evidence overlay on EEG waveform
+11. Normal vs abnormal EI comparison (if 2+ recordings available)
+
+Create `scripts/06_run_validation.py` and `scripts/07_run_baselines.py` as drivers.
+
+##### S7-APR30: Polish and Handover
+
+Help Zik with integration testing, bug fixes, and `./start.sh` verification.
 
 ---
 
