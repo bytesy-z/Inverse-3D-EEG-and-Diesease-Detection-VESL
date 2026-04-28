@@ -214,7 +214,9 @@ class PhysDeepSIFTrainer:
             'val_corr': [],
         }
         
+        self.current_epoch = 0
         for epoch in range(num_epochs):
+            self.current_epoch = epoch
             epoch_start_time = time.time()
             logger.info(f"\nEpoch {epoch+1:3d}/{num_epochs}")
             logger.info(f"  Memory at epoch start: {get_memory_info()}")
@@ -343,7 +345,8 @@ class PhysDeepSIFTrainer:
                 source_pred = self.model(eeg_augmented)
                 
                 # Compute loss (pass mask to enable epi-weighted terms)
-                loss_dict = self.loss_fn(source_pred, sources, eeg_augmented, mask)
+                loss_dict = self.loss_fn(source_pred, sources, eeg_augmented, mask,
+                                         epoch=self.current_epoch)
                 loss = loss_dict['loss_total']
                 
                 # Backward pass
@@ -438,7 +441,8 @@ class PhysDeepSIFTrainer:
                         source_pred = self.model(eeg)
                         
                         # Compute loss (pass mask to enable epi-weighted terms)
-                        loss_dict = self.loss_fn(source_pred, sources, eeg, epileptogenic_mask)
+                        loss_dict = self.loss_fn(source_pred, sources, eeg, epileptogenic_mask,
+                                                 epoch=self.current_epoch)
                         loss = loss_dict['loss_total']
                         
                         total_loss += loss.item()

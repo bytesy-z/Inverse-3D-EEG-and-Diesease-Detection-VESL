@@ -39,9 +39,10 @@ warnings.filterwarnings('ignore', category=RuntimeWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 
 # FastAPI imports
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+import asyncio
 
 # Ensure project root is on the path so local imports resolve
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1004,6 +1005,7 @@ async def analyze_eeg(
     threshold_percentile: float = Form(87.5),
     mode: str = Form("biomarkers"),
     include_eeg: bool = Form(True),
+    ws: bool = Form(False),
 ):
     """
     Full analysis pipeline: EEG → source localization → visualization.
@@ -1629,6 +1631,121 @@ async def serve_result_file(path: str):
         str(file_path),
         media_type=content_types.get(suffix, 'application/octet-stream'),
     )
+
+
+# ========================================================================
+# WebSocket for real-time job status
+# ========================================================================
+active_jobs: Dict[str, Dict] = {}  # job_id -> {status, progress, message}
+
+
+async def _process_analysis_async(
+    job_id: str,
+    file_path: Optional[str],
+    sample_idx: Optional[int],
+    mode: str,
+    threshold_percentile: float,
+    include_eeg: bool,
+):
+    """Run analysis in background task with WebSocket status updates."""
+    try:
+        active_jobs[job_id] = {"status": "loading", "progress": 5, "message": "Loading EEG data..."}
+
+        eeg_data = None
+        mask = None
+        source_label = ""
+        edf_all_windows = None
+        edf_window_timestamps = None
+        total_edf_windows = 1
+        edf_windows_truncated = False
+
+        if sample_idx is not None:
+            active_jobs[job_id] = {"status": "loading", "progress": 10, "message": f"Loading test sample {sample_idx}..."}
+            with h5py.File(str(TEST_DATA_PATH), 'r') as f:
+                n_test = f['eeg'].shape[0]
+                if sample_idx < 0 or sample_idx >= n_test:
+                    raise ValueError(f"Sample index {sample_idx} out of range [0, {n_test})")
+                eeg_data = f['eeg'][sample_idx]
+                if 'epileptogenic_mask' in f:
+                    mask = f['epileptogenic_mask'][sample_idx]
+            source_label = f"synthetic3/test sample {sample_idx}"
+
+        elif file_path is not None:
+            active_jobs[job_id] = {"status": "loading", "progress": 10, "message": f"Loading {file_path}..."}
+            eeg_data = np.load(file_path).astype(np.float32)
+            source_label = file_path
+
+        if eeg_data is None:
+            raise ValueError("No EEG data provided")
+
+        active_jobs[job_id] = {"status": "preprocessing", "progress": 20, "message": "Preprocessing EEG..."}
+
+        active_jobs[job_id] = {"status": "inference", "progress": 40, "message": "Running PhysDeepSIF inference..."}
+        predicted_sources = run_inference(eeg_data)
+
+        active_jobs[job_id] = {"status": "postprocessing", "progress": 70, "message": "Computing biomarkers..."}
+
+        job_dir = RESULTS_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        if mode == "source_localization":
+            activity_result = compute_source_activity_metrics(predicted_sources)
+            heatmap_html = generate_source_activity_heatmap_html(
+                activity_scores=np.array(activity_result['scores_array']),
+                title="EEG Source Imaging — Estimated Brain Activity",
+            )
+            active_jobs[job_id] = {
+                "status": "completed", "progress": 100,
+                "message": "Analysis complete",
+                "result": {
+                    "jobId": job_id,
+                    "status": "completed",
+                    "mode": "source_localization",
+                }
+            }
+        else:
+            ei_result = compute_epileptogenicity_index(
+                predicted_sources,
+                epileptogenic_mask=mask,
+                threshold_percentile=threshold_percentile,
+            )
+            heatmap_html = generate_heatmap_html(
+                ei_scores=np.array(ei_result['scores_array']),
+                title="Epileptogenic Zone Detection",
+                top_k=5,
+            )
+            active_jobs[job_id] = {
+                "status": "completed", "progress": 100,
+                "message": "Analysis complete",
+                "result": {
+                    "jobId": job_id,
+                    "status": "completed",
+                    "mode": "biomarkers",
+                }
+            }
+
+        heatmap_path = job_dir / "brain_heatmap.html"
+        with open(heatmap_path, 'w') as f:
+            f.write(heatmap_html)
+
+    except Exception as e:
+        logger.error(f"[{job_id}] Async processing failed: {e}")
+        active_jobs[job_id] = {"status": "failed", "progress": 0, "message": str(e)}
+
+
+@app.websocket("/ws/{job_id}")
+async def websocket_endpoint(websocket: WebSocket, job_id: str):
+    await websocket.accept()
+    try:
+        while True:
+            if job_id in active_jobs:
+                await websocket.send_json(active_jobs[job_id])
+                if active_jobs[job_id].get("status") in ("completed", "failed"):
+                    del active_jobs[job_id]
+                    break
+            await asyncio.sleep(0.5)
+    except WebSocketDisconnect:
+        pass
 
 
 # ========================================================================
