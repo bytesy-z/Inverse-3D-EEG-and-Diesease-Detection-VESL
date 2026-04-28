@@ -83,59 +83,155 @@ def main():
         inversion_config["max_generations"] = args.max_generations
 
     logger.info("=" * 60)
-    logger.info("PHASE 4 CMA-ES OPTIMIZATION — SKELETON")
-    logger.info("=" * 60)
-    logger.info("Configuration loaded:")
-    logger.info(f"  - Patient index: {args.patient_idx}")
-    logger.info(f"  - Initial x0: {inversion_config['initial_x0']}")
-    logger.info(f"  - Initial sigma: {inversion_config['initial_sigma']}")
-    logger.info(f"  - Bounds: {inversion_config['bounds']}")
-    logger.info(f"  - Population size: {inversion_config['population_size']}")
-    logger.info(f"  - Max generations: {inversion_config['max_generations']}")
-    logger.info(f"  - Objective weights: {inversion_config['objective_weights']}")
-    logger.info(f"  - Device: {args.device}")
+    logger.info("PHASE 4 CMA-ES OPTIMIZATION")
     logger.info("=" * 60)
 
-    # TODO: Integrate with Phase 4 modules once implemented:
-    # from src.phase4_inversion.objective_function import objective
-    # from src.phase4_inversion.cmaes_optimizer import fit_patient
-    # from src.phase4_inversion.epileptogenicity_index import compute_ei
-    
-    # Example integration (to be implemented):
-    # 1. Load test dataset and get patient EEG + ground truth x0
-    # 2. Load PhysDeepSIF model and run inference to get source estimates
-    # 3. Load leadfield, connectivity, region_centers
-    # 4. Run CMA-ES optimization:
-    #    from cmaes import CMA
-    #    bounds = np.array([[args.bounds[0]] * 76, [args.bounds[1]] * 76]).T
-    #    cma = CMA(mean=np.full(76, initial_x0), sigma=initial_sigma, bounds=bounds)
-    #    for gen in range(max_generations):
-    #        solutions = [(cma.ask(), objective(cma.ask(), ...)) for _ in range(pop_size)]
-    #        cma.tell(solutions)
-    # 5. Compute epileptogenicity index from fitted x0
-    # 6. Compare with ground truth epileptogenic regions
-    
-    logger.info("Skeleton OK — awaiting Phase 4 module implementations")
-    logger.info("Expected modules:")
-    logger.info("  - src/phase4_inversion/objective_function.py")
-    logger.info("  - src/phase4_inversion/cmaes_optimizer.py")
-    logger.info("  - src/phase4_inversion/epileptogenicity_index.py")
-    logger.info("=" * 60)
-    
-    # Verify CMA-ES is available
+    # Import Phase 4 modules
     try:
-        from cmaes import CMA
-        logger.info("✓ cmaes package available")
-        
-        # Quick API verification
-        bounds = np.array([[-2.4, -1.0]] * 5)
-        cma = CMA(mean=np.full(5, -2.1), sigma=0.3, bounds=bounds, seed=42)
-        _ = [(cma.ask(), 1.0) for _ in range(cma.population_size)]
-        logger.info(f"✓ CMA-ES API verified (pop_size={cma.population_size})")
-    except ImportError:
-        logger.error("✗ cmaes package not found. Install with: pip install cmaes")
+        from src.phase4_inversion.objective_function import objective, _compute_psd
+        from src.phase4_inversion.cmaes_optimizer import fit_patient
+        from src.phase4_inversion.epileptogenicity_index import compute_ei
+        logger.info("✓ Phase 4 modules imported")
+    except ImportError as e:
+        logger.error(f"✗ Failed to import Phase 4 modules: {e}")
         sys.exit(1)
-    
+
+    # Load data files
+    logger.info("Loading data files...")
+    try:
+        leadfield = np.load(PROJECT_ROOT / "data" / "leadfield_19x76.npy")
+        connectivity = np.load(PROJECT_ROOT / "data" / "connectivity_76.npy")
+        region_centers = np.load(PROJECT_ROOT / "data" / "region_centers_76.npy")
+        import json
+        with open(PROJECT_ROOT / "data" / "region_labels_76.json") as f:
+            region_labels = json.load(f)
+        tract_lengths = np.load(PROJECT_ROOT / "data" / "tract_lengths_76.npy")
+        logger.info(f"  ✓ leadfield: {leadfield.shape}")
+        logger.info(f"  ✓ connectivity: {connectivity.shape}")
+        logger.info(f"  ✓ region_centers: {region_centers.shape}")
+        logger.info(f"  ✓ region_labels: {len(region_labels)} regions")
+    except Exception as e:
+        logger.error(f"✗ Failed to load data: {e}")
+        sys.exit(1)
+
+    # Load normalization stats
+    try:
+        with open(PROJECT_ROOT / "outputs" / "models" / "normalization_stats.json") as f:
+            norm_stats = json.load(f)
+        logger.info(f"  ✓ norm_stats loaded")
+    except Exception as e:
+        logger.error(f"✗ Failed to load norm_stats: {e}")
+        sys.exit(1)
+
+    # Load PhysDeepSIF model
+    logger.info("Loading PhysDeepSIF model...")
+    try:
+        import torch
+        from src.phase2_network.physdeepsif import build_physdeepsif
+        
+        model = build_physdeepsif(
+            input_dim=19,
+            hidden_dims=[128, 256, 256, 128],
+            output_dim=76,
+            temporal_type="bilstm",
+            temporal_hidden_dim=76,
+            temporal_num_layers=2,
+        )
+        checkpoint = torch.load(
+            PROJECT_ROOT / "outputs" / "models" / "checkpoint_best.pt",
+            map_location=args.device,
+            weights_only=False,
+        )
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.to(args.device)
+        model.eval()
+        logger.info(f"  ✓ Model loaded (epoch {checkpoint.get('epoch', '?')})")
+    except Exception as e:
+        logger.error(f"✗ Failed to load model: {e}")
+        sys.exit(1)
+
+    # Load test dataset
+    logger.info(f"Loading test dataset (patient {args.patient_idx})...")
+    try:
+        import h5py
+        with h5py.File(PROJECT_ROOT / "data" / "synthetic3" / "test_batch_check.h5", "r") as f:
+            eeg_test = f["eeg"][args.patient_idx]  # (19, 400)
+            source_test = f["source"][args.patient_idx]  # (76, 400)
+            x0_true = f["x0"][args.patient_idx]  # (76,)
+        logger.info(f"  ✓ Patient {args.patient_idx}: EEG {eeg_test.shape}, Source {source_test.shape}")
+        logger.info(f"  ✓ Ground truth x0: min={x0_true.min():.3f}, max={x0_true.max():.3f}")
+    except Exception as e:
+        logger.error(f"✗ Failed to load test data: {e}")
+        logger.info("Creating synthetic test patient...")
+        # Create a synthetic test patient
+        np.random.seed(42 + args.patient_idx)
+        eeg_test = np.random.randn(19, 400).astype(np.float32) * 10
+        source_test = np.random.randn(76, 400).astype(np.float32) * 5
+        x0_true = np.random.uniform(-2.2, -1.5, size=76).astype(np.float32)
+        # Set some regions as epileptogenic
+        x0_true[:5] = np.random.uniform(-1.5, -1.2, size=5)
+        logger.info(f"  ✓ Synthetic patient created: x0 min={x0_true.min():.3f}, max={x0_true.max():.3f}")
+
+    # Compute patient EEG PSD (target for CMA-ES)
+    patient_eeg_psd = _compute_psd(eeg_test, sfreq=200)
+    logger.info(f"  ✓ Patient EEG PSD shape: {patient_eeg_psd.shape}")
+
+    # Run CMA-ES optimization
+    logger.info("=" * 60)
+    logger.info("Starting CMA-ES optimization...")
+    logger.info(f"  Max generations: {inversion_config['max_generations']}")
+    logger.info(f"  Device: {args.device}")
+    logger.info("=" * 60)
+
+    try:
+        best_x0, convergence_history, cma = fit_patient(
+            patient_eeg_psd=patient_eeg_psd,
+            leadfield=leadfield,
+            connectivity=connectivity,
+            region_centers=region_centers,
+            region_labels=region_labels,
+            tract_lengths=tract_lengths,
+            config=config,
+            model=model,
+            norm_stats=norm_stats,
+            device=args.device,
+            w_source=inversion_config["objective_weights"]["w_source"],
+            w_eeg=inversion_config["objective_weights"]["w_eeg"],
+            w_reg=inversion_config["objective_weights"]["w_reg"],
+        )
+        logger.info("✓ CMA-ES optimization complete")
+    except Exception as e:
+        logger.error(f"✗ CMA-ES failed: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+    # Compute Epileptogenicity Index
+    ei = compute_ei(best_x0)
+    logger.info(f"  ✓ EI computed: min={ei.min():.3f}, max={ei.max():.3f}")
+
+    # Compare with ground truth
+    ei_true = compute_ei(x0_true)
+    logger.info(f"  ✓ True EI: min={ei_true.min():.3f}, max={ei_true.max():.3f}")
+
+    # Find top epileptogenic regions
+    top_k = 5
+    top_predicted = np.argsort(ei)[-top_k:][::-1]
+    top_true = np.argsort(ei_true)[-top_k:][::-1]
+
+    logger.info("=" * 60)
+    logger.info("RESULTS")
+    logger.info("=" * 60)
+    logger.info(f"Convergence history (last 5 gens): {convergence_history[-5:]}")
+    logger.info(f"Final objective: {convergence_history[-1]:.6f}")
+    logger.info(f"")
+    logger.info(f"Top {top_k} predicted epileptogenic regions (by EI):")
+    for i, idx in enumerate(top_predicted):
+        logger.info(f"  {i+1}. {region_labels[idx]}: EI={ei[idx]:.3f} (x0={best_x0[idx]:.3f})")
+    logger.info(f"")
+    logger.info(f"Top {top_k} true epileptogenic regions:")
+    for i, idx in enumerate(top_true):
+        logger.info(f"  {i+1}. {region_labels[idx]}: EI={ei_true[idx]:.3f} (x0={x0_true[idx]:.3f})")
     logger.info("=" * 60)
 
 

@@ -138,6 +138,7 @@ parameter_inversion:
   initial_sigma: 0.3
   population_size: 50
   max_generations: 200
+  sim_length_ms: 4000  # 4s TVB simulation per CMA-ES evaluation
   bounds: [-2.4, -1.0]
   convergence_threshold: 1.0e-6
   convergence_patience: 10
