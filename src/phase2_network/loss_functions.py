@@ -177,6 +177,18 @@ class PhysicsInformedLoss(nn.Module):
         # Loss weights
         self.alpha = alpha
         self.beta = beta
+        
+        # Scale factor to restore EEG = L @ S in normalized space.
+        # After independent z-score normalization:
+        #   EEG_norm = (EEG_raw - μ_EEG) / σ_EEG
+        #   S_norm   = (S_raw - μ_S) / σ_S
+        # The physical relationship EEG_raw = L @ S_raw becomes:
+        #   EEG_norm = (σ_S / σ_EEG) · L @ S_norm
+        # Without this scale, L @ S_norm is (σ_EEG / σ_S)-times too large,
+        # making the forward loss gradient dominate and drive amplitude collapse.
+        # Default scale=1.0 preserves old behaviour; training script must pass
+        # the correct ratio computed from the de-meaned training set.
+        self.register_buffer('src_to_eeg_scale', torch.tensor(1.0))
         self.gamma = gamma
         self.delta_epi = delta_epi
         self.lambda_laplacian = lambda_laplacian
@@ -414,6 +426,12 @@ class PhysicsInformedLoss(nn.Module):
         eeg_predicted = torch.einsum(
             'ij,bjk->bik', self.leadfield, predicted_sources
         )
+
+        # ── Restore physical scale ──
+        # Independent z-score normalisation breaks EEG = L @ S by factor
+        # σ_EEG/σ_S.  Scale the forward prediction to bring it back:
+        #   L @ S_norm  →  (σ_S / σ_EEG) · L @ S_norm  ≈  EEG_norm
+        eeg_predicted = eeg_predicted * self.src_to_eeg_scale
 
         # ── Per-channel temporal de-meaning on forward prediction ──
         # EEG input is per-channel de-meaned (DC removed) before z-scoring.

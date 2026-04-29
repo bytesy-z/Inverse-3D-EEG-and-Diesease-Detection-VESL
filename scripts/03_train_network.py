@@ -336,7 +336,7 @@ def normalize_data(
     sources_train: torch.Tensor,
     eeg_val: torch.Tensor,
     sources_val: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, float, float]:
     """
     Z-score normalize data using train set statistics (IN-PLACE for memory efficiency).
     
@@ -407,7 +407,7 @@ def normalize_data(
     
     logger.info("✓ Normalization complete (de-meaning + z-score, in-place operations)")
     
-    return eeg_train, sources_train, eeg_val, sources_val
+    return eeg_train, sources_train, eeg_val, sources_val, eeg_std, sources_std
 
 
 def main() -> None:
@@ -551,19 +551,23 @@ def main() -> None:
         src_probe = src_probe - src_probe.mean(axis=-1, keepdims=True)
         # EEG: subtract per-channel temporal mean (AC-coupling)
         eeg_probe = eeg_probe - eeg_probe.mean(axis=-1, keepdims=True)
-        
+
         eeg_mean = float(np.mean(eeg_probe))
         eeg_std = float(np.std(eeg_probe))
         src_mean = float(np.mean(src_probe))
         src_std = float(np.std(src_probe))
         del eeg_probe, src_probe
-        
+
         logger.info(
             f"Normalization stats (from {n_probe} de-meaned samples): "
             f"EEG μ={eeg_mean:.4f} σ={eeg_std:.4f}, "
             f"Source μ={src_mean:.6f} σ={src_std:.6f}"
         )
-        
+
+        # Forward scale factor to restore EEG = L @ S in normalized space
+        src_to_eeg_scale = float(src_std / eeg_std) if eeg_std > 0 else 1.0
+        logger.info(f"Forward scale factor σ_S/σ_EEG = {src_std:.4f}/{eeg_std:.4f} = {src_to_eeg_scale:.6f}")
+
         train_dataset = HDF5Dataset(
             str(train_path),
             batch_size=batch_size,
@@ -617,8 +621,12 @@ def main() -> None:
             
             # Normalize
             logger.info("Normalizing datasets...")
-            eeg_train, sources_train, eeg_val, sources_val = normalize_data(
+            eeg_train, sources_train, eeg_val, sources_val, eeg_std, src_std = normalize_data(
                 eeg_train, sources_train, eeg_val, sources_val
+            )
+            src_to_eeg_scale = float(src_std / eeg_std) if eeg_std > 0 else 1.0
+            logger.info(
+                f"Forward scale factor σ_S/σ_EEG = {src_std:.4f}/{eeg_std:.4f} = {src_to_eeg_scale:.6f}"
             )
             
             log_memory_status("AFTER_NORMALIZATION")
@@ -665,6 +673,9 @@ def main() -> None:
             src_mean = float(np.mean(src_probe))
             src_std = float(np.std(src_probe))
             del eeg_probe, src_probe
+            
+            src_to_eeg_scale = float(src_std / eeg_std) if eeg_std > 0 else 1.0
+            logger.info(f"Forward scale factor σ_S/σ_EEG = {src_std:.4f}/{eeg_std:.4f} = {src_to_eeg_scale:.6f}")
             
             train_dataset = HDF5Dataset(
                 str(train_path),
@@ -745,6 +756,7 @@ def main() -> None:
         lambda_amplitude=physics_weights.get("lambda_amplitude", 0.2),
         amplitude_max=train_config.get("amplitude_max", 3.0),
     )
+    loss_fn.src_to_eeg_scale.fill_(src_to_eeg_scale)
     loss_fn = loss_fn.to(device)
     
     # Build trainer

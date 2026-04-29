@@ -250,6 +250,11 @@ class PhysDeepSIFTrainer:
                 
                 # Logging
                 epoch_time = time.time() - epoch_start_time
+                # Include individual loss components when available
+                comp_str = ""
+                if 'val_components' in val_results:
+                    vc = val_results['val_components']
+                    comp_str = f" | L_src={vc['loss_source']:.3f} L_fwd={vc['loss_forward']:.3f} L_epi={vc['loss_epi']:.3f}"
                 logger.info(
                     f"  Train loss: {train_loss:.4f} | "
                     f"Val loss: {val_loss:.4f} | "
@@ -257,7 +262,7 @@ class PhysDeepSIFTrainer:
                     f"SD: {val_results['sd']:.2f}mm | "
                     f"AUC: {val_results['auc']:.3f} | "
                     f"Corr: {val_results['corr']:.3f} | "
-                    f"Time: {epoch_time:.1f}s"
+                    f"Time: {epoch_time:.1f}s{comp_str}"
                 )
                 logger.info(f"  Memory at epoch end: {get_memory_info()}")
                 
@@ -421,6 +426,9 @@ class PhysDeepSIFTrainer:
         all_true_sources = []
         all_epileptogenic_masks = []
         
+        # Accumulate individual loss components across batches
+        comp_acc = {'loss_source': 0.0, 'loss_forward': 0.0, 'loss_epi': 0.0}
+        
         logger.debug(f"Validation starting. {get_memory_info()}")
         
         try:
@@ -454,6 +462,8 @@ class PhysDeepSIFTrainer:
                         
                         total_loss += loss.item()
                         num_batches += 1
+                        for k in comp_acc:
+                            comp_acc[k] += loss_dict[k].item()
                         
                         # Collect predictions for metric computation
                         all_pred_sources.append(source_pred.cpu().numpy())
@@ -554,6 +564,7 @@ class PhysDeepSIFTrainer:
             'sd': sd,
             'auc': auc,
             'corr': corr,
+            'val_components': {k: v / max(num_batches, 1) for k, v in comp_acc.items()},
         }
     
     def _augment_batch(self, eeg: torch.Tensor) -> torch.Tensor:
