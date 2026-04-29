@@ -1,91 +1,164 @@
 # ZIK Day 2 — Mon Apr 28: Training Fix + Backend + XAI + Tests
-
-(deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ python scripts/02_generate_synthetic_data.py \
-  --n-sims 5000 --n-jobs 16 --output-dir data/synthetic4/ --split train
-Logging to file: /data1tb/VESL/fyp-2.0/outputs/generation.log
-2026-04-29 00:38:49 - __main__ - INFO - Loaded configuration from /data1tb/VESL/fyp-2.0/config.yaml
-2026-04-29 00:38:49 - __main__ - INFO - Loading source space data...
-2026-04-29 00:38:49 - src.phase1_forward.source_space - INFO - Loaded source space data from /data1tb/VESL/fyp-2.0/data: connectivity (76, 76), centers (76, 3), 76 labels, tract_lengths (76, 76)
-2026-04-29 00:38:49 - __main__ - INFO - Loading leadfield matrix...
-2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO - Validating leadfield matrix...
-2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO -   Shape check: PASS ((19, 76))
-2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO -   Finite check: PASS
-2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO -   Rank check: PASS (rank=18)
-2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO -   Column norm check: PASS (max/median = 2.7)
-2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO - Leadfield validation PASSED
-2026-04-29 00:38:49 - src.phase1_forward.leadfield_builder - INFO - Loaded leadfield: /data1tb/VESL/fyp-2.0/data/leadfield_19x76.npy (shape (19, 76))
-2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - ============================================================
-2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - GENERATING SYNTHETIC DATASET: 5000 simulations
-2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - Output: /data1tb/VESL/fyp-2.0/data/synthetic4/train_dataset.h5
-2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - ============================================================
-2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - ✓ HDF5 file created: /data1tb/VESL/fyp-2.0/data/synthetic4/train_dataset.h5
-2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - Running 5000 simulations...
-2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - Using 16 worker processes
-2026-04-29 00:38:49 - src.phase1_forward.synthetic_dataset - INFO - Processing results and writing to HDF5 incrementally...
-2026-04-29 00:39:31 - src.phase1_forward.synthetic_dataset - INFO - Simulation 13: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w4: PDR=3.33, alpha_grad=True, beta_grad=False']
-2026-04-29 00:39:31 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 1/5000 | Current batch: 4 samples (not yet written) | Total so far: 4/25,000 | Speed: 0/sec | ETA: 4354.5m
-2026-04-29 00:39:32 - src.phase1_forward.synthetic_dataset - INFO - Simulation 3: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.70, alpha_grad=True, beta_grad=False', 'w4: PDR=2.66, alpha_grad=True, beta_grad=False']
-2026-04-29 00:39:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 1: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.14, alpha_grad=False, beta_grad=False']
-2026-04-29 00:39:33 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 5 produced invalid values (NaN=137566, Inf=0). Discarding.
-2026-04-29 00:39:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 10: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.68, alpha_grad=True, beta_grad=False']
-2026-04-29 00:39:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 6: 2/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.14, alpha_grad=True, beta_grad=False', 'w2: PDR=3.10, alpha_grad=True, beta_grad=False']
-2026-04-29 00:39:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 7: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.25, alpha_grad=True, beta_grad=False', 'w4: PDR=3.03, alpha_grad=True, beta_grad=False']
-2026-04-29 00:39:34 - src.phase1_forward.synthetic_dataset - INFO - Simulation 0: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.89, alpha_grad=True, beta_grad=False']
-2026-04-29 00:39:34 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 8 produced invalid values (NaN=148000, Inf=0). Discarding.
-2026-04-29 00:39:34 - src.phase1_forward.synthetic_dataset - INFO - Simulation 11: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=3.05, alpha_grad=True, beta_grad=False', 'w2: PDR=3.24, alpha_grad=True, beta_grad=False']
-2026-04-29 00:40:14 - src.phase1_forward.synthetic_dataset - INFO - Simulation 17: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.64, alpha_grad=False, beta_grad=False']
-2026-04-29 00:40:14 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 15/5000 | Current batch: 61 samples (not yet written) | Total so far: 61/25,000 | Speed: 1/sec | ETA: 581.2m
-2026-04-29 00:40:16 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 25 produced invalid values (NaN=141899, Inf=0). Discarding.
-2026-04-29 00:40:16 - src.phase1_forward.synthetic_dataset - INFO - Simulation 21: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.40, alpha_grad=True, beta_grad=False']
-2026-04-29 00:40:17 - src.phase1_forward.synthetic_dataset - INFO - Simulation 18: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w4: PDR=3.13, alpha_grad=True, beta_grad=False']
-2026-04-29 00:40:17 - src.phase1_forward.synthetic_dataset - INFO - Simulation 24: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.98, alpha_grad=True, beta_grad=False']
-2026-04-29 00:40:17 - src.phase1_forward.synthetic_dataset - INFO - Simulation 30: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=3.00, alpha_grad=True, beta_grad=False']
-2026-04-29 00:40:18 - src.phase1_forward.synthetic_dataset - INFO - Simulation 26: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.82, alpha_grad=True, beta_grad=False']
-2026-04-29 00:40:58 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 30/5000 | Current batch: 131 samples (not yet written) | Total so far: 131/25,000 | Speed: 1/sec | ETA: 406.5m
-2026-04-29 00:41:00 - src.phase1_forward.synthetic_dataset - INFO - Simulation 35: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.30, alpha_grad=True, beta_grad=False', 'w4: PDR=3.02, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:00 - src.phase1_forward.synthetic_dataset - INFO - Simulation 38: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.11, alpha_grad=True, beta_grad=False', 'w4: PDR=3.10, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:00 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 40 produced invalid values (NaN=136207, Inf=0). Discarding.
-2026-04-29 00:41:01 - src.phase1_forward.synthetic_dataset - INFO - Simulation 44: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.92, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:01 - src.phase1_forward.synthetic_dataset - INFO - Simulation 42: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.93, alpha_grad=True, beta_grad=False', 'w4: PDR=2.86, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:01 - src.phase1_forward.synthetic_dataset - INFO - Simulation 41: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.17, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:01 - src.phase1_forward.synthetic_dataset - INFO - Simulation 43: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.86, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:02 - src.phase1_forward.synthetic_dataset - INFO - Simulation 45: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.93, alpha_grad=True, beta_grad=False', 'w4: PDR=3.53, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:02 - src.phase1_forward.synthetic_dataset - INFO - Simulation 46: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w4: PDR=3.06, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:41 - src.phase1_forward.synthetic_dataset - INFO - Simulation 48: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.96, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:41 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 45/5000 | Current batch: 193 samples (not yet written) | Total so far: 193/25,000 | Speed: 1/sec | ETA: 367.3m
-2026-04-29 00:41:43 - src.phase1_forward.synthetic_dataset - INFO - Simulation 56: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.47, alpha_grad=True, beta_grad=False', 'w1: PDR=3.25, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:44 - src.phase1_forward.synthetic_dataset - INFO - Simulation 52: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.36, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:44 - src.phase1_forward.synthetic_dataset - INFO - Simulation 55: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.88, alpha_grad=True, beta_grad=False', 'w1: PDR=2.51, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:44 - src.phase1_forward.synthetic_dataset - INFO - Simulation 51: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=2.65, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:44 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 53 produced invalid values (NaN=131654, Inf=0). Discarding.
-2026-04-29 00:41:44 - src.phase1_forward.synthetic_dataset - INFO - Simulation 50: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.88, alpha_grad=False, beta_grad=True', 'w4: PDR=2.84, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:45 - src.phase1_forward.synthetic_dataset - INFO - Simulation 63: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=3.10, alpha_grad=True, beta_grad=False', 'w3: PDR=2.64, alpha_grad=False, beta_grad=False']
-2026-04-29 00:41:46 - src.phase1_forward.synthetic_dataset - INFO - Simulation 59: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.12, alpha_grad=True, beta_grad=False']
-2026-04-29 00:41:46 - src.phase1_forward.synthetic_dataset - INFO - Simulation 62: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.51, alpha_grad=True, beta_grad=False']
-2026-04-29 00:42:30 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 64 produced invalid values (NaN=51844, Inf=0). Discarding.
-2026-04-29 00:42:32 - src.phase1_forward.synthetic_dataset - INFO - Simulation 65: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=2.58, alpha_grad=True, beta_grad=False']
-2026-04-29 00:42:32 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 60/5000 | Current batch: 255 samples (not yet written) | Total so far: 255/25,000 | Speed: 1/sec | ETA: 360.1m
-2026-04-29 00:42:34 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 66 produced invalid values (NaN=115165, Inf=0). Discarding.
-2026-04-29 00:42:35 - src.phase1_forward.synthetic_dataset - INFO - Simulation 70: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.96, alpha_grad=True, beta_grad=False', 'w3: PDR=3.00, alpha_grad=True, beta_grad=False']
-2026-04-29 00:42:36 - src.phase1_forward.synthetic_dataset - INFO - Simulation 67: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=3.00, alpha_grad=True, beta_grad=False']
-2026-04-29 00:42:36 - src.phase1_forward.synthetic_dataset - WARNING - Simulation 71 produced invalid values (NaN=144427, Inf=0). Discarding.
-2026-04-29 00:42:36 - src.phase1_forward.synthetic_dataset - INFO - Simulation 73: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.43, alpha_grad=True, beta_grad=False']
-2026-04-29 00:42:38 - src.phase1_forward.synthetic_dataset - INFO - Simulation 72: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.14, alpha_grad=True, beta_grad=False']
-2026-04-29 00:42:39 - src.phase1_forward.synthetic_dataset - INFO - Simulation 78: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.23, alpha_grad=True, beta_grad=False']
-2026-04-29 00:43:25 - src.phase1_forward.synthetic_dataset - INFO - [Progress Update] Sims: 73/5000 | Current batch: 314 samples (not yet written) | Total so far: 314/25,000 | Speed: 1/sec | ETA: 360.9m
-2026-04-29 00:43:25 - src.phase1_forward.synthetic_dataset - INFO - Simulation 81: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.71, alpha_grad=True, beta_grad=False']
-2026-04-29 00:43:29 - src.phase1_forward.synthetic_dataset - INFO - Simulation 83: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=2.82, alpha_grad=True, beta_grad=False']
-2026-04-29 00:43:30 - src.phase1_forward.synthetic_dataset - INFO - Simulation 84: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w3: PDR=3.26, alpha_grad=True, beta_grad=False']
-2026-04-29 00:43:30 - src.phase1_forward.synthetic_dataset - INFO - Simulation 86: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=3.04, alpha_grad=True, beta_grad=False']
-2026-04-29 00:43:31 - src.phase1_forward.synthetic_dataset - INFO - Simulation 85: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.44, alpha_grad=True, beta_grad=False']
-2026-04-29 00:43:31 - src.phase1_forward.synthetic_dataset - INFO - Simulation 89: 2/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=3.20, alpha_grad=True, beta_grad=False', 'w2: PDR=3.17, alpha_grad=True, beta_grad=False']
-2026-04-29 00:43:32 - src.phase1_forward.synthetic_dataset - INFO - Simulation 90: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w4: PDR=2.97, alpha_grad=True, beta_grad=False']
-2026-04-29 00:43:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 91: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w0: PDR=3.46, alpha_grad=True, beta_grad=False']
-2026-04-29 00:43:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 93: 4/5 windows passed spatial-spectral validation. Discarded reasons: ['w2: PDR=3.44, alpha_grad=True, beta_grad=False']
-2026-04-29 00:43:33 - src.phase1_forward.synthetic_dataset - INFO - Simulation 95: 3/5 windows passed spatial-spectral validation. Discarded reasons: ['w1: PDR=3.07, alpha_grad=True, beta_grad=False', 'w2: PDR=3.15, alpha_grad=True, beta_grad=False']
-
-python scripts/02_generate_synthetic_data.py --n-sims 5000 --n-jobs 16 --output-dir data/synthetic4/ --split train && python scripts/02_generate_synthetic_data.py --n-sims 500 --n-jobs 16 --output-dir data/synthetic4/ --split val
-
+(deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ python scripts/03_train_network.py   --epochs 80 --batch-size 64 --device cuda --data-dir data/synthetic4/
+2026-04-29 08:59:15 - __main__ - INFO - Logging configured: /data1tb/VESL/fyp-2.0/outputs/models/training.log
+2026-04-29 08:59:15 - __main__ - INFO - Loaded config from /data1tb/VESL/fyp-2.0/config.yaml
+2026-04-29 08:59:15 - __main__ - INFO - Using GPU: NVIDIA GeForce RTX 3080
+2026-04-29 08:59:15 - __main__ - INFO - [STARTUP] Memory: 5.1GB / 39.1GB (13.0% used) | Available: 34.0GB
+2026-04-29 08:59:15 - __main__ - INFO - ======================================================================
+2026-04-29 08:59:15 - __main__ - INFO - Training configuration:
+2026-04-29 08:59:15 - __main__ - INFO -   Batch size: 64
+2026-04-29 08:59:15 - __main__ - INFO -   Max epochs: 80
+2026-04-29 08:59:15 - __main__ - INFO -   Early stopping patience: 15
+2026-04-29 08:59:15 - __main__ - INFO - ======================================================================
+2026-04-29 08:59:15 - __main__ - INFO - Checking dataset sizes...
+2026-04-29 08:59:15 - __main__ - INFO - Dataset memory estimates (if all loaded at once):
+2026-04-29 08:59:15 - __main__ - INFO -   Train: 3.3 GB (23061 samples)
+2026-04-29 08:59:15 - __main__ - INFO -   Val: 0.3 GB (2296 samples)
+2026-04-29 08:59:15 - __main__ - INFO -   Total: 3.6 GB
+2026-04-29 08:59:15 - __main__ - INFO -   System available: 34.0 GB
+2026-04-29 08:59:15 - __main__ - INFO - ✓ Sufficient memory available to load full datasets
+2026-04-29 08:59:15 - __main__ - INFO - Creating dataloaders...
+2026-04-29 08:59:15 - __main__ - INFO - Loading datasets into memory...
+2026-04-29 08:59:15 - __main__ - INFO - [BEFORE_LOAD] Memory: 5.1GB / 39.1GB (13.0% used) | Available: 34.0GB
+2026-04-29 08:59:15 - __main__ - INFO - Loading training data (data/synthetic4/train_dataset.h5)...
+2026-04-29 08:59:30 - __main__ - INFO - [AFTER_TRAIN_LOAD] Memory: 8.8GB / 39.1GB (22.4% used) | Available: 30.3GB
+2026-04-29 08:59:30 - __main__ - INFO - Loading validation data (data/synthetic4/val_dataset.h5)...
+2026-04-29 08:59:31 - __main__ - INFO - [AFTER_VAL_LOAD] Memory: 9.1GB / 39.1GB (23.2% used) | Available: 30.0GB
+2026-04-29 08:59:31 - __main__ - INFO - Normalizing datasets...
+2026-04-29 08:59:31 - __main__ - INFO - Applying per-region temporal de-meaning (DC offset removal)...
+2026-04-29 08:59:32 - __main__ - INFO - ✓ De-meaning complete
+2026-04-29 08:59:32 - __main__ - INFO - Computing normalization statistics on de-meaned training set...
+2026-04-29 08:59:32 - __main__ - INFO - Normalization stats (de-meaned): EEG μ=-0.0000 σ=175.5532, Sources μ=0.0000 σ=0.2317
+2026-04-29 08:59:33 - __main__ - INFO - ✓ Normalization complete (de-meaning + z-score, in-place operations)
+2026-04-29 08:59:33 - __main__ - INFO - [AFTER_NORMALIZATION] Memory: 9.0GB / 39.1GB (23.1% used) | Available: 30.0GB
+2026-04-29 08:59:33 - __main__ - INFO - Train batches: 361, Val batches: 36
+2026-04-29 08:59:33 - __main__ - INFO - [DATALOADERS_CREATED] Memory: 9.0GB / 39.1GB (23.1% used) | Available: 30.0GB
+2026-04-29 08:59:33 - __main__ - INFO - Loading region centers for metrics...
+2026-04-29 08:59:33 - __main__ - INFO -   Region centers shape: (76, 3)
+2026-04-29 08:59:33 - __main__ - INFO - Loading physics matrices...
+2026-04-29 08:59:33 - __main__ - INFO - Building PhysDeepSIF network...
+2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO - Loaded leadfield from /data1tb/VESL/fyp-2.0/data/leadfield_19x76.npy (shape (19, 76))
+2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO - Loaded connectivity from /data1tb/VESL/fyp-2.0/data/connectivity_76.npy (shape (76, 76))
+2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO - Computed connectivity Laplacian (shape (76, 76))
+/home/tukl/anaconda3/envs/deepsif/lib/python3.9/site-packages/torch/nn/modules/rnn.py:83: UserWarning: dropout option adds dropout after all but last recurrent layer, so non-zero dropout expects num_layers greater than 1, but got dropout=0.1 and num_layers=1
+  warnings.warn("dropout option adds dropout after all but last "
+2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO - PhysDeepSIF initialized with leadfield (19, 76), laplacian (76, 76), lstm_dropout=0.1
+2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO - Built PhysDeepSIF network:
+2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO -   Spatial module: 165,144 parameters
+2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO -   Temporal module: 245,100 parameters
+2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO -   Total trainable: 410,244 parameters
+2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO -   Total parameters (including buffers): 419,004
+2026-04-29 08:59:33 - src.phase2_network.loss_functions - INFO - PhysicsInformedLoss initialized with weights: α=1.0, β=0.1, γ=0.01, δ_epi=1.0 | λ_L=0.0, λ_T=0.3, λ_A=0.2 | L_forward variance-normalised, β adjusted for leadfield gradient amplification (~200×)
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - Trainer initialized:
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Device: cuda
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Output directory: /data1tb/VESL/fyp-2.0/outputs/models
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Learning rate: 0.001
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Weight decay: 0.0001
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Gradient clip norm: 1.0
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Early stopping patience: 15
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Region centers shape: (76, 3)
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - Starting training: 80 epochs
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - Train batches per epoch: 361
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - Val batches per epoch: 36
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - Initial memory: RAM: 9.1GB / 39.1GB (23.3%) | GPU: 0.0GB
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - 
+Epoch   1/80
+2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.1GB / 39.1GB (23.3%) | GPU: 0.0GB
+2026-04-29 08:59:41 - src.phase2_network.trainer - INFO -   Train loss: 2.3274 | Val loss: 2.3107 | DLE: 34.09mm | SD: 68.11mm | AUC: 0.573 | Corr: 0.212 | Time: 7.5s
+2026-04-29 08:59:41 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.9GB / 39.1GB (25.2%) | GPU: 0.0GB
+2026-04-29 08:59:41 - src.phase2_network.trainer - INFO -   ✓ Best model saved (val_loss: 2.3107)
+2026-04-29 08:59:41 - src.phase2_network.trainer - INFO - 
+Epoch   2/80
+2026-04-29 08:59:41 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.9GB / 39.1GB (25.2%) | GPU: 0.0GB
+2026-04-29 08:59:48 - src.phase2_network.trainer - INFO -   Train loss: 2.3018 | Val loss: 2.3087 | DLE: 33.62mm | SD: 68.17mm | AUC: 0.578 | Corr: 0.230 | Time: 7.3s
+2026-04-29 08:59:48 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.8GB / 39.1GB (25.2%) | GPU: 0.0GB
+2026-04-29 08:59:49 - src.phase2_network.trainer - INFO -   ✓ Best model saved (val_loss: 2.3087)
+2026-04-29 08:59:49 - src.phase2_network.trainer - INFO - 
+Epoch   3/80
+2026-04-29 08:59:49 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.8GB / 39.1GB (25.2%) | GPU: 0.0GB
+2026-04-29 08:59:56 - src.phase2_network.trainer - INFO -   Train loss: 2.3358 | Val loss: 2.3666 | DLE: 33.87mm | SD: 68.69mm | AUC: 0.584 | Corr: 0.201 | Time: 7.3s
+2026-04-29 08:59:56 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.4GB / 39.1GB (24.0%) | GPU: 0.0GB
+2026-04-29 08:59:56 - src.phase2_network.trainer - INFO - 
+Epoch   4/80
+2026-04-29 08:59:56 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.4GB / 39.1GB (24.0%) | GPU: 0.0GB
+2026-04-29 09:00:03 - src.phase2_network.trainer - INFO -   Train loss: 2.4751 | Val loss: 2.5001 | DLE: 36.16mm | SD: 63.63mm | AUC: 0.558 | Corr: 0.010 | Time: 7.3s
+2026-04-29 09:00:03 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.9GB / 39.1GB (25.2%) | GPU: 0.0GB
+2026-04-29 09:00:03 - src.phase2_network.trainer - INFO - 
+Epoch   5/80
+2026-04-29 09:00:03 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.9GB / 39.1GB (25.2%) | GPU: 0.0GB
+2026-04-29 09:00:11 - src.phase2_network.trainer - INFO -   Train loss: 2.4639 | Val loss: 2.4846 | DLE: 38.24mm | SD: 62.53mm | AUC: 0.561 | Corr: 0.009 | Time: 7.4s
+2026-04-29 09:00:11 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.4GB / 39.1GB (24.1%) | GPU: 0.0GB
+2026-04-29 09:00:11 - src.phase2_network.trainer - INFO - 
+Epoch   6/80
+2026-04-29 09:00:11 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.4GB / 39.1GB (24.1%) | GPU: 0.0GB
+2026-04-29 09:00:18 - src.phase2_network.trainer - INFO -   Train loss: 2.4557 | Val loss: 2.4850 | DLE: 36.66mm | SD: 62.27mm | AUC: 0.560 | Corr: 0.007 | Time: 7.4s
+2026-04-29 09:00:18 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.5GB / 39.1GB (24.4%) | GPU: 0.0GB
+2026-04-29 09:00:18 - src.phase2_network.trainer - INFO - 
+Epoch   7/80
+2026-04-29 09:00:18 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.5GB / 39.1GB (24.4%) | GPU: 0.0GB
+2026-04-29 09:00:25 - src.phase2_network.trainer - INFO -   Train loss: 2.4493 | Val loss: 2.4816 | DLE: 36.24mm | SD: 63.16mm | AUC: 0.565 | Corr: 0.006 | Time: 7.3s
+2026-04-29 09:00:25 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 09:00:25 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 5 epochs
+2026-04-29 09:00:25 - src.phase2_network.trainer - INFO - 
+Epoch   8/80
+2026-04-29 09:00:25 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 09:00:33 - src.phase2_network.trainer - INFO -   Train loss: 2.4468 | Val loss: 2.4789 | DLE: 35.90mm | SD: 62.34mm | AUC: 0.566 | Corr: 0.001 | Time: 7.4s
+2026-04-29 09:00:33 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.3GB / 39.1GB (23.8%) | GPU: 0.0GB
+2026-04-29 09:00:33 - src.phase2_network.trainer - INFO - 
+Epoch   9/80
+2026-04-29 09:00:33 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.3GB / 39.1GB (23.8%) | GPU: 0.0GB
+2026-04-29 09:00:40 - src.phase2_network.trainer - INFO -   Train loss: 2.4423 | Val loss: 2.4781 | DLE: 35.37mm | SD: 63.53mm | AUC: 0.571 | Corr: 0.002 | Time: 7.4s
+2026-04-29 09:00:40 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.5GB / 39.1GB (24.2%) | GPU: 0.0GB
+2026-04-29 09:00:40 - src.phase2_network.trainer - INFO - 
+Epoch  10/80
+2026-04-29 09:00:40 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.5GB / 39.1GB (24.2%) | GPU: 0.0GB
+2026-04-29 09:00:48 - src.phase2_network.trainer - INFO -   Train loss: 2.4414 | Val loss: 2.4782 | DLE: 35.43mm | SD: 63.27mm | AUC: 0.573 | Corr: 0.002 | Time: 7.4s
+2026-04-29 09:00:48 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.2GB / 39.1GB (23.5%) | GPU: 0.0GB
+2026-04-29 09:00:48 - src.phase2_network.trainer - INFO - 
+Epoch  11/80
+2026-04-29 09:00:48 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.2GB / 39.1GB (23.5%) | GPU: 0.0GB
+2026-04-29 09:00:55 - src.phase2_network.trainer - INFO -   Train loss: 2.4411 | Val loss: 2.4785 | DLE: 34.84mm | SD: 64.20mm | AUC: 0.575 | Corr: 0.002 | Time: 7.4s
+2026-04-29 09:00:55 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 09:00:55 - src.phase2_network.trainer - INFO - 
+Epoch  12/80
+2026-04-29 09:00:55 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 09:01:02 - src.phase2_network.trainer - INFO -   Train loss: 2.4409 | Val loss: 2.4779 | DLE: 34.68mm | SD: 63.93mm | AUC: 0.573 | Corr: 0.002 | Time: 7.4s
+2026-04-29 09:01:02 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.0GB / 39.1GB (25.7%) | GPU: 0.0GB
+2026-04-29 09:01:02 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 10 epochs
+2026-04-29 09:01:02 - src.phase2_network.trainer - INFO - 
+Epoch  13/80
+2026-04-29 09:01:02 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.0GB / 39.1GB (25.7%) | GPU: 0.0GB
+2026-04-29 09:01:10 - src.phase2_network.trainer - INFO -   Train loss: 2.4399 | Val loss: 2.4780 | DLE: 34.56mm | SD: 64.20mm | AUC: 0.576 | Corr: 0.003 | Time: 7.3s
+2026-04-29 09:01:10 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.3GB / 39.1GB (26.2%) | GPU: 0.0GB
+2026-04-29 09:01:10 - src.phase2_network.trainer - INFO - 
+Epoch  14/80
+2026-04-29 09:01:10 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.3GB / 39.1GB (26.2%) | GPU: 0.0GB
+2026-04-29 09:01:17 - src.phase2_network.trainer - INFO -   Train loss: 2.4401 | Val loss: 2.4778 | DLE: 34.42mm | SD: 64.50mm | AUC: 0.573 | Corr: 0.001 | Time: 7.3s
+2026-04-29 09:01:17 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.4GB / 39.1GB (26.6%) | GPU: 0.0GB
+2026-04-29 09:01:17 - src.phase2_network.trainer - INFO - 
+Epoch  15/80
+2026-04-29 09:01:17 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.4GB / 39.1GB (26.6%) | GPU: 0.0GB
+2026-04-29 09:01:24 - src.phase2_network.trainer - INFO -   Train loss: 2.4383 | Val loss: 2.4774 | DLE: 34.58mm | SD: 64.60mm | AUC: 0.575 | Corr: 0.001 | Time: 7.3s
+2026-04-29 09:01:24 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.2GB / 39.1GB (26.1%) | GPU: 0.0GB
+2026-04-29 09:01:24 - src.phase2_network.trainer - INFO - 
+Epoch  16/80
+2026-04-29 09:01:24 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.2GB / 39.1GB (26.1%) | GPU: 0.0GB
+2026-04-29 09:01:32 - src.phase2_network.trainer - INFO -   Train loss: 2.4376 | Val loss: 2.4781 | DLE: 34.45mm | SD: 64.91mm | AUC: 0.575 | Corr: 0.001 | Time: 7.4s
+2026-04-29 09:01:32 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
+2026-04-29 09:01:32 - src.phase2_network.trainer - INFO - 
+Epoch  17/80
+2026-04-29 09:01:32 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
+2026-04-29 09:01:39 - src.phase2_network.trainer - INFO -   Train loss: 2.4377 | Val loss: 2.4778 | DLE: 34.43mm | SD: 64.92mm | AUC: 0.577 | Corr: 0.002 | Time: 7.3s
+2026-04-29 09:01:39 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 09:01:39 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 15 epochs
+2026-04-29 09:01:39 - src.phase2_network.trainer - WARNING - Early stopping: 15 epochs without improvement
+2026-04-29 09:01:39 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 09:01:39 - src.phase2_network.trainer - INFO - Training complete
+2026-04-29 09:01:39 - src.phase2_network.trainer - INFO - Final memory: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 09:01:39 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 09:02:02 - __main__ - INFO - Saved normalization stats to /data1tb/VESL/fyp-2.0/outputs/models/normalization_stats.json
 ## Situation Assessment (09:00)
 
 | Factor | Status |
