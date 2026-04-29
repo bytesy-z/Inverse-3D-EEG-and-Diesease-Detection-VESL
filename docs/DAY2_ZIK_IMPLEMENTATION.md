@@ -1,164 +1,169 @@
 # ZIK Day 2 — Mon Apr 28: Training Fix + Backend + XAI + Tests
 (deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ python scripts/03_train_network.py   --epochs 80 --batch-size 64 --device cuda --data-dir data/synthetic4/
-2026-04-29 08:59:15 - __main__ - INFO - Logging configured: /data1tb/VESL/fyp-2.0/outputs/models/training.log
-2026-04-29 08:59:15 - __main__ - INFO - Loaded config from /data1tb/VESL/fyp-2.0/config.yaml
-2026-04-29 08:59:15 - __main__ - INFO - Using GPU: NVIDIA GeForce RTX 3080
-2026-04-29 08:59:15 - __main__ - INFO - [STARTUP] Memory: 5.1GB / 39.1GB (13.0% used) | Available: 34.0GB
-2026-04-29 08:59:15 - __main__ - INFO - ======================================================================
-2026-04-29 08:59:15 - __main__ - INFO - Training configuration:
-2026-04-29 08:59:15 - __main__ - INFO -   Batch size: 64
-2026-04-29 08:59:15 - __main__ - INFO -   Max epochs: 80
-2026-04-29 08:59:15 - __main__ - INFO -   Early stopping patience: 15
-2026-04-29 08:59:15 - __main__ - INFO - ======================================================================
-2026-04-29 08:59:15 - __main__ - INFO - Checking dataset sizes...
-2026-04-29 08:59:15 - __main__ - INFO - Dataset memory estimates (if all loaded at once):
-2026-04-29 08:59:15 - __main__ - INFO -   Train: 3.3 GB (23061 samples)
-2026-04-29 08:59:15 - __main__ - INFO -   Val: 0.3 GB (2296 samples)
-2026-04-29 08:59:15 - __main__ - INFO -   Total: 3.6 GB
-2026-04-29 08:59:15 - __main__ - INFO -   System available: 34.0 GB
-2026-04-29 08:59:15 - __main__ - INFO - ✓ Sufficient memory available to load full datasets
-2026-04-29 08:59:15 - __main__ - INFO - Creating dataloaders...
-2026-04-29 08:59:15 - __main__ - INFO - Loading datasets into memory...
-2026-04-29 08:59:15 - __main__ - INFO - [BEFORE_LOAD] Memory: 5.1GB / 39.1GB (13.0% used) | Available: 34.0GB
-2026-04-29 08:59:15 - __main__ - INFO - Loading training data (data/synthetic4/train_dataset.h5)...
-2026-04-29 08:59:30 - __main__ - INFO - [AFTER_TRAIN_LOAD] Memory: 8.8GB / 39.1GB (22.4% used) | Available: 30.3GB
-2026-04-29 08:59:30 - __main__ - INFO - Loading validation data (data/synthetic4/val_dataset.h5)...
-2026-04-29 08:59:31 - __main__ - INFO - [AFTER_VAL_LOAD] Memory: 9.1GB / 39.1GB (23.2% used) | Available: 30.0GB
-2026-04-29 08:59:31 - __main__ - INFO - Normalizing datasets...
-2026-04-29 08:59:31 - __main__ - INFO - Applying per-region temporal de-meaning (DC offset removal)...
-2026-04-29 08:59:32 - __main__ - INFO - ✓ De-meaning complete
-2026-04-29 08:59:32 - __main__ - INFO - Computing normalization statistics on de-meaned training set...
-2026-04-29 08:59:32 - __main__ - INFO - Normalization stats (de-meaned): EEG μ=-0.0000 σ=175.5532, Sources μ=0.0000 σ=0.2317
-2026-04-29 08:59:33 - __main__ - INFO - ✓ Normalization complete (de-meaning + z-score, in-place operations)
-2026-04-29 08:59:33 - __main__ - INFO - [AFTER_NORMALIZATION] Memory: 9.0GB / 39.1GB (23.1% used) | Available: 30.0GB
-2026-04-29 08:59:33 - __main__ - INFO - Train batches: 361, Val batches: 36
-2026-04-29 08:59:33 - __main__ - INFO - [DATALOADERS_CREATED] Memory: 9.0GB / 39.1GB (23.1% used) | Available: 30.0GB
-2026-04-29 08:59:33 - __main__ - INFO - Loading region centers for metrics...
-2026-04-29 08:59:33 - __main__ - INFO -   Region centers shape: (76, 3)
-2026-04-29 08:59:33 - __main__ - INFO - Loading physics matrices...
-2026-04-29 08:59:33 - __main__ - INFO - Building PhysDeepSIF network...
-2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO - Loaded leadfield from /data1tb/VESL/fyp-2.0/data/leadfield_19x76.npy (shape (19, 76))
-2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO - Loaded connectivity from /data1tb/VESL/fyp-2.0/data/connectivity_76.npy (shape (76, 76))
-2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO - Computed connectivity Laplacian (shape (76, 76))
+2026-04-29 09:13:53 - __main__ - INFO - Logging configured: /data1tb/VESL/fyp-2.0/outputs/models/training.log
+2026-04-29 09:13:53 - __main__ - INFO - Loaded config from /data1tb/VESL/fyp-2.0/config.yaml
+2026-04-29 09:13:53 - __main__ - INFO - Using GPU: NVIDIA GeForce RTX 3080
+2026-04-29 09:13:53 - __main__ - INFO - [STARTUP] Memory: 5.1GB / 39.1GB (13.0% used) | Available: 34.0GB
+2026-04-29 09:13:53 - __main__ - INFO - ======================================================================
+2026-04-29 09:13:53 - __main__ - INFO - Training configuration:
+2026-04-29 09:13:53 - __main__ - INFO -   Batch size: 64
+2026-04-29 09:13:53 - __main__ - INFO -   Max epochs: 80
+2026-04-29 09:13:53 - __main__ - INFO -   Early stopping patience: 15
+2026-04-29 09:13:53 - __main__ - INFO - ======================================================================
+2026-04-29 09:13:53 - __main__ - INFO - Checking dataset sizes...
+2026-04-29 09:13:53 - __main__ - INFO - Dataset memory estimates (if all loaded at once):
+2026-04-29 09:13:53 - __main__ - INFO -   Train: 3.3 GB (23061 samples)
+2026-04-29 09:13:53 - __main__ - INFO -   Val: 0.3 GB (2296 samples)
+2026-04-29 09:13:53 - __main__ - INFO -   Total: 3.6 GB
+2026-04-29 09:13:53 - __main__ - INFO -   System available: 34.0 GB
+2026-04-29 09:13:53 - __main__ - INFO - ✓ Sufficient memory available to load full datasets
+2026-04-29 09:13:53 - __main__ - INFO - Creating dataloaders...
+2026-04-29 09:13:53 - __main__ - INFO - Loading datasets into memory...
+2026-04-29 09:13:53 - __main__ - INFO - [BEFORE_LOAD] Memory: 5.1GB / 39.1GB (13.0% used) | Available: 34.0GB
+2026-04-29 09:13:53 - __main__ - INFO - Loading training data (data/synthetic4/train_dataset.h5)...
+2026-04-29 09:14:08 - __main__ - INFO - [AFTER_TRAIN_LOAD] Memory: 8.8GB / 39.1GB (22.4% used) | Available: 30.3GB
+2026-04-29 09:14:08 - __main__ - INFO - Loading validation data (data/synthetic4/val_dataset.h5)...
+2026-04-29 09:14:09 - __main__ - INFO - [AFTER_VAL_LOAD] Memory: 9.1GB / 39.1GB (23.2% used) | Available: 30.0GB
+2026-04-29 09:14:09 - __main__ - INFO - Normalizing datasets...
+2026-04-29 09:14:09 - __main__ - INFO - Applying per-region temporal de-meaning (DC offset removal)...
+2026-04-29 09:14:10 - __main__ - INFO - ✓ De-meaning complete
+2026-04-29 09:14:10 - __main__ - INFO - Computing normalization statistics on de-meaned training set...
+2026-04-29 09:14:10 - __main__ - INFO - Normalization stats (de-meaned): EEG μ=-0.0000 σ=175.5532, Sources μ=0.0000 σ=0.2317
+2026-04-29 09:14:11 - __main__ - INFO - ✓ Normalization complete (de-meaning + z-score, in-place operations)
+2026-04-29 09:14:11 - __main__ - INFO - Forward scale factor σ_S/σ_EEG = 0.2317/175.5532 = 0.001320
+2026-04-29 09:14:11 - __main__ - INFO - [AFTER_NORMALIZATION] Memory: 9.0GB / 39.1GB (23.1% used) | Available: 30.1GB
+2026-04-29 09:14:11 - __main__ - INFO - Train batches: 361, Val batches: 36
+2026-04-29 09:14:11 - __main__ - INFO - [DATALOADERS_CREATED] Memory: 9.0GB / 39.1GB (23.1% used) | Available: 30.1GB
+2026-04-29 09:14:11 - __main__ - INFO - Loading region centers for metrics...
+2026-04-29 09:14:11 - __main__ - INFO -   Region centers shape: (76, 3)
+2026-04-29 09:14:11 - __main__ - INFO - Loading physics matrices...
+2026-04-29 09:14:11 - __main__ - INFO - Building PhysDeepSIF network...
+2026-04-29 09:14:11 - src.phase2_network.physdeepsif - INFO - Loaded leadfield from /data1tb/VESL/fyp-2.0/data/leadfield_19x76.npy (shape (19, 76))
+2026-04-29 09:14:11 - src.phase2_network.physdeepsif - INFO - Loaded connectivity from /data1tb/VESL/fyp-2.0/data/connectivity_76.npy (shape (76, 76))
+2026-04-29 09:14:11 - src.phase2_network.physdeepsif - INFO - Computed connectivity Laplacian (shape (76, 76))
 /home/tukl/anaconda3/envs/deepsif/lib/python3.9/site-packages/torch/nn/modules/rnn.py:83: UserWarning: dropout option adds dropout after all but last recurrent layer, so non-zero dropout expects num_layers greater than 1, but got dropout=0.1 and num_layers=1
   warnings.warn("dropout option adds dropout after all but last "
-2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO - PhysDeepSIF initialized with leadfield (19, 76), laplacian (76, 76), lstm_dropout=0.1
-2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO - Built PhysDeepSIF network:
-2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO -   Spatial module: 165,144 parameters
-2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO -   Temporal module: 245,100 parameters
-2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO -   Total trainable: 410,244 parameters
-2026-04-29 08:59:33 - src.phase2_network.physdeepsif - INFO -   Total parameters (including buffers): 419,004
-2026-04-29 08:59:33 - src.phase2_network.loss_functions - INFO - PhysicsInformedLoss initialized with weights: α=1.0, β=0.1, γ=0.01, δ_epi=1.0 | λ_L=0.0, λ_T=0.3, λ_A=0.2 | L_forward variance-normalised, β adjusted for leadfield gradient amplification (~200×)
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - Trainer initialized:
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Device: cuda
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Output directory: /data1tb/VESL/fyp-2.0/outputs/models
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Learning rate: 0.001
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Weight decay: 0.0001
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Gradient clip norm: 1.0
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Early stopping patience: 15
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Region centers shape: (76, 3)
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - ======================================================================
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - Starting training: 80 epochs
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - Train batches per epoch: 361
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - Val batches per epoch: 36
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - Initial memory: RAM: 9.1GB / 39.1GB (23.3%) | GPU: 0.0GB
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - ======================================================================
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:14:11 - src.phase2_network.physdeepsif - INFO - PhysDeepSIF initialized with leadfield (19, 76), laplacian (76, 76), lstm_dropout=0.1
+2026-04-29 09:14:11 - src.phase2_network.physdeepsif - INFO - Built PhysDeepSIF network:
+2026-04-29 09:14:11 - src.phase2_network.physdeepsif - INFO -   Spatial module: 165,144 parameters
+2026-04-29 09:14:11 - src.phase2_network.physdeepsif - INFO -   Temporal module: 245,100 parameters
+2026-04-29 09:14:11 - src.phase2_network.physdeepsif - INFO -   Total trainable: 410,244 parameters
+2026-04-29 09:14:11 - src.phase2_network.physdeepsif - INFO -   Total parameters (including buffers): 419,004
+2026-04-29 09:14:11 - src.phase2_network.loss_functions - INFO - PhysicsInformedLoss initialized with weights: α=1.0, β=0.1, γ=0.01, δ_epi=1.0 | λ_L=0.0, λ_T=0.3, λ_A=0.2 | L_forward variance-normalised, β adjusted for leadfield gradient amplification (~200×)
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO - Trainer initialized:
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO -   Device: cuda
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO -   Output directory: /data1tb/VESL/fyp-2.0/outputs/models
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO -   Learning rate: 0.001
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO -   Weight decay: 0.0001
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO -   Gradient clip norm: 1.0
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO -   Early stopping patience: 15
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO -   Region centers shape: (76, 3)
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO - Starting training: 80 epochs
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO - Train batches per epoch: 361
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO - Val batches per epoch: 36
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO - Initial memory: RAM: 9.1GB / 39.1GB (23.3%) | GPU: 0.0GB
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO - 
 Epoch   1/80
-2026-04-29 08:59:34 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.1GB / 39.1GB (23.3%) | GPU: 0.0GB
-2026-04-29 08:59:41 - src.phase2_network.trainer - INFO -   Train loss: 2.3274 | Val loss: 2.3107 | DLE: 34.09mm | SD: 68.11mm | AUC: 0.573 | Corr: 0.212 | Time: 7.5s
-2026-04-29 08:59:41 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.9GB / 39.1GB (25.2%) | GPU: 0.0GB
-2026-04-29 08:59:41 - src.phase2_network.trainer - INFO -   ✓ Best model saved (val_loss: 2.3107)
-2026-04-29 08:59:41 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:14:12 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.1GB / 39.1GB (23.3%) | GPU: 0.0GB
+2026-04-29 09:14:19 - src.phase2_network.trainer - INFO -   Train loss: 2.3270 | Val loss: 2.3067 | DLE: 33.66mm | SD: 67.76mm | AUC: 0.572 | Corr: 0.216 | Time: 7.4s | L_src=1.983 L_fwd=0.803 L_epi=0.324
+2026-04-29 09:14:19 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.4GB / 39.1GB (24.0%) | GPU: 0.0GB
+2026-04-29 09:14:19 - src.phase2_network.trainer - INFO -   ✓ Best model saved (val_loss: 2.3067)
+2026-04-29 09:14:19 - src.phase2_network.trainer - INFO - 
 Epoch   2/80
-2026-04-29 08:59:41 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.9GB / 39.1GB (25.2%) | GPU: 0.0GB
-2026-04-29 08:59:48 - src.phase2_network.trainer - INFO -   Train loss: 2.3018 | Val loss: 2.3087 | DLE: 33.62mm | SD: 68.17mm | AUC: 0.578 | Corr: 0.230 | Time: 7.3s
-2026-04-29 08:59:48 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.8GB / 39.1GB (25.2%) | GPU: 0.0GB
-2026-04-29 08:59:49 - src.phase2_network.trainer - INFO -   ✓ Best model saved (val_loss: 2.3087)
-2026-04-29 08:59:49 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:14:19 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.4GB / 39.1GB (24.0%) | GPU: 0.0GB
+2026-04-29 09:14:26 - src.phase2_network.trainer - INFO -   Train loss: 2.2927 | Val loss: 2.2958 | DLE: 34.04mm | SD: 68.27mm | AUC: 0.566 | Corr: 0.237 | Time: 7.3s | L_src=1.961 L_fwd=0.795 L_epi=0.319
+2026-04-29 09:14:26 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.4GB / 39.1GB (24.1%) | GPU: 0.0GB
+2026-04-29 09:14:26 - src.phase2_network.trainer - INFO -   ✓ Best model saved (val_loss: 2.2958)
+2026-04-29 09:14:26 - src.phase2_network.trainer - INFO - 
 Epoch   3/80
-2026-04-29 08:59:49 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.8GB / 39.1GB (25.2%) | GPU: 0.0GB
-2026-04-29 08:59:56 - src.phase2_network.trainer - INFO -   Train loss: 2.3358 | Val loss: 2.3666 | DLE: 33.87mm | SD: 68.69mm | AUC: 0.584 | Corr: 0.201 | Time: 7.3s
-2026-04-29 08:59:56 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.4GB / 39.1GB (24.0%) | GPU: 0.0GB
-2026-04-29 08:59:56 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:14:26 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.4GB / 39.1GB (24.1%) | GPU: 0.0GB
+2026-04-29 09:14:34 - src.phase2_network.trainer - INFO -   Train loss: 2.2935 | Val loss: 2.3007 | DLE: 33.86mm | SD: 68.20mm | AUC: 0.574 | Corr: 0.245 | Time: 7.3s | L_src=1.947 L_fwd=0.787 L_epi=0.322
+2026-04-29 09:14:34 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.9GB / 39.1GB (25.2%) | GPU: 0.0GB
+2026-04-29 09:14:34 - src.phase2_network.trainer - INFO - 
 Epoch   4/80
-2026-04-29 08:59:56 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.4GB / 39.1GB (24.0%) | GPU: 0.0GB
-2026-04-29 09:00:03 - src.phase2_network.trainer - INFO -   Train loss: 2.4751 | Val loss: 2.5001 | DLE: 36.16mm | SD: 63.63mm | AUC: 0.558 | Corr: 0.010 | Time: 7.3s
-2026-04-29 09:00:03 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.9GB / 39.1GB (25.2%) | GPU: 0.0GB
-2026-04-29 09:00:03 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:14:34 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.9GB / 39.1GB (25.2%) | GPU: 0.0GB
+2026-04-29 09:14:41 - src.phase2_network.trainer - INFO -   Train loss: 2.2997 | Val loss: 2.3111 | DLE: 34.06mm | SD: 68.40mm | AUC: 0.565 | Corr: 0.251 | Time: 7.3s | L_src=1.948 L_fwd=0.768 L_epi=0.317
+2026-04-29 09:14:41 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.5GB / 39.1GB (24.3%) | GPU: 0.0GB
+2026-04-29 09:14:41 - src.phase2_network.trainer - INFO - 
 Epoch   5/80
-2026-04-29 09:00:03 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.9GB / 39.1GB (25.2%) | GPU: 0.0GB
-2026-04-29 09:00:11 - src.phase2_network.trainer - INFO -   Train loss: 2.4639 | Val loss: 2.4846 | DLE: 38.24mm | SD: 62.53mm | AUC: 0.561 | Corr: 0.009 | Time: 7.4s
-2026-04-29 09:00:11 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.4GB / 39.1GB (24.1%) | GPU: 0.0GB
-2026-04-29 09:00:11 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:14:41 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.5GB / 39.1GB (24.3%) | GPU: 0.0GB
+2026-04-29 09:14:48 - src.phase2_network.trainer - INFO -   Train loss: 2.3068 | Val loss: 2.3255 | DLE: 34.11mm | SD: 68.11mm | AUC: 0.570 | Corr: 0.250 | Time: 7.3s | L_src=1.947 L_fwd=0.762 L_epi=0.318
+2026-04-29 09:14:48 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.1GB / 39.1GB (25.7%) | GPU: 0.0GB
+2026-04-29 09:14:48 - src.phase2_network.trainer - INFO - 
 Epoch   6/80
-2026-04-29 09:00:11 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.4GB / 39.1GB (24.1%) | GPU: 0.0GB
-2026-04-29 09:00:18 - src.phase2_network.trainer - INFO -   Train loss: 2.4557 | Val loss: 2.4850 | DLE: 36.66mm | SD: 62.27mm | AUC: 0.560 | Corr: 0.007 | Time: 7.4s
-2026-04-29 09:00:18 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.5GB / 39.1GB (24.4%) | GPU: 0.0GB
-2026-04-29 09:00:18 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:14:48 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.1GB / 39.1GB (25.7%) | GPU: 0.0GB
+2026-04-29 09:14:56 - src.phase2_network.trainer - INFO -   Train loss: 2.3162 | Val loss: 2.3349 | DLE: 33.80mm | SD: 68.18mm | AUC: 0.573 | Corr: 0.256 | Time: 7.3s | L_src=1.937 L_fwd=0.755 L_epi=0.322
+2026-04-29 09:14:56 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.0GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 09:14:56 - src.phase2_network.trainer - INFO - 
 Epoch   7/80
-2026-04-29 09:00:18 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.5GB / 39.1GB (24.4%) | GPU: 0.0GB
-2026-04-29 09:00:25 - src.phase2_network.trainer - INFO -   Train loss: 2.4493 | Val loss: 2.4816 | DLE: 36.24mm | SD: 63.16mm | AUC: 0.565 | Corr: 0.006 | Time: 7.3s
-2026-04-29 09:00:25 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
-2026-04-29 09:00:25 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 5 epochs
-2026-04-29 09:00:25 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:14:56 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.0GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 09:15:03 - src.phase2_network.trainer - INFO -   Train loss: 2.3096 | Val loss: 2.3331 | DLE: 33.82mm | SD: 68.22mm | AUC: 0.577 | Corr: 0.257 | Time: 7.3s | L_src=1.945 L_fwd=0.751 L_epi=0.313
+2026-04-29 09:15:03 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.9GB / 39.1GB (25.4%) | GPU: 0.0GB
+2026-04-29 09:15:03 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 5 epochs
+2026-04-29 09:15:03 - src.phase2_network.trainer - INFO - 
 Epoch   8/80
-2026-04-29 09:00:25 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
-2026-04-29 09:00:33 - src.phase2_network.trainer - INFO -   Train loss: 2.4468 | Val loss: 2.4789 | DLE: 35.90mm | SD: 62.34mm | AUC: 0.566 | Corr: 0.001 | Time: 7.4s
-2026-04-29 09:00:33 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.3GB / 39.1GB (23.8%) | GPU: 0.0GB
-2026-04-29 09:00:33 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:15:03 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.9GB / 39.1GB (25.4%) | GPU: 0.0GB
+2026-04-29 09:15:10 - src.phase2_network.trainer - INFO -   Train loss: 2.3057 | Val loss: 2.3285 | DLE: 33.95mm | SD: 68.40mm | AUC: 0.569 | Corr: 0.258 | Time: 7.3s | L_src=1.937 L_fwd=0.743 L_epi=0.317
+2026-04-29 09:15:10 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.5GB / 39.1GB (24.3%) | GPU: 0.0GB
+2026-04-29 09:15:10 - src.phase2_network.trainer - INFO - 
 Epoch   9/80
-2026-04-29 09:00:33 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.3GB / 39.1GB (23.8%) | GPU: 0.0GB
-2026-04-29 09:00:40 - src.phase2_network.trainer - INFO -   Train loss: 2.4423 | Val loss: 2.4781 | DLE: 35.37mm | SD: 63.53mm | AUC: 0.571 | Corr: 0.002 | Time: 7.4s
-2026-04-29 09:00:40 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.5GB / 39.1GB (24.2%) | GPU: 0.0GB
-2026-04-29 09:00:40 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:15:10 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.5GB / 39.1GB (24.3%) | GPU: 0.0GB
+2026-04-29 09:15:18 - src.phase2_network.trainer - INFO -   Train loss: 2.2906 | Val loss: 2.3236 | DLE: 33.85mm | SD: 68.30mm | AUC: 0.574 | Corr: 0.264 | Time: 7.3s | L_src=1.938 L_fwd=0.760 L_epi=0.310
+2026-04-29 09:15:18 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.0GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 09:15:18 - src.phase2_network.trainer - INFO - 
 Epoch  10/80
-2026-04-29 09:00:40 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.5GB / 39.1GB (24.2%) | GPU: 0.0GB
-2026-04-29 09:00:48 - src.phase2_network.trainer - INFO -   Train loss: 2.4414 | Val loss: 2.4782 | DLE: 35.43mm | SD: 63.27mm | AUC: 0.573 | Corr: 0.002 | Time: 7.4s
-2026-04-29 09:00:48 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.2GB / 39.1GB (23.5%) | GPU: 0.0GB
-2026-04-29 09:00:48 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:15:18 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.0GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 09:15:25 - src.phase2_network.trainer - INFO -   Train loss: 2.2886 | Val loss: 2.3244 | DLE: 33.93mm | SD: 68.50mm | AUC: 0.572 | Corr: 0.262 | Time: 7.4s | L_src=1.938 L_fwd=0.750 L_epi=0.312
+2026-04-29 09:15:25 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.4GB / 39.1GB (24.1%) | GPU: 0.0GB
+2026-04-29 09:15:25 - src.phase2_network.trainer - INFO - 
 Epoch  11/80
-2026-04-29 09:00:48 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.2GB / 39.1GB (23.5%) | GPU: 0.0GB
-2026-04-29 09:00:55 - src.phase2_network.trainer - INFO -   Train loss: 2.4411 | Val loss: 2.4785 | DLE: 34.84mm | SD: 64.20mm | AUC: 0.575 | Corr: 0.002 | Time: 7.4s
-2026-04-29 09:00:55 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
-2026-04-29 09:00:55 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:15:25 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.4GB / 39.1GB (24.1%) | GPU: 0.0GB
+2026-04-29 09:15:32 - src.phase2_network.trainer - INFO -   Train loss: 2.2842 | Val loss: 2.3199 | DLE: 33.72mm | SD: 68.04mm | AUC: 0.577 | Corr: 0.266 | Time: 7.3s | L_src=1.936 L_fwd=0.756 L_epi=0.308
+2026-04-29 09:15:32 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.0GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 09:15:32 - src.phase2_network.trainer - INFO - 
 Epoch  12/80
-2026-04-29 09:00:55 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
-2026-04-29 09:01:02 - src.phase2_network.trainer - INFO -   Train loss: 2.4409 | Val loss: 2.4779 | DLE: 34.68mm | SD: 63.93mm | AUC: 0.573 | Corr: 0.002 | Time: 7.4s
-2026-04-29 09:01:02 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.0GB / 39.1GB (25.7%) | GPU: 0.0GB
-2026-04-29 09:01:02 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 10 epochs
-2026-04-29 09:01:02 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:15:32 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.0GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 09:15:40 - src.phase2_network.trainer - INFO -   Train loss: 2.2801 | Val loss: 2.3154 | DLE: 33.71mm | SD: 68.17mm | AUC: 0.575 | Corr: 0.270 | Time: 7.3s | L_src=1.924 L_fwd=0.766 L_epi=0.314
+2026-04-29 09:15:40 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.1GB / 39.1GB (25.8%) | GPU: 0.0GB
+2026-04-29 09:15:40 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 10 epochs
+2026-04-29 09:15:40 - src.phase2_network.trainer - INFO - 
 Epoch  13/80
-2026-04-29 09:01:02 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.0GB / 39.1GB (25.7%) | GPU: 0.0GB
-2026-04-29 09:01:10 - src.phase2_network.trainer - INFO -   Train loss: 2.4399 | Val loss: 2.4780 | DLE: 34.56mm | SD: 64.20mm | AUC: 0.576 | Corr: 0.003 | Time: 7.3s
-2026-04-29 09:01:10 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.3GB / 39.1GB (26.2%) | GPU: 0.0GB
-2026-04-29 09:01:10 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:15:40 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.1GB / 39.1GB (25.8%) | GPU: 0.0GB
+2026-04-29 09:15:47 - src.phase2_network.trainer - INFO -   Train loss: 2.2740 | Val loss: 2.3124 | DLE: 33.76mm | SD: 68.16mm | AUC: 0.578 | Corr: 0.271 | Time: 7.3s | L_src=1.927 L_fwd=0.767 L_epi=0.309
+2026-04-29 09:15:47 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.0GB / 39.1GB (25.6%) | GPU: 0.0GB
+2026-04-29 09:15:47 - src.phase2_network.trainer - INFO - 
 Epoch  14/80
-2026-04-29 09:01:10 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.3GB / 39.1GB (26.2%) | GPU: 0.0GB
-2026-04-29 09:01:17 - src.phase2_network.trainer - INFO -   Train loss: 2.4401 | Val loss: 2.4778 | DLE: 34.42mm | SD: 64.50mm | AUC: 0.573 | Corr: 0.001 | Time: 7.3s
-2026-04-29 09:01:17 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.4GB / 39.1GB (26.6%) | GPU: 0.0GB
-2026-04-29 09:01:17 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:15:47 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.0GB / 39.1GB (25.6%) | GPU: 0.0GB
+2026-04-29 09:15:55 - src.phase2_network.trainer - INFO -   Train loss: 2.2677 | Val loss: 2.3153 | DLE: 33.80mm | SD: 68.10mm | AUC: 0.576 | Corr: 0.273 | Time: 7.4s | L_src=1.926 L_fwd=0.779 L_epi=0.312
+2026-04-29 09:15:55 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.9GB / 39.1GB (25.4%) | GPU: 0.0GB
+2026-04-29 09:15:55 - src.phase2_network.trainer - INFO - 
 Epoch  15/80
-2026-04-29 09:01:17 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.4GB / 39.1GB (26.6%) | GPU: 0.0GB
-2026-04-29 09:01:24 - src.phase2_network.trainer - INFO -   Train loss: 2.4383 | Val loss: 2.4774 | DLE: 34.58mm | SD: 64.60mm | AUC: 0.575 | Corr: 0.001 | Time: 7.3s
-2026-04-29 09:01:24 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.2GB / 39.1GB (26.1%) | GPU: 0.0GB
-2026-04-29 09:01:24 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:15:55 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.9GB / 39.1GB (25.4%) | GPU: 0.0GB
+2026-04-29 09:16:02 - src.phase2_network.trainer - INFO -   Train loss: 2.2574 | Val loss: 2.3099 | DLE: 33.84mm | SD: 67.94mm | AUC: 0.573 | Corr: 0.276 | Time: 7.4s | L_src=1.925 L_fwd=0.774 L_epi=0.307
+2026-04-29 09:16:02 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 09:16:02 - src.phase2_network.trainer - INFO - 
 Epoch  16/80
-2026-04-29 09:01:24 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.2GB / 39.1GB (26.1%) | GPU: 0.0GB
-2026-04-29 09:01:32 - src.phase2_network.trainer - INFO -   Train loss: 2.4376 | Val loss: 2.4781 | DLE: 34.45mm | SD: 64.91mm | AUC: 0.575 | Corr: 0.001 | Time: 7.4s
-2026-04-29 09:01:32 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
-2026-04-29 09:01:32 - src.phase2_network.trainer - INFO - 
+2026-04-29 09:16:02 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 09:16:09 - src.phase2_network.trainer - INFO -   Train loss: 2.2527 | Val loss: 2.3090 | DLE: 33.78mm | SD: 68.12mm | AUC: 0.577 | Corr: 0.276 | Time: 7.3s | L_src=1.922 L_fwd=0.778 L_epi=0.309
+2026-04-29 09:16:09 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.2GB / 39.1GB (26.2%) | GPU: 0.0GB
+2026-04-29 09:16:09 - src.phase2_network.trainer - INFO - 
 Epoch  17/80
-2026-04-29 09:01:32 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
-2026-04-29 09:01:39 - src.phase2_network.trainer - INFO -   Train loss: 2.4377 | Val loss: 2.4778 | DLE: 34.43mm | SD: 64.92mm | AUC: 0.577 | Corr: 0.002 | Time: 7.3s
-2026-04-29 09:01:39 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
-2026-04-29 09:01:39 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 15 epochs
-2026-04-29 09:01:39 - src.phase2_network.trainer - WARNING - Early stopping: 15 epochs without improvement
-2026-04-29 09:01:39 - src.phase2_network.trainer - INFO - ======================================================================
-2026-04-29 09:01:39 - src.phase2_network.trainer - INFO - Training complete
-2026-04-29 09:01:39 - src.phase2_network.trainer - INFO - Final memory: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
-2026-04-29 09:01:39 - src.phase2_network.trainer - INFO - ======================================================================
-2026-04-29 09:02:02 - __main__ - INFO - Saved normalization stats to /data1tb/VESL/fyp-2.0/outputs/models/normalization_stats.json
+2026-04-29 09:16:09 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.2GB / 39.1GB (26.2%) | GPU: 0.0GB
+2026-04-29 09:16:17 - src.phase2_network.trainer - INFO -   Train loss: 2.2512 | Val loss: 2.3110 | DLE: 33.68mm | SD: 68.03mm | AUC: 0.576 | Corr: 0.275 | Time: 7.4s | L_src=1.928 L_fwd=0.775 L_epi=0.306
+2026-04-29 09:16:17 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.8GB / 39.1GB (25.1%) | GPU: 0.0GB
+2026-04-29 09:16:17 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 15 epochs
+2026-04-29 09:16:17 - src.phase2_network.trainer - WARNING - Early stopping: 15 epochs without improvement
+2026-04-29 09:16:17 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 09:16:17 - src.phase2_network.trainer - INFO - Training complete
+2026-04-29 09:16:17 - src.phase2_network.trainer - INFO - Final memory: RAM: 9.8GB / 39.1GB (25.1%) | GPU: 0.0GB
+2026-04-29 09:16:17 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 09:16:39 - __main__ - INFO - Saved normalization stats to /data1tb/VESL/fyp-2.0/outputs/models/normalization_stats.json
+2026-04-29 09:16:39 - __main__ - INFO - ======================================================================
+2026-04-29 09:16:39 - __main__ - INFO - Training complete. Total time: 0.03 hours (2.1 min)
+2026-04-29 09:16:39 - __main__ - INFO - Best model saved to: /data1tb/VESL/fyp-2.0/outputs/models/checkpoint_best.pt
+2026-04-29 09:16:39 - __main__ - INFO - ====================
 ## Situation Assessment (09:00)
 
 | Factor | Status |
