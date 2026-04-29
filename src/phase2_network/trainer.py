@@ -344,50 +344,18 @@ class PhysDeepSIFTrainer:
                 source_pred = self.model(eeg_augmented)
 
                 loss_dict = self.loss_fn(source_pred, sources, eeg_augmented, mask, epoch=self.current_epoch)
-
-                warmup_epochs = 5
-                if self.current_epoch < warmup_epochs:
-                    beta_effective = self.loss_fn.beta * (self.current_epoch / warmup_epochs)
-                else:
-                    beta_effective = self.loss_fn.beta
-
-                component_weights = {
-                    'loss_source': self.loss_fn.alpha,
-                    'loss_forward': beta_effective,
-                    'loss_physics': self.loss_fn.gamma,
-                    'loss_epi': self.loss_fn.delta_epi,
-                }
-
-                accumulated_grads = {}
-                batch_total_loss = 0.0
-
-                for comp_name, weight in component_weights.items():
-                    if weight <= 0:
-                        continue
-                    comp_loss = weight * loss_dict[comp_name]
-                    self.model.zero_grad()
-                    comp_loss.backward(retain_graph=True)
-                    grad_norm = float(torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), max_norm=float('inf')
-                    ))
-                    scale = weight / max(grad_norm, 1e-8)
-                    for name, p in self.model.named_parameters():
-                        if p.grad is not None:
-                            if name not in accumulated_grads:
-                                accumulated_grads[name] = torch.zeros_like(p.data)
-                            accumulated_grads[name] += scale * p.grad.data.clone()
-                    batch_total_loss += comp_loss.item()
+                loss_total = loss_dict['loss_total']
 
                 self.model.zero_grad()
-                for name, p in self.model.named_parameters():
-                    if name in accumulated_grads:
-                        p.grad = accumulated_grads[name]
+                loss_total.backward()
 
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     max_norm=self.gradient_clip_norm,
                 )
                 self.optimizer.step()
+
+                batch_total_loss = loss_total.item()
 
                 total_loss += batch_total_loss
                 num_batches += 1

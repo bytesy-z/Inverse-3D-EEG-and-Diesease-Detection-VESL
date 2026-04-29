@@ -723,6 +723,7 @@ def main() -> None:
         str(leadfield_path),
         str(connectivity_path),
         lstm_dropout=0.1,
+        lstm_hidden_size=32,
     )
     model = model.to(device)
     

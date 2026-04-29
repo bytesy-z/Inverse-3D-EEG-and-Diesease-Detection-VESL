@@ -1,4 +1,4 @@
-8PAS5N9fQNMgAyxrZpKMmmKDfkQ4nlruJqSppyTPTS
+
 (deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ Python scripts/03_train_network.py \
   --epochs 80 --batch-size 64 --device cuda --data-dir data/synthetic4/
 Command 'Python' not found, did you mean:
@@ -47,7 +47,7 @@ Try: sudo apt install <deb name>
 2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - Loaded connectivity from /data1tb/VESL/fyp-2.0/data/connectivity_76.npy (shape (76, 76))
 2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - Computed connectivity Laplacian (shape (76, 76))
 
-sk-4n3lnCRSPgBiEWxDXlhjwW
+
 
 /home/tukl/anaconda3/envs/deepsif/lib/python3.9/site-packages/torch/nn/modules/rnn.py:83: UserWarning: dropout option adds dropout after all but last recurrent layer, so non-zero dropout expects num_layers greater than 1, but got dropout=0.1 and num_layers=1
   warnings.warn("dropout option adds dropout after all but last "

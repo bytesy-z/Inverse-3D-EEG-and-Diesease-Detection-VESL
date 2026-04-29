@@ -246,17 +246,9 @@ class PhysicsInformedLoss(nn.Module):
         # Loss 4: Epileptogenic classification (class-balanced MSE on region power)
         loss_epi = self._compute_epi_loss(predicted_sources, epileptogenic_mask)
 
-        # Warm-up: linearly ramp beta from 0 to target over first 5 epochs
-        warmup_epochs = 5
-        if epoch < warmup_epochs:
-            beta_effective = self.beta * (epoch / warmup_epochs)
-        else:
-            beta_effective = self.beta
-
-        # Composite total loss
         loss_total = (
             self.alpha * loss_source
-            + beta_effective * loss_forward
+            + self.beta * loss_forward
             + self.gamma * loss_physics
             + self.delta_epi * loss_epi
         )

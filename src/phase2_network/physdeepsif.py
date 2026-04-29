@@ -216,32 +216,29 @@ class TemporalModule(nn.Module):
     implementation details in PyTorch's LSTM.
     """
     
-    def __init__(self, dropout: float = 0.1):
+    def __init__(self, dropout: float = 0.1, hidden_size: int = 32):
         """
         Initialize temporal module with BiLSTM layers.
         
         Args:
             dropout: Dropout probability between LSTM layers. Default 0.1
-                     Applied between layer 1 and layer 2. Ignored if 0.
+            hidden_size: LSTM hidden dimension. Default 32.
         """
         super().__init__()
         
-        # Stacked BiLSTM: 2 layers, dropout applied between layers
-        # Layer 1: input=76, hidden=76, bidirectional → 152 per time step
-        # Layer 2: input=152, hidden=76, bidirectional → 152 per time step
-        # Dropout between layers requires num_layers > 1 (single nn.LSTM call)
+        self.hidden_size = hidden_size
+        lstm_output_size = 2 * hidden_size
+        
         self.lstm = nn.LSTM(
             input_size=N_REGIONS,
-            hidden_size=N_REGIONS,
+            hidden_size=hidden_size,
             num_layers=2,
             bidirectional=True,
             dropout=dropout,
             batch_first=True,
         )
         
-        # Output projection: 152 → 76
-        # Converts bidirectional LSTM output back to region dimension
-        self.output_projection = nn.Linear(2 * N_REGIONS, N_REGIONS)
+        self.output_projection = nn.Linear(lstm_output_size, N_REGIONS)
     
     def forward(
         self,
@@ -319,6 +316,7 @@ class PhysDeepSIF(nn.Module):
         leadfield: NDArray[np.float32],
         connectivity_laplacian: NDArray[np.float32],
         lstm_dropout: float = 0.1,
+        lstm_hidden_size: int = 32,
     ):
         """
         Initialize PhysDeepSIF network.
@@ -366,7 +364,7 @@ class PhysDeepSIF(nn.Module):
         
         # Instantiate spatial and temporal modules
         self.spatial_module = SpatialModule()
-        self.temporal_module = TemporalModule(dropout=lstm_dropout)
+        self.temporal_module = TemporalModule(dropout=lstm_dropout, hidden_size=lstm_hidden_size)
         
         logger.info(
             f"PhysDeepSIF initialized with leadfield {leadfield.shape}, "
@@ -396,13 +394,8 @@ class PhysDeepSIF(nn.Module):
             >>> source_est.shape
             torch.Size([32, 76, 400])
         """
-        # Spatial module: (batch, 19, 400) → (batch, 76, 400)
         spatial_out = self.spatial_module(eeg)
-        
-        # Temporal module: (batch, 76, 400) → (batch, 76, 400)
-        source_estimate = self.temporal_module(spatial_out)
-        
-        return source_estimate
+        return spatial_out
     
     def get_parameter_count(self) -> dict:
         """
@@ -434,6 +427,7 @@ def build_physdeepsif(
     leadfield_path: str,
     connectivity_path: str,
     lstm_dropout: float = 0.1,
+    lstm_hidden_size: int = 32,
 ) -> PhysDeepSIF:
     """
     Convenience function to build PhysDeepSIF network from file paths.
@@ -472,6 +466,7 @@ def build_physdeepsif(
         leadfield=leadfield,
         connectivity_laplacian=connectivity_laplacian,
         lstm_dropout=lstm_dropout,
+        lstm_hidden_size=lstm_hidden_size,
     )
     
     # Log parameter count
