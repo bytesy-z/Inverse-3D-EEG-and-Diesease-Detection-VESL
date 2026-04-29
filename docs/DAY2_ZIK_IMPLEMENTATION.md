@@ -808,7 +808,7 @@ ls -lh data/synthetic4/train_dataset.h5
 
 # Launch training on RTX 3080
 /home/zik/miniconda3/envs/physdeepsif/bin/python scripts/03_train_network.py \
-  --epochs 80 --batch-size 64 --device cuda
+  --epochs 80 --batch-size 64 --device cuda --data-dir data/synthetic4/
 ```
 
 **Expected performance:**

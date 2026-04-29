@@ -441,6 +441,12 @@ def main() -> None:
         help="Device (cuda or cpu)",
     )
     parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Override synthetic data directory (overrides config.yaml output_dir)",
+    )
+    parser.add_argument(
         "--log-level",
         type=str,
         default="INFO",
@@ -470,7 +476,7 @@ def main() -> None:
     syn_config = config.get("synthetic_data", {})
     train_config = config.get("training", {})
     
-    data_dir = PROJECT_ROOT / syn_config.get("output_dir", "data/synthetic/")
+    data_dir = Path(args.data_dir) if args.data_dir else PROJECT_ROOT / syn_config.get("output_dir", "data/synthetic/")
     batch_size = args.batch_size or train_config.get("batch_size", 64)
     num_epochs = args.epochs or train_config.get("max_epochs", 200)
     early_stop_patience = train_config.get("early_stopping_patience", 15)
