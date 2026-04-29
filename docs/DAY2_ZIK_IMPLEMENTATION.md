@@ -1,5 +1,16 @@
 
 (deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ Python scripts/03_train_network.py \ PAS5N9fQNMgAyxrZpKMmmKDfkQ4nlruJqSppyTPTS
+
+
+Scientific/Code Concerns
+
+    Temporal module bypassed entirely → PhysDeepSIF is now a pure spatial MLP (19→128→256→128→76). This is a fundamental architecture regression from the published DeepSIF. Current model has no temporal awareness — each time step is processed independently. Spatial-only inverse is known in the literature (Grech et al., 2008) to produce noisier estimates with higher temporal jitter.
+
+    Beta warm-up removed → The forward loss weight β=0.5 hits full strength from epoch 0. The gradient starvation analysis in the emergency plan identified this as a risk. With warm-up, β starts at 0 and ramps over 5 epochs, letting source loss establish first. Removing it means the fix from Phase C audit is partially rolled back.
+
+    Model size dropped from 419k → 223k with no documented validation of whether spatial-only is sufficient. The original DeepSIF used 2M params with temporal layers. Our 223k spatial-only model may lack capacity. 
+
+    
   --epochs 80 --batch-size 64 --device cuda --data-dir data/synthetic4/
 Command 'Python' not found, did you mean:
   command 'jython' from deb jython (2.7.2+repack1-4)
