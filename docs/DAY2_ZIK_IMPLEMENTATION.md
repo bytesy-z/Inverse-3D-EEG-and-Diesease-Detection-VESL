@@ -1,6 +1,14 @@
 # ZIK Day 2 — Mon Apr 28: Training Fix + Backend + XAI + Tests
+
+sk-4n3lnCRSPgBiEWxDXlhjwW8P  
+
+
 ((deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ python scripts/03_train_network.py   --epochs 80 --batch-size 64 --device cuda --data-dir data/synthetic4/
 2026-04-29 10:03:51 - __main__ - INFO - Logging configured: /data1tb/VESL/fyp-2.0/outputs/models/training.log
+
+
+
+AS5N9fQNMgAyxrZpKMmmKDfkQ4nlruJqSppyTPTS
 2026-04-29 10:03:51 - __main__ - INFO - Loaded config from /data1tb/VESL/fyp-2.0/config.yaml
 2026-04-29 10:03:51 - __main__ - INFO - Using GPU: NVIDIA GeForce RTX 3080
 2026-04-29 10:03:51 - __main__ - INFO - [STARTUP] Memory: 5.1GB / 39.1GB (13.0% used) | Available: 34.0GB
