@@ -1,5 +1,491 @@
+8PAS5N9fQNMgAyxrZpKMmmKDfkQ4nlruJqSppyTPTS
+(deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ Python scripts/03_train_network.py \
+  --epochs 80 --batch-size 64 --device cuda --data-dir data/synthetic4/
+Command 'Python' not found, did you mean:
+  command 'jython' from deb jython (2.7.2+repack1-4)
+Try: sudo apt install <deb name>
+(deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ python scripts/03_train_network.py   --epochs 80 --batch-size 64 --device cuda
+ --data-dir data/synthetic4/
+2026-04-29 08:17:45 - __main__ - INFO - Logging configured: /data1tb/VESL/fyp-2.0/outputs/models/training.log
+2026-04-29 08:17:45 - __main__ - INFO - Loaded config from /data1tb/VESL/fyp-2.0/config.yaml
+2026-04-29 08:17:45 - __main__ - INFO - Using GPU: NVIDIA GeForce RTX 3080
+2026-04-29 08:17:45 - __main__ - INFO - [STARTUP] Memory: 5.2GB / 39.1GB (13.2% used) | Available: 33.9GB
+2026-04-29 08:17:45 - __main__ - INFO - ======================================================================
+2026-04-29 08:17:45 - __main__ - INFO - Training configuration:
+2026-04-29 08:17:45 - __main__ - INFO -   Batch size: 64
+2026-04-29 08:17:45 - __main__ - INFO -   Max epochs: 80
+2026-04-29 08:17:45 - __main__ - INFO -   Early stopping patience: 15
+2026-04-29 08:17:45 - __main__ - INFO - ======================================================================
+2026-04-29 08:17:45 - __main__ - INFO - Checking dataset sizes...
+2026-04-29 08:17:45 - __main__ - INFO - Dataset memory estimates (if all loaded at once):
+2026-04-29 08:17:45 - __main__ - INFO -   Train: 3.3 GB (23061 samples)
+2026-04-29 08:17:45 - __main__ - INFO -   Val: 0.3 GB (2296 samples)
+2026-04-29 08:17:45 - __main__ - INFO -   Total: 3.6 GB
+2026-04-29 08:17:45 - __main__ - INFO -   System available: 33.9 GB
+2026-04-29 08:17:45 - __main__ - INFO - ✓ Sufficient memory available to load full datasets
+2026-04-29 08:17:45 - __main__ - INFO - Creating dataloaders...
+2026-04-29 08:17:45 - __main__ - INFO - Loading datasets into memory...
+2026-04-29 08:17:45 - __main__ - INFO - [BEFORE_LOAD] Memory: 5.2GB / 39.1GB (13.2% used) | Available: 33.9GB
+2026-04-29 08:17:45 - __main__ - INFO - Loading training data (data/synthetic4/train_dataset.h5)...
+2026-04-29 08:18:00 - __main__ - INFO - [AFTER_TRAIN_LOAD] Memory: 8.8GB / 39.1GB (22.6% used) | Available: 30.3GB
+2026-04-29 08:18:00 - __main__ - INFO - Loading validation data (data/synthetic4/val_dataset.h5)...
+2026-04-29 08:18:02 - __main__ - INFO - [AFTER_VAL_LOAD] Memory: 9.2GB / 39.1GB (23.4% used) | Available: 29.9GB
+2026-04-29 08:18:02 - __main__ - INFO - Normalizing datasets...
+2026-04-29 08:18:02 - __main__ - INFO - Applying per-region temporal de-meaning (DC offset removal)...
+2026-04-29 08:18:02 - __main__ - INFO - ✓ De-meaning complete
+2026-04-29 08:18:02 - __main__ - INFO - Computing normalization statistics on de-meaned training set...
+2026-04-29 08:18:03 - __main__ - INFO - Normalization stats (de-meaned): EEG μ=-0.0000 σ=175.5532, Sources μ=0.0000 σ=0.2317
+2026-04-29 08:18:03 - __main__ - INFO - ✓ Normalization complete (de-meaning + z-score, in-place operations)
+2026-04-29 08:18:03 - __main__ - INFO - [AFTER_NORMALIZATION] Memory: 9.1GB / 39.1GB (23.4% used) | Available: 29.9GB
+2026-04-29 08:18:03 - __main__ - INFO - Train batches: 361, Val batches: 36
+2026-04-29 08:18:03 - __main__ - INFO - [DATALOADERS_CREATED] Memory: 9.1GB / 39.1GB (23.4% used) | Available: 29.9GB
+2026-04-29 08:18:03 - __main__ - INFO - Loading region centers for metrics...
+2026-04-29 08:18:03 - __main__ - INFO -   Region centers shape: (76, 3)
+2026-04-29 08:18:03 - __main__ - INFO - Loading physics matrices...
+2026-04-29 08:18:03 - __main__ - INFO - Building PhysDeepSIF network...
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - Loaded leadfield from /data1tb/VESL/fyp-2.0/data/leadfield_19x76.npy (shape (19, 76))
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - Loaded connectivity from /data1tb/VESL/fyp-2.0/data/connectivity_76.npy (shape (76, 76))
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - Computed connectivity Laplacian (shape (76, 76))
+
+sk-4n3lnCRSPgBiEWxDXlhjwW
+
+/home/tukl/anaconda3/envs/deepsif/lib/python3.9/site-packages/torch/nn/modules/rnn.py:83: UserWarning: dropout option adds dropout after all but last recurrent layer, so non-zero dropout expects num_layers greater than 1, but got dropout=0.1 and num_layers=1
+  warnings.warn("dropout option adds dropout after all but last "
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - PhysDeepSIF initialized with leadfield (19, 76), laplacian (76, 76), lstm_dropout=0.1
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - Built PhysDeepSIF network:
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO -   Spatial module: 165,144 parameters
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO -   Temporal module: 245,100 parameters
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO -   Total trainable: 410,244 parameters
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO -   Total parameters (including buffers): 419,004
+2026-04-29 08:18:03 - src.phase2_network.loss_functions - INFO - PhysicsInformedLoss initialized with weights: α=1.0, β=0.05, γ=0.01, δ_epi=0.1 | λ_L=0.0, λ_T=0.3, λ_A=0.2 | L_forward variance-normalised, β adjusted for leadfield gradient amplification (~200×)
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - Trainer initialized:
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Device: cuda
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Output directory: /data1tb/VESL/fyp-2.0/outputs/models
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Learning rate: 0.001
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Weight decay: 0.0001
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Gradient clip norm: 1.0
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Early stopping patience: 15
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Region centers shape: (76, 3)
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - Starting training: 80 epochs
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - Train batches per epoch: 361
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - Val batches per epoch: 36
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - Initial memory: RAM: 9.2GB / 39.1GB (23.6%) | GPU: 0.0GB
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - 
+Epoch   1/80
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.2GB / 39.1GB (23.6%) | GPU: 0.0GB
+2026-04-29 08:18:11 - src.phase2_network.trainer - INFO -   Train loss: 1.9933 | Val loss: 1.9786 | DLE: 34.18mm | SD: 69.84mm | AUC: 0.548 | Corr: 0.211 | Time: 7.4s
+2026-04-29 08:18:11 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.2GB / 39.1GB (23.6%) | GPU: 0.0GB
+2026-04-29 08:18:11 - src.phase2_network.trainer - INFO -   ✓ Best model saved (val_loss: 1.9786)
+2026-04-29 08:18:11 - src.phase2_network.trainer - INFO - 
+Epoch   2/80
+2026-04-29 08:18:11 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.2GB / 39.1GB (23.6%) | GPU: 0.0GB
+2026-04-29 08:18:19 - src.phase2_network.trainer - INFO -   Train loss: 1.9664 | Val loss: 1.9844 | DLE: 34.39mm | SD: 70.31mm | AUC: 0.544 | Corr: 0.218 | Time: 7.2s
+2026-04-29 08:18:19 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.5GB / 39.1GB (24.3%) | GPU: 0.0GB
+2026-04-29 08:18:19 - src.phase2_network.trainer - INFO - 
+Epoch   3/80
+2026-04-29 08:18:19 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.5GB / 39.1GB (24.3%) | GPU: 0.0GB
+2026-04-29 08:18:26 - src.phase2_network.trainer - INFO -   Train loss: 1.9939 | Val loss: 2.0691 | DLE: 33.86mm | SD: 64.76mm | AUC: 0.515 | Corr: 0.031 | Time: 7.2s
+2026-04-29 08:18:26 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:18:26 - src.phase2_network.trainer - INFO - 
+Epoch   4/80
+2026-04-29 08:18:26 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:18:33 - src.phase2_network.trainer - INFO -   Train loss: 2.0414 | Val loss: 2.0577 | DLE: 33.80mm | SD: 63.10mm | AUC: 0.503 | Corr: 0.023 | Time: 7.4s
+2026-04-29 08:18:33 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.8GB / 39.1GB (25.1%) | GPU: 0.0GB
+2026-04-29 08:18:33 - src.phase2_network.trainer - INFO - 
+Epoch   5/80
+2026-04-29 08:18:33 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.8GB / 39.1GB (25.1%) | GPU: 0.0GB
+2026-04-29 08:18:41 - src.phase2_network.trainer - INFO -   Train loss: 2.0308 | Val loss: 2.0559 | DLE: 33.78mm | SD: 62.72mm | AUC: 0.525 | Corr: 0.024 | Time: 7.7s
+2026-04-29 08:18:41 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.0GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 08:18:41 - src.phase2_network.trainer - INFO - 
+Epoch   6/80
+2026-04-29 08:18:41 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.0GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 08:18:48 - src.phase2_network.trainer - INFO -   Train loss: 2.0294 | Val loss: 2.0557 | DLE: 33.76mm | SD: 62.73mm | AUC: 0.529 | Corr: 0.025 | Time: 7.3s
+2026-04-29 08:18:48 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:18:48 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 5 epochs
+2026-04-29 08:18:48 - src.phase2_network.trainer - INFO - 
+Epoch   7/80
+2026-04-29 08:18:48 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:18:56 - src.phase2_network.trainer - INFO -   Train loss: 2.0276 | Val loss: 2.0551 | DLE: 33.77mm | SD: 63.21mm | AUC: 0.526 | Corr: 0.026 | Time: 7.4s
+2026-04-29 08:18:56 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:18:56 - src.phase2_network.trainer - INFO - 
+Epoch   8/80
+2026-04-29 08:18:56 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:19:03 - src.phase2_network.trainer - INFO -   Train loss: 2.0269 | Val loss: 2.0544 | DLE: 33.73mm | SD: 64.03mm | AUC: 0.519 | Corr: 0.026 | Time: 7.3s
+2026-04-29 08:19:03 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:19:03 - src.phase2_network.trainer - INFO - 
+Epoch   9/80
+2026-04-29 08:19:03 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:19:10 - src.phase2_network.trainer - INFO -   Train loss: 2.0261 | Val loss: 2.0539 | DLE: 33.71mm | SD: 64.25mm | AUC: 0.515 | Corr: 0.028 | Time: 7.3s
+2026-04-29 08:19:10 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.8GB / 39.1GB (25.0%) | GPU: 0.0GB
+2026-04-29 08:19:10 - src.phase2_network.trainer - INFO - 
+Epoch  10/80
+2026-04-29 08:19:10 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.8GB / 39.1GB (25.0%) | GPU: 0.0GB
+2026-04-29 08:19:17 - src.phase2_network.trainer - INFO -   Train loss: 2.0258 | Val loss: 2.0538 | DLE: 33.71mm | SD: 64.35mm | AUC: 0.520 | Corr: 0.028 | Time: 7.3s
+2026-04-29 08:19:17 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 08:19:17 - src.phase2_network.trainer - INFO - 
+Epoch  11/80
+2026-04-29 08:19:17 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 08:19:25 - src.phase2_network.trainer - INFO -   Train loss: 2.0330 | Val loss: 2.0555 | DLE: 33.82mm | SD: 64.01mm | AUC: 0.523 | Corr: 0.023 | Time: 7.3s
+2026-04-29 08:19:25 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 08:19:25 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 10 epochs
+2026-04-29 08:19:25 - src.phase2_network.trainer - INFO - 
+Epoch  12/80
+2026-04-29 08:19:25 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 08:19:32 - src.phase2_network.trainer - INFO -   Train loss: 2.0278 | Val loss: 2.0551 | DLE: 33.82mm | SD: 63.05mm | AUC: 0.517 | Corr: 0.025 | Time: 7.3s
+2026-04-29 08:19:32 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
+2026-04-29 08:19:32 - src.phase2_network.trainer - INFO - 
+Epoch  13/80
+2026-04-29 08:19:32 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
+2026-04-29 08:19:39 - src.phase2_network.trainer - INFO -   Train loss: 2.0271 | Val loss: 2.0549 | DLE: 33.71mm | SD: 63.63mm | AUC: 0.523 | Corr: 0.026 | Time: 7.2s
+2026-04-29 08:19:39 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.9GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 08:19:39 - src.phase2_network.trainer - INFO - 
+Epoch  14/80
+2026-04-29 08:19:39 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.9GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 08:19:47 - src.phase2_network.trainer - INFO -   Train loss: 2.0269 | Val loss: 2.0547 | DLE: 33.77mm | SD: 64.37mm | AUC: 0.518 | Corr: 0.026 | Time: 7.3s
+2026-04-29 08:19:47 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
+2026-04-29 08:19:47 - src.phase2_network.trainer - INFO - 
+Epoch  15/80
+2026-04-29 08:19:47 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
+2026-04-29 08:19:54 - src.phase2_network.trainer - INFO -   Train loss: 2.0262 | Val loss: 2.0544 | DLE: 33.74mm | SD: 63.54mm | AUC: 0.517 | Corr: 0.024 | Time: 7.3s
+2026-04-29 08:19:54 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:19:54 - src.phase2_network.trainer - INFO - 
+Epoch  16/80
+2026-04-29 08:19:54 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO -   Train loss: 2.0269 | Val loss: 2.0539 | DLE: 33.76mm | SD: 64.38mm | AUC: 0.518 | Corr: 0.025 | Time: 7.3s
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:20:01 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 15 epochs
+2026-04-29 08:20:01 - src.phase2_network.trainer - WARNING - Early stopping: 15 epochs without improvement
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO - Training complete
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO - Final memory: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO - ======================================================================
+
+This is how training is going right now, check if this is because any of the issues mentioned in @docs/DAY2_ZIK_IMPLEMENTATION.md the issues that were known with training, verify and also ensure its scientific accuracy, be concise, scientifically accurate, and succint in your analysis, suggestion, and coding, act as an adversary and judge the way the code is done and look for any scientific or coding errors in the whole pipeline, espcially considering the @docs/02_TECHNICAL_SPECIFICATIONS.md , be extremely precise and concise in your in chat response unless asked for further explanations
+
+Let me verify the actual code to identify the root cause:
+
+Now I have the full picture. Here's my adversarial analysis:
+Diagnosis: Why Full Training Fails While Overfit Test Passed
+
+Both share the same loss function (B1-B4 fixes). The difference is the training pipeline, not the loss.
+Primary Root Cause: Data Augmentation Destroys the Forward Physics Relationship
+
+trainer.py:598-600 — amplitude scaling:
+
+scale_factor = np.random.uniform(0.8, 1.2)
+eeg_aug = eeg_aug * scale_factor
+
+This scales EEG by 0.8–1.2 but does not scale sources or the leadfield. The forward loss then becomes:
+
+L_forward = MSE(L@S_pred, 0.8*EEG_true) / Var(0.8*EEG_true)
+
+This is physically inconsistent — no solution S_pred can simultaneously satisfy L@S_pred = 0.8*EEG (forward loss) and S_pred = S_true (source loss). The optimizer resolves this conflict by suppressing all predictions toward zero, which is the only point that partially satisfies both. This re-creates the amplitude collapse problem that B1-B4 were designed to fix.
+
+The overfit test had no augmentation, which is why it converged.
+Secondary Issue: delta_epi = 0.1 Is 10× Too Low
+Parameter 	Overfit test (PASS) 	Config (FAIL)
+delta_epi 	1.0 	0.1
+beta 	0.1 	0.05
+
+The epileptogenic classification loss (delta_epi) is the only direct supervision signal for AUC. At 0.1, the epi gradient is diluted 10× relative to what was validated in the overfit test. This explains AUC hovering at chance (0.52).
+Tertiary: Amplitude Scaling Alone Creates >2% Gradient Conflict Per Batch
+
+Even at beta_effective=0.01 (warm-up epoch 1): the source loss wants Ŝ → S_true, the forward loss wants Ŝ → 0.8·S_true (when scale=0.8). Over 361 batches × hundreds of steps, this 2% per-step directional conflict accumulates into systematic amplitude suppression.
+Summary
+Factor 	Impact
+Data augmentation (amplitude scaling) 	Primary — re-creates amplitude collapse
+delta_epi = 0.1 (should be 1.0) 	Secondary — AUC stuck at chance
+CosineAnnealingWarmRestarts + gradient clip 	Tertiary — prevents escape from poor minimum
+
+Recommendations:
+
+    Remove amplitude scaling from augmentation — or apply it to sources too, preserving the forward relationship
+    Set delta_epi = 1.0 in config (matching the validated overfit test)
+    Set beta = 0.1 in config (matching overfit test)
+    Simplify the LR scheduler to ReduceLROnPlateau — CosineAnnealingWarmRestarts is aggressive (LR drops to 1e-5 by epoch 10)
+
+Want me to implement these fixes and run a training diagnostic to verify?
+Okay implement the plan, if amplitude scaling has a good scientific justificaiton AND the data wont have to be regenerated, apply it to the sources, if not remove it
+
+2. set it but also explain to me what it is and what it does and why this is scientifically sound,
+
+3. same as 2
+
+4. do it
+
+Let me carefully re-verify my hypothesis before making changes. Let me check if the amplitude scaling truly causes collapse by examining the DLE/pred_std relationship.
+
+Let me also check the metrics to understand the DLE behavior, and the loss init default for delta_epi:
+
+Now I'll implement all four changes. Let me verify the logic on each before editing:
+
+1. Amplitude scaling: In EEG-SI the relationship EEG = L @ S is deterministic physics. Scaling EEG alone breaks this — the model receives conflicting gradients (source loss wants Ŝ ≈ S_true, forward loss wants L@Ŝ ≈ 0.8·EEG). Remove it.
+
+2. delta_epi = 1.0 (vs 0.1): The overfit test validated this weight gives AUC=0.732. The epi loss is the only direct supervision for epileptogenic region discrimination. At 0.1, the classification gradient is diluted 10×, explaining AUC stuck at 0.52.
+
+3. beta = 0.1 (vs 0.05): The overfit test used 0.1. The forward physics constraint pushes predictions away from the trivial Ŝ=0 solution by providing a gradient ∝ -L^T@EEG (MNE-like direction) that competes with the source loss.
+
+4. Replace CosineAnnealingWarmRestarts with ReduceLROnPlateau: CosineAnnealingWarmRestarts aggressively drops LR to 1e-5 by epoch 10, then resets to 1e-3. For an ill-posed inverse problem this is destabilizing. ReduceLROnPlateau reduces LR only on validation plateau, matching early stopping logic.
+
+I accidentally dropped gamma_physics. Let me fix that:
+
+Now let me verify all four changes are correct:
+
+Let me fix the docstring to remove amplitude scaling from the augmentation list:
+
+The config still references the old scheduler. Let me update it:
+
+The scheduler type field is documentary only (not read by code), but let me keep it consistent:
+
+
+verify this agents claims and that it correctly made edits, erify and also ensure its scientific accuracy, be concise, scientifically accurate, and succint in your analysis, suggestion, and coding, act as an adversary and judge the way the code is done and look for any scientific or coding errors in the whole pipeline, espcially considering the @docs/02_TECHNICAL_SPECIFICATIONS.md , be extremely precise and concise in your in chat response unless asked for further explanations
+
+
+
 # ZIK Day 2 — Mon Apr 28: Training Fix + Backend + XAI + Tests
 ((deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ python scripts/03_train_network.py   --epochs 80 --batch-size 64 --device cuda --data-dir data/synthetic4/
+
+(deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ Python scripts/03_train_network.py \
+  --epochs 80 --batch-size 64 --device cuda --data-dir data/synthetic4/
+Command 'Python' not found, did you mean:
+  command 'jython' from deb jython (2.7.2+repack1-4)
+Try: sudo apt install <deb name>
+(deepsif) tukl@tukl-Z490-seecs-X:/data1tb/VESL/fyp-2.0$ python scripts/03_train_network.py   --epochs 80 --batch-size 64 --device cuda
+ --data-dir data/synthetic4/
+2026-04-29 08:17:45 - __main__ - INFO - Logging configured: /data1tb/VESL/fyp-2.0/outputs/models/training.log
+2026-04-29 08:17:45 - __main__ - INFO - Loaded config from /data1tb/VESL/fyp-2.0/config.yaml
+2026-04-29 08:17:45 - __main__ - INFO - Using GPU: NVIDIA GeForce RTX 3080
+2026-04-29 08:17:45 - __main__ - INFO - [STARTUP] Memory: 5.2GB / 39.1GB (13.2% used) | Available: 33.9GB
+2026-04-29 08:17:45 - __main__ - INFO - ======================================================================
+2026-04-29 08:17:45 - __main__ - INFO - Training configuration:
+2026-04-29 08:17:45 - __main__ - INFO -   Batch size: 64
+2026-04-29 08:17:45 - __main__ - INFO -   Max epochs: 80
+2026-04-29 08:17:45 - __main__ - INFO -   Early stopping patience: 15
+2026-04-29 08:17:45 - __main__ - INFO - ======================================================================
+2026-04-29 08:17:45 - __main__ - INFO - Checking dataset sizes...
+2026-04-29 08:17:45 - __main__ - INFO - Dataset memory estimates (if all loaded at once):
+2026-04-29 08:17:45 - __main__ - INFO -   Train: 3.3 GB (23061 samples)
+2026-04-29 08:17:45 - __main__ - INFO -   Val: 0.3 GB (2296 samples)
+2026-04-29 08:17:45 - __main__ - INFO -   Total: 3.6 GB
+2026-04-29 08:17:45 - __main__ - INFO -   System available: 33.9 GB
+2026-04-29 08:17:45 - __main__ - INFO - ✓ Sufficient memory available to load full datasets
+2026-04-29 08:17:45 - __main__ - INFO - Creating dataloaders...
+2026-04-29 08:17:45 - __main__ - INFO - Loading datasets into memory...
+2026-04-29 08:17:45 - __main__ - INFO - [BEFORE_LOAD] Memory: 5.2GB / 39.1GB (13.2% used) | Available: 33.9GB
+2026-04-29 08:17:45 - __main__ - INFO - Loading training data (data/synthetic4/train_dataset.h5)...
+2026-04-29 08:18:00 - __main__ - INFO - [AFTER_TRAIN_LOAD] Memory: 8.8GB / 39.1GB (22.6% used) | Available: 30.3GB
+2026-04-29 08:18:00 - __main__ - INFO - Loading validation data (data/synthetic4/val_dataset.h5)...
+2026-04-29 08:18:02 - __main__ - INFO - [AFTER_VAL_LOAD] Memory: 9.2GB / 39.1GB (23.4% used) | Available: 29.9GB
+2026-04-29 08:18:02 - __main__ - INFO - Normalizing datasets...
+2026-04-29 08:18:02 - __main__ - INFO - Applying per-region temporal de-meaning (DC offset removal)...
+2026-04-29 08:18:02 - __main__ - INFO - ✓ De-meaning complete
+2026-04-29 08:18:02 - __main__ - INFO - Computing normalization statistics on de-meaned training set...
+2026-04-29 08:18:03 - __main__ - INFO - Normalization stats (de-meaned): EEG μ=-0.0000 σ=175.5532, Sources μ=0.0000 σ=0.2317
+2026-04-29 08:18:03 - __main__ - INFO - ✓ Normalization complete (de-meaning + z-score, in-place operations)
+2026-04-29 08:18:03 - __main__ - INFO - [AFTER_NORMALIZATION] Memory: 9.1GB / 39.1GB (23.4% used) | Available: 29.9GB
+2026-04-29 08:18:03 - __main__ - INFO - Train batches: 361, Val batches: 36
+2026-04-29 08:18:03 - __main__ - INFO - [DATALOADERS_CREATED] Memory: 9.1GB / 39.1GB (23.4% used) | Available: 29.9GB
+2026-04-29 08:18:03 - __main__ - INFO - Loading region centers for metrics...
+2026-04-29 08:18:03 - __main__ - INFO -   Region centers shape: (76, 3)
+2026-04-29 08:18:03 - __main__ - INFO - Loading physics matrices...
+2026-04-29 08:18:03 - __main__ - INFO - Building PhysDeepSIF network...
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - Loaded leadfield from /data1tb/VESL/fyp-2.0/data/leadfield_19x76.npy (shape (19, 76))
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - Loaded connectivity from /data1tb/VESL/fyp-2.0/data/connectivity_76.npy (shape (76, 76))
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - Computed connectivity Laplacian (shape (76, 76))
+/home/tukl/anaconda3/envs/deepsif/lib/python3.9/site-packages/torch/nn/modules/rnn.py:83: UserWarning: dropout option adds dropout after all but last recurrent layer, so non-zero dropout expects num_layers greater than 1, but got dropout=0.1 and num_layers=1
+  warnings.warn("dropout option adds dropout after all but last "
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - PhysDeepSIF initialized with leadfield (19, 76), laplacian (76, 76), lstm_dropout=0.1
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO - Built PhysDeepSIF network:
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO -   Spatial module: 165,144 parameters
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO -   Temporal module: 245,100 parameters
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO -   Total trainable: 410,244 parameters
+2026-04-29 08:18:03 - src.phase2_network.physdeepsif - INFO -   Total parameters (including buffers): 419,004
+2026-04-29 08:18:03 - src.phase2_network.loss_functions - INFO - PhysicsInformedLoss initialized with weights: α=1.0, β=0.05, γ=0.01, δ_epi=0.1 | λ_L=0.0, λ_T=0.3, λ_A=0.2 | L_forward variance-normalised, β adjusted for leadfield gradient amplification (~200×)
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - Trainer initialized:
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Device: cuda
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Output directory: /data1tb/VESL/fyp-2.0/outputs/models
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Learning rate: 0.001
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Weight decay: 0.0001
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Gradient clip norm: 1.0
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Early stopping patience: 15
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Region centers shape: (76, 3)
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - Starting training: 80 epochs
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - Train batches per epoch: 361
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - Val batches per epoch: 36
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - Initial memory: RAM: 9.2GB / 39.1GB (23.6%) | GPU: 0.0GB
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO - 
+Epoch   1/80
+2026-04-29 08:18:04 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.2GB / 39.1GB (23.6%) | GPU: 0.0GB
+2026-04-29 08:18:11 - src.phase2_network.trainer - INFO -   Train loss: 1.9933 | Val loss: 1.9786 | DLE: 34.18mm | SD: 69.84mm | AUC: 0.548 | Corr: 0.211 | Time: 7.4s
+2026-04-29 08:18:11 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.2GB / 39.1GB (23.6%) | GPU: 0.0GB
+2026-04-29 08:18:11 - src.phase2_network.trainer - INFO -   ✓ Best model saved (val_loss: 1.9786)
+2026-04-29 08:18:11 - src.phase2_network.trainer - INFO - 
+Epoch   2/80
+2026-04-29 08:18:11 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.2GB / 39.1GB (23.6%) | GPU: 0.0GB
+2026-04-29 08:18:19 - src.phase2_network.trainer - INFO -   Train loss: 1.9664 | Val loss: 1.9844 | DLE: 34.39mm | SD: 70.31mm | AUC: 0.544 | Corr: 0.218 | Time: 7.2s
+2026-04-29 08:18:19 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.5GB / 39.1GB (24.3%) | GPU: 0.0GB
+2026-04-29 08:18:19 - src.phase2_network.trainer - INFO - 
+Epoch   3/80
+2026-04-29 08:18:19 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.5GB / 39.1GB (24.3%) | GPU: 0.0GB
+2026-04-29 08:18:26 - src.phase2_network.trainer - INFO -   Train loss: 1.9939 | Val loss: 2.0691 | DLE: 33.86mm | SD: 64.76mm | AUC: 0.515 | Corr: 0.031 | Time: 7.2s
+2026-04-29 08:18:26 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:18:26 - src.phase2_network.trainer - INFO - 
+Epoch   4/80
+2026-04-29 08:18:26 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:18:33 - src.phase2_network.trainer - INFO -   Train loss: 2.0414 | Val loss: 2.0577 | DLE: 33.80mm | SD: 63.10mm | AUC: 0.503 | Corr: 0.023 | Time: 7.4s
+2026-04-29 08:18:33 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.8GB / 39.1GB (25.1%) | GPU: 0.0GB
+2026-04-29 08:18:33 - src.phase2_network.trainer - INFO - 
+Epoch   5/80
+2026-04-29 08:18:33 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.8GB / 39.1GB (25.1%) | GPU: 0.0GB
+2026-04-29 08:18:41 - src.phase2_network.trainer - INFO -   Train loss: 2.0308 | Val loss: 2.0559 | DLE: 33.78mm | SD: 62.72mm | AUC: 0.525 | Corr: 0.024 | Time: 7.7s
+2026-04-29 08:18:41 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 10.0GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 08:18:41 - src.phase2_network.trainer - INFO - 
+Epoch   6/80
+2026-04-29 08:18:41 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 10.0GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 08:18:48 - src.phase2_network.trainer - INFO -   Train loss: 2.0294 | Val loss: 2.0557 | DLE: 33.76mm | SD: 62.73mm | AUC: 0.529 | Corr: 0.025 | Time: 7.3s
+2026-04-29 08:18:48 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:18:48 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 5 epochs
+2026-04-29 08:18:48 - src.phase2_network.trainer - INFO - 
+Epoch   7/80
+2026-04-29 08:18:48 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:18:56 - src.phase2_network.trainer - INFO -   Train loss: 2.0276 | Val loss: 2.0551 | DLE: 33.77mm | SD: 63.21mm | AUC: 0.526 | Corr: 0.026 | Time: 7.4s
+2026-04-29 08:18:56 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:18:56 - src.phase2_network.trainer - INFO - 
+Epoch   8/80
+2026-04-29 08:18:56 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:19:03 - src.phase2_network.trainer - INFO -   Train loss: 2.0269 | Val loss: 2.0544 | DLE: 33.73mm | SD: 64.03mm | AUC: 0.519 | Corr: 0.026 | Time: 7.3s
+2026-04-29 08:19:03 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:19:03 - src.phase2_network.trainer - INFO - 
+Epoch   9/80
+2026-04-29 08:19:03 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.8%) | GPU: 0.0GB
+2026-04-29 08:19:10 - src.phase2_network.trainer - INFO -   Train loss: 2.0261 | Val loss: 2.0539 | DLE: 33.71mm | SD: 64.25mm | AUC: 0.515 | Corr: 0.028 | Time: 7.3s
+2026-04-29 08:19:10 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.8GB / 39.1GB (25.0%) | GPU: 0.0GB
+2026-04-29 08:19:10 - src.phase2_network.trainer - INFO - 
+Epoch  10/80
+2026-04-29 08:19:10 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.8GB / 39.1GB (25.0%) | GPU: 0.0GB
+2026-04-29 08:19:17 - src.phase2_network.trainer - INFO -   Train loss: 2.0258 | Val loss: 2.0538 | DLE: 33.71mm | SD: 64.35mm | AUC: 0.520 | Corr: 0.028 | Time: 7.3s
+2026-04-29 08:19:17 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 08:19:17 - src.phase2_network.trainer - INFO - 
+Epoch  11/80
+2026-04-29 08:19:17 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 08:19:25 - src.phase2_network.trainer - INFO -   Train loss: 2.0330 | Val loss: 2.0555 | DLE: 33.82mm | SD: 64.01mm | AUC: 0.523 | Corr: 0.023 | Time: 7.3s
+2026-04-29 08:19:25 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 08:19:25 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 10 epochs
+2026-04-29 08:19:25 - src.phase2_network.trainer - INFO - 
+Epoch  12/80
+2026-04-29 08:19:25 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.7GB / 39.1GB (24.7%) | GPU: 0.0GB
+2026-04-29 08:19:32 - src.phase2_network.trainer - INFO -   Train loss: 2.0278 | Val loss: 2.0551 | DLE: 33.82mm | SD: 63.05mm | AUC: 0.517 | Corr: 0.025 | Time: 7.3s
+2026-04-29 08:19:32 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
+2026-04-29 08:19:32 - src.phase2_network.trainer - INFO - 
+Epoch  13/80
+2026-04-29 08:19:32 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
+2026-04-29 08:19:39 - src.phase2_network.trainer - INFO -   Train loss: 2.0271 | Val loss: 2.0549 | DLE: 33.71mm | SD: 63.63mm | AUC: 0.523 | Corr: 0.026 | Time: 7.2s
+2026-04-29 08:19:39 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.9GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 08:19:39 - src.phase2_network.trainer - INFO - 
+Epoch  14/80
+2026-04-29 08:19:39 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.9GB / 39.1GB (25.5%) | GPU: 0.0GB
+2026-04-29 08:19:47 - src.phase2_network.trainer - INFO -   Train loss: 2.0269 | Val loss: 2.0547 | DLE: 33.77mm | SD: 64.37mm | AUC: 0.518 | Corr: 0.026 | Time: 7.3s
+2026-04-29 08:19:47 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
+2026-04-29 08:19:47 - src.phase2_network.trainer - INFO - 
+Epoch  15/80
+2026-04-29 08:19:47 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.5%) | GPU: 0.0GB
+2026-04-29 08:19:54 - src.phase2_network.trainer - INFO -   Train loss: 2.0262 | Val loss: 2.0544 | DLE: 33.74mm | SD: 63.54mm | AUC: 0.517 | Corr: 0.024 | Time: 7.3s
+2026-04-29 08:19:54 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:19:54 - src.phase2_network.trainer - INFO - 
+Epoch  16/80
+2026-04-29 08:19:54 - src.phase2_network.trainer - INFO -   Memory at epoch start: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO -   Train loss: 2.0269 | Val loss: 2.0539 | DLE: 33.76mm | SD: 64.38mm | AUC: 0.518 | Corr: 0.025 | Time: 7.3s
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO -   Memory at epoch end: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:20:01 - src.phase2_network.trainer - WARNING -   ⚠ No improvement for 15 epochs
+2026-04-29 08:20:01 - src.phase2_network.trainer - WARNING - Early stopping: 15 epochs without improvement
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO - ======================================================================
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO - Training complete
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO - Final memory: RAM: 9.6GB / 39.1GB (24.6%) | GPU: 0.0GB
+2026-04-29 08:20:01 - src.phase2_network.trainer - INFO - ======================================================================
+
+This is how training is going right now, check if this is because any of the issues mentioned in @docs/DAY2_ZIK_IMPLEMENTATION.md the issues that were known with training, verify and also ensure its scientific accuracy, be concise, scientifically accurate, and succint in your analysis, suggestion, and coding, act as an adversary and judge the way the code is done and look for any scientific or coding errors in the whole pipeline, espcially considering the @docs/02_TECHNICAL_SPECIFICATIONS.md , be extremely precise and concise in your in chat response unless asked for further explanations
+
+Let me verify the actual code to identify the root cause:
+
+Now I have the full picture. Here's my adversarial analysis:
+Diagnosis: Why Full Training Fails While Overfit Test Passed
+
+Both share the same loss function (B1-B4 fixes). The difference is the training pipeline, not the loss.
+Primary Root Cause: Data Augmentation Destroys the Forward Physics Relationship
+
+trainer.py:598-600 — amplitude scaling:
+
+scale_factor = np.random.uniform(0.8, 1.2)
+eeg_aug = eeg_aug * scale_factor
+
+This scales EEG by 0.8–1.2 but does not scale sources or the leadfield. The forward loss then becomes:
+
+L_forward = MSE(L@S_pred, 0.8*EEG_true) / Var(0.8*EEG_true)
+
+This is physically inconsistent — no solution S_pred can simultaneously satisfy L@S_pred = 0.8*EEG (forward loss) and S_pred = S_true (source loss). The optimizer resolves this conflict by suppressing all predictions toward zero, which is the only point that partially satisfies both. This re-creates the amplitude collapse problem that B1-B4 were designed to fix.
+
+The overfit test had no augmentation, which is why it converged.
+Secondary Issue: delta_epi = 0.1 Is 10× Too Low
+Parameter 	Overfit test (PASS) 	Config (FAIL)
+delta_epi 	1.0 	0.1
+beta 	0.1 	0.05
+
+The epileptogenic classification loss (delta_epi) is the only direct supervision signal for AUC. At 0.1, the epi gradient is diluted 10× relative to what was validated in the overfit test. This explains AUC hovering at chance (0.52).
+Tertiary: Amplitude Scaling Alone Creates >2% Gradient Conflict Per Batch
+
+Even at beta_effective=0.01 (warm-up epoch 1): the source loss wants Ŝ → S_true, the forward loss wants Ŝ → 0.8·S_true (when scale=0.8). Over 361 batches × hundreds of steps, this 2% per-step directional conflict accumulates into systematic amplitude suppression.
+Summary
+Factor 	Impact
+Data augmentation (amplitude scaling) 	Primary — re-creates amplitude collapse
+delta_epi = 0.1 (should be 1.0) 	Secondary — AUC stuck at chance
+CosineAnnealingWarmRestarts + gradient clip 	Tertiary — prevents escape from poor minimum
+
+Recommendations:
+
+    Remove amplitude scaling from augmentation — or apply it to sources too, preserving the forward relationship
+    Set delta_epi = 1.0 in config (matching the validated overfit test)
+    Set beta = 0.1 in config (matching overfit test)
+    Simplify the LR scheduler to ReduceLROnPlateau — CosineAnnealingWarmRestarts is aggressive (LR drops to 1e-5 by epoch 10)
+
+Want me to implement these fixes and run a training diagnostic to verify?
+Okay implement the plan, if amplitude scaling has a good scientific justificaiton AND the data wont have to be regenerated, apply it to the sources, if not remove it
+
+2. set it but also explain to me what it is and what it does and why this is scientifically sound,
+
+3. same as 2
+
+4. do it
+
+Let me carefully re-verify my hypothesis before making changes. Let me check if the amplitude scaling truly causes collapse by examining the DLE/pred_std relationship.
+
+Let me also check the metrics to understand the DLE behavior, and the loss init default for delta_epi:
+
+Now I'll implement all four changes. Let me verify the logic on each before editing:
+
+1. Amplitude scaling: In EEG-SI the relationship EEG = L @ S is deterministic physics. Scaling EEG alone breaks this — the model receives conflicting gradients (source loss wants Ŝ ≈ S_true, forward loss wants L@Ŝ ≈ 0.8·EEG). Remove it.
+
+2. delta_epi = 1.0 (vs 0.1): The overfit test validated this weight gives AUC=0.732. The epi loss is the only direct supervision for epileptogenic region discrimination. At 0.1, the classification gradient is diluted 10×, explaining AUC stuck at 0.52.
+
+3. beta = 0.1 (vs 0.05): The overfit test used 0.1. The forward physics constraint pushes predictions away from the trivial Ŝ=0 solution by providing a gradient ∝ -L^T@EEG (MNE-like direction) that competes with the source loss.
+
+4. Replace CosineAnnealingWarmRestarts with ReduceLROnPlateau: CosineAnnealingWarmRestarts aggressively drops LR to 1e-5 by epoch 10, then resets to 1e-3. For an ill-posed inverse problem this is destabilizing. ReduceLROnPlateau reduces LR only on validation plateau, matching early stopping logic.
+
+I accidentally dropped gamma_physics. Let me fix that:
+
+Now let me verify all four changes are correct:
+
+Let me fix the docstring to remove amplitude scaling from the augmentation list:
+
+The config still references the old scheduler. Let me update it:
+
+The scheduler type field is documentary only (not read by code), but let me keep it consistent:
+
+
+verify this agents claims and that it correctly made edits, erify and also ensure its scientific accuracy, be concise, scientifically accurate, and succint in your analysis, suggestion, and coding, act as an adversary and judge the way the code is done and look for any scientific or coding errors in the whole pipeline, espcially considering the @docs/02_TECHNICAL_SPECIFICATIONS.md , be extremely precise and concise in your in chat response unless asked for further explanations
 2026-04-29 10:03:51 - __main__ - INFO - Logging configured: /data1tb/VESL/fyp-2.0/outputs/models/training.log
 2026-04-29 10:03:51 - __main__ - INFO - Loaded config from /data1tb/VESL/fyp-2.0/config.yaml
 2026-04-29 10:03:51 - __main__ - INFO - Using GPU: NVIDIA GeForce RTX 3080
