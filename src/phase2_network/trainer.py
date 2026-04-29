@@ -5,7 +5,7 @@ Purpose: Training loop for PhysDeepSIF with monitoring and early stopping.
 
 This module implements the complete training pipeline specified in Technical
 Specs Section 4.3, including:
-- Optimizer configuration (AdamW with CosineAnnealingWarmRestarts)
+- Optimizer configuration (AdamW with ReduceLROnPlateau)
 - On-the-fly data augmentation during training
 - Batch processing with gradient accumulation
 - Comprehensive validation metrics (DLE, SD, AUC, correlation)
@@ -14,7 +14,7 @@ Specs Section 4.3, including:
 
 Training settings (from Section 4.3.1):
 - Optimizer: AdamW, LR 1e-3, weight decay 1e-4
-- Schedule: CosineAnnealingWarmRestarts, T_0=10, T_mult=2
+- Schedule: ReduceLROnPlateau (patience=5, factor=0.5)
 - Batch size: 64
 - Max epochs: 200
 - Early stopping: patience=15 on validation loss
@@ -24,7 +24,7 @@ Data augmentation (on-the-fly, from Section 4.3.2):
 - SNR perturbation: add Gaussian noise with SNR in [10, 40] dB
 - Temporal jitter: random circular shift ±10 samples (±50 ms)
 - Channel dropout: randomly zero 0-2 channels, interpolate neighbors
-- Amplitude scaling: multiply EEG by factor in [0.8, 1.2]
+- NOTE: Amplitude scaling was REMOVED (see _augment_batch docstring for why)
 
 Validation metrics (from Section 4.3.3):
 - Dipole Localization Error (DLE): < 20 mm target
@@ -54,7 +54,7 @@ import psutil
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 from .metrics import (
@@ -161,13 +161,20 @@ class PhysDeepSIFTrainer:
             weight_decay=weight_decay,
         )
         
-        # LR scheduler: CosineAnnealingWarmRestarts per spec
-        # T_0 = 10 epochs, T_mult = 2 (restarts every 10, 20, 40, ... epochs)
-        self.scheduler = CosineAnnealingWarmRestarts(
+        # LR scheduler: ReduceLROnPlateau
+        # Reduces LR by factor=0.5 when validation loss plateaus for 5 epochs.
+        # This is more stable than CosineAnnealingWarmRestarts for ill-posed
+        # inverse problems — aggressive cosine decay to 1e-5 followed by
+        # sudden restarts destabilizes the already-challenging optimisation.
+        # ReduceLROnPlateau matches the early-stopping logic (reduce LR only
+        # when val loss stops improving) and avoids destructive restarts.
+        self.scheduler = ReduceLROnPlateau(
             self.optimizer,
-            T_0=10,
-            T_mult=2,
-            eta_min=1e-5,
+            mode='min',
+            factor=0.5,
+            patience=5,
+            threshold=1e-4,
+            min_lr=1e-6,
         )
         
         logger.info(f"Trainer initialized:")
@@ -254,8 +261,8 @@ class PhysDeepSIFTrainer:
                 )
                 logger.info(f"  Memory at epoch end: {get_memory_info()}")
                 
-                # LR scheduler step
-                self.scheduler.step()
+                # LR scheduler step (ReduceLROnPlateau uses val_loss as metric)
+                self.scheduler.step(val_loss)
                 
                 # Early stopping and checkpoint saving
                 if val_loss < best_val_loss:
@@ -557,7 +564,10 @@ class PhysDeepSIFTrainer:
         1. SNR perturbation: add Gaussian with SNR in [10, 40] dB
         2. Temporal jitter: random circular shift ±10 samples
         3. Channel dropout: randomly zero 0-2 channels, interpolate
-        4. Amplitude scaling: multiply by factor in [0.8, 1.2]
+        
+        NOTE: Amplitude scaling was removed — it breaks the forward model
+        EEG = L @ S, creating conflicting gradients that cause amplitude
+        collapse (see comment in step 4 below for full rationale).
         
         Args:
             eeg: EEG batch (batch, 19, 400)
@@ -595,9 +605,21 @@ class PhysDeepSIFTrainer:
             for ch in dropout_channels:
                 eeg_aug[:, ch, :] = 0.0
         
-        # 4. Amplitude scaling
-        scale_factor = np.random.uniform(0.8, 1.2)
-        eeg_aug = eeg_aug * scale_factor
+        # 4. Amplitude scaling — REMOVED
+        #
+        # Amplitude scaling (multiplying EEG by 0.8–1.2) is standard in EEG
+        # classification (Lawhern et al., 2017; Schirrmeister et al., 2017)
+        # where labels are class-invariant.  In EEG SOURCE IMAGING the forward
+        # model imposes a deterministic physics constraint: EEG = L @ S.
+        # Scaling EEG alone breaks this relationship — the model receives
+        # conflicting gradients (source loss wants Ŝ → S_true, forward loss
+        # wants L@Ŝ → 0.8·EEG).  The optimizer resolves this by suppressing
+        # all predictions toward zero, re-creating amplitude collapse.
+        #
+        # The correct augmentation for ESI would scale BOTH EEG AND sources
+        # identically (preserving EEG = L @ S), but this just changes the
+        # problem to amplitude-invariant prediction with no benefit for the
+        # inverse mapping.  We omit it entirely.
         
         return eeg_aug
     
