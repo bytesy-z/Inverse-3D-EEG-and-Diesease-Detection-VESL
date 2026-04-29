@@ -14,7 +14,7 @@ Specs Section 4.3, including:
 
 Training settings (from Section 4.3.1):
 - Optimizer: AdamW, LR 1e-3, weight decay 1e-4
-- Schedule: ReduceLROnPlateau (patience=5, factor=0.5)
+- Schedule: ReduceLROnPlateau (patience=10, factor=0.5)
 - Batch size: 64
 - Max epochs: 200
 - Early stopping: patience=15 on validation loss
@@ -172,7 +172,7 @@ class PhysDeepSIFTrainer:
             self.optimizer,
             mode='min',
             factor=0.5,
-            patience=5,
+            patience=10,
             threshold=1e-4,
             min_lr=1e-6,
         )
@@ -590,8 +590,8 @@ class PhysDeepSIFTrainer:
         batch_size = eeg.shape[0]
         
         # 1. SNR perturbation
-        # Add noise with random SNR in [10, 40] dB
-        snr_db = np.random.uniform(10, 40)
+        # Add noise with random SNR in [20, 40] dB
+        snr_db = np.random.uniform(20, 40)
         
         # Compute signal power
         signal_power = torch.mean(eeg_aug ** 2, dim=(1, 2), keepdim=True)
@@ -609,8 +609,8 @@ class PhysDeepSIFTrainer:
         if shift != 0:
             eeg_aug = torch.roll(eeg_aug, shifts=shift, dims=2)
         
-        # 3. Channel dropout: zero out 0-2 random channels
-        n_dropout = np.random.randint(0, 3)
+        # 3. Channel dropout: zero out 0-1 random channels
+        n_dropout = np.random.randint(0, 2)
         if n_dropout > 0:
             dropout_channels = np.random.choice(N_CHANNELS, size=n_dropout, replace=False)
             for ch in dropout_channels:

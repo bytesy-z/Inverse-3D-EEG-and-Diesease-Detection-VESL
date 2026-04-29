@@ -564,10 +564,6 @@ def main() -> None:
             f"Source μ={src_mean:.6f} σ={src_std:.6f}"
         )
 
-        # Forward scale factor to restore EEG = L @ S in normalized space
-        src_to_eeg_scale = float(src_std / eeg_std) if eeg_std > 0 else 1.0
-        logger.info(f"Forward scale factor σ_S/σ_EEG = {src_std:.4f}/{eeg_std:.4f} = {src_to_eeg_scale:.6f}")
-
         train_dataset = HDF5Dataset(
             str(train_path),
             batch_size=batch_size,
@@ -624,11 +620,6 @@ def main() -> None:
             eeg_train, sources_train, eeg_val, sources_val, eeg_std, src_std = normalize_data(
                 eeg_train, sources_train, eeg_val, sources_val
             )
-            src_to_eeg_scale = float(src_std / eeg_std) if eeg_std > 0 else 1.0
-            logger.info(
-                f"Forward scale factor σ_S/σ_EEG = {src_std:.4f}/{eeg_std:.4f} = {src_to_eeg_scale:.6f}"
-            )
-            
             log_memory_status("AFTER_NORMALIZATION")
             
             # Create dataloaders from loaded data
@@ -673,9 +664,6 @@ def main() -> None:
             src_mean = float(np.mean(src_probe))
             src_std = float(np.std(src_probe))
             del eeg_probe, src_probe
-            
-            src_to_eeg_scale = float(src_std / eeg_std) if eeg_std > 0 else 1.0
-            logger.info(f"Forward scale factor σ_S/σ_EEG = {src_std:.4f}/{eeg_std:.4f} = {src_to_eeg_scale:.6f}")
             
             train_dataset = HDF5Dataset(
                 str(train_path),
@@ -756,7 +744,6 @@ def main() -> None:
         lambda_amplitude=physics_weights.get("lambda_amplitude", 0.2),
         amplitude_max=train_config.get("amplitude_max", 3.0),
     )
-    loss_fn.src_to_eeg_scale.fill_(src_to_eeg_scale)
     loss_fn = loss_fn.to(device)
     
     # Build trainer

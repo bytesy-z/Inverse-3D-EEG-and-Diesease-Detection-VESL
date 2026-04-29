@@ -194,9 +194,9 @@ class TemporalModule(nn.Module):
           ↓
         Transpose to sequence format: (batch, time, 76)
           ↓
-        BiLSTM Layer 1: 76 → (2×76=152) [bidirectional]
-          ↓
-        BiLSTM Layer 2: 152 → (2×76=152) [bidirectional]
+        Stacked BiLSTM (2 layers, dropout=0.1 between layers):
+          Layer 1: 76 → 152 (bidirectional)
+          Layer 2: 152 → 152 (bidirectional)
           ↓
         Output projection: 152 → 76
           ↓
@@ -205,12 +205,10 @@ class TemporalModule(nn.Module):
         Output: (batch, 76, time)
     
     Total parameters in temporal module:
-    - BiLSTM 1: input_size=76, hidden_size=76, num_layers=1, bidirectional=True
-      Parameters per direction: 4 * (76 + 76) * 76 = 46,336 (4 gates)
-      Total: 2 * 46,336 = 92,672
-    - BiLSTM 2: input_size=152, hidden_size=76, bidirectional=True
-      Parameters per direction: 4 * (152 + 76) * 76 = 69,632
-      Total: 2 * 69,632 = 139,264
+    - Stacked BiLSTM (2 layers, bidirectional, dropout between layers)
+      Layer 1: input=76, hidden=76: 2 × 4 × (76+76) × 76 = 92,672
+      Layer 2: input=152, hidden=76: 2 × 4 × (152+76) × 76 = 139,264
+      Total LSTM: 231,936
     - Output projection: (152+0)×76 = 11,552
     - Total: ~243,000
     
@@ -223,31 +221,21 @@ class TemporalModule(nn.Module):
         Initialize temporal module with BiLSTM layers.
         
         Args:
-            dropout: Dropout probability for LSTM layers. Default 0.1
-                     Helps regularize during training, disabled during inference.
+            dropout: Dropout probability between LSTM layers. Default 0.1
+                     Applied between layer 1 and layer 2. Ignored if 0.
         """
         super().__init__()
         
-        # BiLSTM Layer 1: 76 → 76 (bidirectional outputs 152-dim)
-        # Takes spatial module output (76-dim per time step)
-        # Each direction produces 76-dim, result is 152-dim when concatenated
-        self.lstm1 = nn.LSTM(
+        # Stacked BiLSTM: 2 layers, dropout applied between layers
+        # Layer 1: input=76, hidden=76, bidirectional → 152 per time step
+        # Layer 2: input=152, hidden=76, bidirectional → 152 per time step
+        # Dropout between layers requires num_layers > 1 (single nn.LSTM call)
+        self.lstm = nn.LSTM(
             input_size=N_REGIONS,
             hidden_size=N_REGIONS,
-            num_layers=1,
+            num_layers=2,
             bidirectional=True,
-            dropout=dropout if dropout > 0 else 0,
-            batch_first=True,  # Input is (batch, time, features)
-        )
-        
-        # BiLSTM Layer 2: 152 → 76 (bidirectional outputs 152-dim)
-        # Takes concatenated output from first LSTM (152-dim per time step)
-        self.lstm2 = nn.LSTM(
-            input_size=2 * N_REGIONS,  # 152 (concatenated from bidirectional)
-            hidden_size=N_REGIONS,
-            num_layers=1,
-            bidirectional=True,
-            dropout=dropout if dropout > 0 else 0,
+            dropout=dropout,
             batch_first=True,
         )
         
@@ -276,15 +264,12 @@ class TemporalModule(nn.Module):
         # Transpose to sequence format for LSTM: (batch, time, 76)
         x = spatial_output.transpose(1, 2)
         
-        # BiLSTM Layer 1: (batch, time, 76) → (batch, time, 152)
-        # Returns (output, (h_n, c_n)) where output has shape (batch, time, 2*hidden)
-        lstm1_output, (h1, c1) = self.lstm1(x)
-        
-        # BiLSTM Layer 2: (batch, time, 152) → (batch, time, 152)
-        lstm2_output, (h2, c2) = self.lstm2(lstm1_output)
+        # Stacked BiLSTM: (batch, time, 76) → (batch, time, 152)
+        # 2 layers, dropout applied between them, bidirectional
+        lstm_output, (hn, cn) = self.lstm(x)
         
         # Output projection: (batch, time, 152) → (batch, time, 76)
-        temporal_output = self.output_projection(lstm2_output)
+        temporal_output = self.output_projection(lstm_output)
         
         # Transpose back to (batch, 76, time)
         temporal_output = temporal_output.transpose(1, 2)
