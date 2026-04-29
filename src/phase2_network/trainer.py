@@ -115,6 +115,7 @@ class PhysDeepSIFTrainer:
         weight_decay: float = 1e-4,
         gradient_clip_norm: float = 1.0,
         early_stopping_patience: int = 15,
+        lr_scheduler_patience: int = 5,
     ):
         """
         Initialize trainer.
@@ -130,6 +131,7 @@ class PhysDeepSIFTrainer:
             weight_decay: AdamW weight decay (L2 regularization)
             gradient_clip_norm: Maximum gradient norm for clipping
             early_stopping_patience: Epochs without improvement before stopping
+            lr_scheduler_patience: Patience for ReduceLROnPlateau
         """
         self.model = model.to(device)
         self.loss_fn = loss_fn
@@ -139,6 +141,7 @@ class PhysDeepSIFTrainer:
         
         self.gradient_clip_norm = gradient_clip_norm
         self.early_stopping_patience = early_stopping_patience
+        self.lr_scheduler_patience = lr_scheduler_patience
         
         # Load region centers for metric computation
         if region_centers is None:
@@ -172,7 +175,7 @@ class PhysDeepSIFTrainer:
             self.optimizer,
             mode='min',
             factor=0.5,
-            patience=10,
+            patience=self.lr_scheduler_patience,
             threshold=1e-4,
             min_lr=1e-6,
         )
@@ -314,25 +317,12 @@ class PhysDeepSIFTrainer:
         return history
     
     def _train_epoch(self, train_loader: DataLoader) -> float:
-        """
-        Single training epoch with data augmentation.
-        
-        Args:
-            train_loader: Training data loader
-        
-        Returns:
-            Average training loss for the epoch
-        """
         self.model.train()
         total_loss = 0.0
         num_batches = 0
-        
-        # Log start of epoch
-        logger.debug(f"Training epoch starting. {get_memory_info()}")
-        
+
         for batch_idx, batch in enumerate(train_loader):
             try:
-                # Handle variable batch formats
                 if isinstance(batch, (list, tuple)):
                     if len(batch) == 2:
                         eeg, sources = batch
@@ -343,47 +333,72 @@ class PhysDeepSIFTrainer:
                         raise ValueError(f"Unexpected batch format: {len(batch)} elements")
                 else:
                     raise ValueError(f"Unexpected batch type: {type(batch)}")
-                
+
                 eeg = eeg.to(self.device)
                 sources = sources.to(self.device)
                 if mask is not None:
                     mask = mask.to(self.device)
-                
-                # Data augmentation during training
+
                 eeg_augmented = self._augment_batch(eeg)
-                
-                # Forward pass
-                self.optimizer.zero_grad()
+
                 source_pred = self.model(eeg_augmented)
-                
-                # Compute loss (pass mask to enable epi-weighted terms)
-                loss_dict = self.loss_fn(source_pred, sources, eeg_augmented, mask,
-                                         epoch=self.current_epoch)
-                loss = loss_dict['loss_total']
-                
-                # Backward pass
-                loss.backward()
-                
-                # Gradient clipping
+
+                loss_dict = self.loss_fn(source_pred, sources, eeg_augmented, mask, epoch=self.current_epoch)
+
+                warmup_epochs = 5
+                if self.current_epoch < warmup_epochs:
+                    beta_effective = self.loss_fn.beta * (self.current_epoch / warmup_epochs)
+                else:
+                    beta_effective = self.loss_fn.beta
+
+                component_weights = {
+                    'loss_source': self.loss_fn.alpha,
+                    'loss_forward': beta_effective,
+                    'loss_physics': self.loss_fn.gamma,
+                    'loss_epi': self.loss_fn.delta_epi,
+                }
+
+                accumulated_grads = {}
+                batch_total_loss = 0.0
+
+                for comp_name, weight in component_weights.items():
+                    if weight <= 0:
+                        continue
+                    comp_loss = weight * loss_dict[comp_name]
+                    self.model.zero_grad()
+                    comp_loss.backward(retain_graph=True)
+                    grad_norm = float(torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), max_norm=float('inf')
+                    ))
+                    scale = weight / max(grad_norm, 1e-8)
+                    for name, p in self.model.named_parameters():
+                        if p.grad is not None:
+                            if name not in accumulated_grads:
+                                accumulated_grads[name] = torch.zeros_like(p.data)
+                            accumulated_grads[name] += scale * p.grad.data.clone()
+                    batch_total_loss += comp_loss.item()
+
+                self.model.zero_grad()
+                for name, p in self.model.named_parameters():
+                    if name in accumulated_grads:
+                        p.grad = accumulated_grads[name]
+
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(),
                     max_norm=self.gradient_clip_norm,
                 )
-                
-                # Optimizer step
                 self.optimizer.step()
-                
-                total_loss += loss.item()
+
+                total_loss += batch_total_loss
                 num_batches += 1
-                
-                # Log progress periodically
+
                 if (batch_idx + 1) % max(1, len(train_loader) // 5) == 0:
                     progress = (batch_idx + 1) / len(train_loader) * 100
                     logger.debug(
                         f"  Batch {batch_idx+1}/{len(train_loader)} ({progress:.0f}%) "
-                        f"| Loss: {loss.item():.4f} | {get_memory_info()}"
+                        f"| Loss: {batch_total_loss:.4f} | {get_memory_info()}"
                     )
-                
+
             except RuntimeError as e:
                 logger.error(
                     f"Runtime error in training batch {batch_idx}: {e}"
@@ -395,10 +410,10 @@ class PhysDeepSIFTrainer:
                 logger.error(f"Unexpected error in training batch {batch_idx}: {e}")
                 logger.error(f"Memory status: {get_memory_info()}")
                 raise
-        
+
         avg_loss = total_loss / max(num_batches, 1)
         logger.debug(f"Epoch training complete. {get_memory_info()}")
-        
+
         return avg_loss
     
     def _validate_epoch(self, val_loader: DataLoader) -> Dict[str, float]:

@@ -109,7 +109,7 @@ training:
   batch_size: 64
   max_epochs: 200
   early_stopping_patience: 30
-  gradient_clip_norm: 1.0
+  gradient_clip_norm: 5.0
   lr_scheduler:
     type: "reduce_on_plateau"
     mode: "min"
@@ -126,7 +126,7 @@ training:
     # gradient ∝ -L^T·EEG at the Ŝ≈0 fixed point (see §4.4.5), which
     # breaks the trivial zero-output attractor.  At 0.05 this gradient
     # was too weak to escape the attractor within the 15-epoch early stop.
-    beta_forward: 0.5
+    beta_forward: 0.1
     # Physics regularization weight (unchanged from original config).
     gamma_physics: 0.01
     # Epileptogenic classification weight — increased from 0.1 to 1.0.

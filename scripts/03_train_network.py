@@ -480,12 +480,17 @@ def main() -> None:
     batch_size = args.batch_size or train_config.get("batch_size", 64)
     num_epochs = args.epochs or train_config.get("max_epochs", 200)
     early_stop_patience = train_config.get("early_stopping_patience", 15)
+    gradient_clip_norm = train_config.get("gradient_clip_norm", 1.0)
+    lr_config = train_config.get("lr_scheduler", {})
+    lr_scheduler_patience = lr_config.get("patience", 5)
     
     logger.info("=" * 70)
     logger.info(f"Training configuration:")
     logger.info(f"  Batch size: {batch_size}")
     logger.info(f"  Max epochs: {num_epochs}")
     logger.info(f"  Early stopping patience: {early_stop_patience}")
+    logger.info(f"  Gradient clip norm: {gradient_clip_norm}")
+    logger.info(f"  LR scheduler patience: {lr_scheduler_patience}")
     logger.info("=" * 70)
     
     # Check dataset sizes (without loading into RAM)
