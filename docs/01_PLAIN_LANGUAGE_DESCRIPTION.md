@@ -1,3 +1,12 @@
+rubrics
+The assessment for Project Implementation is worth a total of 35 marks and is evaluated across several Program Learning Outcomes (PLOs) based on specific criteria. Under PLO-3 (Design/Development of Solution), students are assessed on the completion status of their major modules, which requires 100% implementation for 5 marks. Additionally, the overall quality of the project implementation carries 4 marks. The look and feel of the user interfaces—including visual objects, elements, visibility, and task flows—is worth 3 marks. Students are also evaluated on their understanding of the implemented algorithms, source code, APIs, database schema synchronization, or image processing techniques, which accounts for another 4 marks.
+
+For PLO-4 (Investigation), 4 marks are dedicated to system testing. This encompasses both functional testing (such as unit, integration, and system testing) and non-functional testing (like performance and security testing).
+
+Under PLO-11 (Project Management), deployment and system integration are allocated 4 marks. This requires hosting the backend and frontend on cloud services like Amazon AWS and integrating all system components to ensure correct process and data flows. Another 3 marks in this category are awarded for the use of project development models and management tools such as Trello, JIRA, or ASANA.
+
+The remaining marks are distributed across a few other PLOs. PLO-12 (Lifelong Learning) accounts for 4 marks total, split evenly between the novelty of the project (2 marks) and lifelong learning itself (2 marks). Relevance to the UN's Sustainable Development Goals (SDGs) is evaluated under PLO-7 (Environment and Sustainability) for 2 marks. Finally, the quality of the presentation and demonstration is assessed under PLO-10 (Communication), also carrying a weight of 2 marks.
+
 # PhysDeepSIF Inverse Solver + Patient-Specific Epileptogenicity Mapping
 
 ## Plain Language Description of the Project
