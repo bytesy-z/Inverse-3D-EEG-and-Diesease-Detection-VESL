@@ -159,6 +159,7 @@ export default function AnalysisPage() {
         epileptogenicity: r.epileptogenicity,
         concordance: r.concordance ?? null,
         cmaes: r.cmaes ?? null,
+        xai: r.xai ?? null,
         groundTruth: null,
         eegData: null,
       })
@@ -432,8 +433,8 @@ export default function AnalysisPage() {
 
                   {bioResult && (
                     <XaiPanel
-                      channelImportance={bioResult.epileptogenicity?.scores_array ?? []}
-                      timeImportance={bioResult.sourceActivity ? Array.from({length: 10}, () => Math.random()) : []}
+                      channelImportance={bioResult.xai?.channel_importance ?? []}
+                      timeImportance={bioResult.xai?.time_importance ?? []}
                       channelNames={bioResult.epileptogenicity?.region_labels ?? []}
                       onToggleOverlay={() => setShowOverlay((v) => !v)}
                       showOverlay={showOverlay}

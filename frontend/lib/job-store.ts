@@ -86,6 +86,21 @@ export interface PhysDeepSIFResult {
     generations?: number
     error?: string
   } | null
+  xai?: {
+    channel_importance: number[]
+    time_importance: number[]
+    attribution_map?: number[][]
+    top_segments?: Array<{
+      channel_idx: number
+      start_sample: number
+      end_sample: number
+      start_time_sec: number
+      end_time_sec: number
+      importance: number
+    }>
+    target_region_idx?: number
+    baseline_score?: number
+  } | null
 }
 
 interface Job<T> {

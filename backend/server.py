@@ -566,7 +566,8 @@ def compute_epileptogenicity_index(
 
     result = {
         'scores': scores_dict,
-        'scores_array': ei_scores.tolist(),  # JSON-safe list
+        'scores_array': ei_scores.tolist(),  # JSON-safe list, min-max rescaled to [0,1]
+        'scores_array_raw': ei_raw.tolist(), # Pre-rescale sigmoid scores for XAI occlusion
         'epileptogenic_regions': epileptogenic_names,
         'epileptogenic_regions_full': epileptogenic_names_full,  # With full anatomical names
         'threshold': float(threshold),
@@ -1360,7 +1361,7 @@ def _run_xai(eeg_data, ei_result, region_labels):
         def _ei_pipeline(win):
             sources = run_inference(win)
             ei = compute_epileptogenicity_index(sources)
-            return {"scores": np.array(ei["scores_array"])}
+            return {"scores": np.array(ei["scores_array_raw"])}
 
         xai_result = explain_biomarker(
             eeg_window=eeg_data.astype(np.float32),
