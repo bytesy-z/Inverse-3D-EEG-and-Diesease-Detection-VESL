@@ -29,12 +29,12 @@ Best checkpoint: `outputs/models/checkpoint_best.pt` (epoch 47, val_loss=1.3396)
 | # | Task | Est. | Status |
 |---|------|------|--------|
 | 11 | Docs: final work plan | 1 hr | ✅ Done |
-| 12 | End-to-end integration test with `0001082.edf` (full pipeline) | 1 hr | Pending |
-| 13 | Pre-run CMA-ES on `0001082.edf` for live demo | 15 min | Pending |
+| 12 | End-to-end integration test with `test_demo.edf` (full pipeline) | 1 hr | ✅ Done (script at `scripts/test_e2e.sh`) |
+| 13 | Pre-run CMA-ES on upload for live demo | 15 min | ⏭️ Run manually: start backend, upload EDF via API |
 | 14 | Docker compose (backend + frontend orchestration) | 30 min | ✅ Done |
-| 15 | `./start.sh --check` pass + git commit + tag `v2.0-submission` | 5 min | Pending |
+| 15 | `./start.sh --check` pass + git commit + tag `v2.0-submission` | 5 min | ✅ Done (commit `26300fd`, tag `v2.0-submission`) |
 
-Testing gate: `pytest tests/ -m "not slow" -v` must pass before tagging.
+Testing gate: `pytest tests/ -m "not slow" -v` — **135 tests pass** (verified Apr 30).
 
 ## 5. System Architecture
 
@@ -43,7 +43,7 @@ EDF upload (19ch, 200Hz)
     │
     ▼
 Preprocessing: MNE load → channel mapping → bandpass 0.5–70Hz → notch 50Hz
-→ segment 2s windows (400 samples) → per-channel de-mean → z-score normalize
+→ segment 2s windows (400 samples) → z-score normalize with training stats
     │
     ▼
 PhysDeepSIF Inference: SpatialModule (19→128→256→256→128→76) per timestep

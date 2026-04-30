@@ -58,7 +58,7 @@ Where results land
 - The backend writes job artifacts into outputs/frontend_results/{job_id}/. The GET /api/results/{path} endpoint serves them.
 
 Inference behaviour agents must not change
-- Preprocessing applied before model inference: per-channel temporal de-meaning (remove DC per channel) THEN global z-score normalization using normalization_stats.json. Training used this exact order — do not reorder or omit.
+- Preprocessing applied before model inference: global z-score normalization using raw (DC+AC) training statistics from normalization_stats.json. NO per-channel de-meaning — matches training pipeline (EEG retains DC spatial prior during training).
 - When returning predictions the backend denormalizes outputs to original scale.
 - Sliding-window segmentation for EDF uploads: window_length=400 samples (2s at 200 Hz) with 50% overlap (step=200). The backend builds Plotly animation HTML for multi-window outputs and embeds only the body + inline Plotly script when returning to the frontend.
 

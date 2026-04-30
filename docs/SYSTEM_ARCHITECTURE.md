@@ -61,7 +61,7 @@ Patient EDF (19ch, 200Hz)
 
 1. `POST /api/analyze` with `file` → `analyze_eeg()` validates file extension (.edf/.npy/.mat), reads via MNE
 2. `_process_edf_raw()`: bandpass 0.5-70 Hz, notch 50 Hz, map channel names (FP1→Fp1, drop A1/A2), segment into 2s windows (400 samples at 200 Hz)
-3. `run_inference()`: per-channel temporal de-mean → global z-score with AC stats → model forward pass → denormalize source predictions
+3. `run_inference()`: global z-score with raw (DC+AC) training stats (no de-meaning) → model forward pass → denormalize source predictions
 4. `compute_epileptogenicity_index()`: AC variance → z-score → sigmoid → EI ∈ [0,1] per region
 5. `generate_heatmap_html()`: Plotly Mesh3d on fsaverage5 cortical surface, color-mapped by EI
 6. `_run_cmaes_inversion()` via `asyncio.to_thread()`: TVB Epileptor simulation with CMA-ES (30 gens, pop=14), PSD-MSE objective, concordance engine → tier + shared regions
