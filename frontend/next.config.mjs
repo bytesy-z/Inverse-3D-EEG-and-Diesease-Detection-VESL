@@ -33,7 +33,17 @@ const nextConfig = {
       },
       {
         source: '/results/:path*',
-        destination: 'http://localhost:3000/api/serve-result/:path*',
+        destination: `${backendUrl}/api/results/:path*`,
+      },
+    ]
+  },
+  async headers() {
+    return [
+      {
+        source: '/ws/:path*',
+        headers: [
+          { key: 'Access-Control-Allow-Origin', value: '*' },
+        ],
       },
     ]
   },

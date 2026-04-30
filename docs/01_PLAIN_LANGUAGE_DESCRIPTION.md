@@ -1,12 +1,3 @@
-rubrics
-The assessment for Project Implementation is worth a total of 35 marks and is evaluated across several Program Learning Outcomes (PLOs) based on specific criteria. Under PLO-3 (Design/Development of Solution), students are assessed on the completion status of their major modules, which requires 100% implementation for 5 marks. Additionally, the overall quality of the project implementation carries 4 marks. The look and feel of the user interfaces—including visual objects, elements, visibility, and task flows—is worth 3 marks. Students are also evaluated on their understanding of the implemented algorithms, source code, APIs, database schema synchronization, or image processing techniques, which accounts for another 4 marks.
-
-For PLO-4 (Investigation), 4 marks are dedicated to system testing. This encompasses both functional testing (such as unit, integration, and system testing) and non-functional testing (like performance and security testing).
-
-Under PLO-11 (Project Management), deployment and system integration are allocated 4 marks. This requires hosting the backend and frontend on cloud services like Amazon AWS and integrating all system components to ensure correct process and data flows. Another 3 marks in this category are awarded for the use of project development models and management tools such as Trello, JIRA, or ASANA.
-
-The remaining marks are distributed across a few other PLOs. PLO-12 (Lifelong Learning) accounts for 4 marks total, split evenly between the novelty of the project (2 marks) and lifelong learning itself (2 marks). Relevance to the UN's Sustainable Development Goals (SDGs) is evaluated under PLO-7 (Environment and Sustainability) for 2 marks. Finally, the quality of the presentation and demonstration is assessed under PLO-10 (Communication), also carrying a weight of 2 marks.
-
 # PhysDeepSIF Inverse Solver + Patient-Specific Epileptogenicity Mapping
 
 ## Plain Language Description of the Project
@@ -81,45 +72,30 @@ The network has two main modules:
 The network is trained using a **composite loss function** that has three terms:
 
 1. **Source reconstruction loss**: How close is the predicted source activity to the true (synthetic) source activity? This is a straightforward mean squared error.
-2. **Forward consistency loss**: We take the predicted source activity, multiply it by the leadfield matrix to project it back to scalp EEG, and compare that to the original input EEG. This ensures the solution is physically valid—it must be able to produce the observed scalp data.
-3. **Physiological regularization**: Penalties that encourage the solution to be spatially smooth (consistent with brain connectivity), temporally smooth (consistent with neural mass dynamics), and bounded within physiologically realistic amplitude ranges.
+2. **Physiological regularization**: Penalties that encourage the solution to be temporally smooth (consistent with neural mass dynamics) and bounded within physiologically realistic amplitude ranges. No spatial smoothness penalty is imposed — the leadfield-constrained EEG forward pass naturally produces spatially coherent sources, and the DC offset retained in both EEG and sources provides an implicit spatial prior.
+3. **Epileptogenicity classification loss**: Helps the network distinguish epileptogenic from healthy regions. Note: the forward consistency loss (β=0.0) is disabled in the final configuration — the spatial prior is provided by the leadfield matrix implicitly rather than by an explicit forward loss term.
 
-The physics-informed loss function is assumed to be already implemented.
+The full training pipeline and configuration are detailed in `docs/30thaprplan.md` and `docs/02_TECHNICAL_SPECIFICATIONS.md`.
 
-### Step 5: We Preprocess Real NMT EEG Data
+### Step 5: We Run Inference to Get Source Estimates
 
-We take the abnormal recordings from the NMT dataset and:
+A preprocessed EEG segment (real clinical recording or synthetic test sample) is fed into the trained PhysDeepSIF network. The output is a 76-region source activity estimate for that time window.
 
-1. Verify they are in linked-ear reference (the NMT dataset's native format).
-2. Bandpass filter between 0.5 and 70 Hz (or 1–40 Hz for epileptiform-focused analysis).
-3. Apply notch filtering at 50 Hz (power line frequency in South Asia).
-4. Reject or interpolate channels with excessive artifacts.
-5. Run ICA-based artifact rejection to remove eye blinks and muscle artifacts.
-6. Segment the continuous recording into fixed-length windows (e.g., 2-second epochs) centered around detected epileptiform events or sampled from abnormal segments.
-7. Standardize channel ordering to match the 19-channel 10-20 layout expected by the network.
+### Step 6: We Run Instantaneous Biomarker Detection
 
-### Step 6: We Run Inference to Get Source Estimates
-
-Each preprocessed EEG segment is fed into the trained PhysDeepSIF network. The output is a 76-region source activity estimate for that time window. We aggregate across multiple segments from the same patient to build a robust picture of which regions are consistently activated.
+Source activity estimates are fed into a heuristic biomarker detector that identifies regions with the strongest transient power, producing an instantaneous epileptogenicity ranking (top-10 regions).
 
 ### Step 7: We Run Patient-Specific Parameter Optimization
 
-This is the novel clinical-value step. For each patient:
+This is the biophysical validation step. For each EEG sample:
 
-1. We initialize a TVB model with the standard 76-region connectivity.
-2. We set all regions to a baseline healthy excitability ($x_0 = -2.2$).
-3. We run an optimization algorithm (CMA-ES, a gradient-free evolutionary strategy) that adjusts the 76-dimensional $x_0$ vector to minimize the mismatch between:
-   - The simulated source activity and the PhysDeepSIF-estimated source activity from the real EEG.
-   - The simulated scalp EEG (via leadfield projection) and the actual patient EEG.
-4. After convergence, the fitted $x_0$ vector tells us how excitable each region had to be to reproduce the patient's observed patterns.
+1. A TVB forward model is initialized with the 76-region connectivity matrix and baseline healthy excitability ($x_0 = -2.2$).
+2. CMA-ES (a gradient-free evolutionary strategy) optimises the 76 $x_0$ values to minimize the PSD mismatch between simulated EEG and the real EEG at scalp level.
+3. After convergence, the fitted $x_0$ vector tells us which regions had to be pathologically excitable to produce the observed EEG patterns.
 
 ### Step 8: We Build the Epileptogenicity Heatmap
 
-The fitted $x_0$ values are transformed into an **Epileptogenicity Index (EI)** for each region:
-
-$$\text{EI}_i = \frac{x_{0,i} - \min(x_0)}{\max(x_0) - \min(x_0)}$$
-
-Regions with the highest EI values (those that required the highest excitability) are flagged as epileptogenic. This is visualized as a color-coded brain map.
+The fitted $x_0$ values are fed through a sigmoid-based biophysical epileptogenicity index (EI) that maps each region to a 0–1 score. Regions with the highest EI values are flagged as most likely epileptogenic. A concordance score is computed between the instantaneous biomarker ranking and the biophysical EI ranking — high overlap gives a HIGH concordance tier (strong evidence), moderate overlap gives MODERATE, and low overlap gives LOW.
 
 ---
 

@@ -33,7 +33,7 @@ Patient EDF (19ch, 200Hz)
 | Biophysical EI | `src/phase4_inversion/epileptogenicity_index.py` | `compute_biophysical_ei()` | Sigmoid(x₀) → biophysical EI |
 | Concordance | `src/phase4_inversion/concordance.py` | `compute_concordance()` | Overlap of top-10 heuristic vs biophysical → HIGH/MODERATE/LOW |
 | XAI Occlusion | `src/xai/eeg_occlusion.py` | `explain_biomarker()` | 200ms sliding mask, channel+time importance |
-| Validation | `src/phase5_validation/generate_figures.py` | `generate_all_figures()` | DLE histogram, AUC vs SNR, top-K recall, hemisphere accuracy, learning curve, concordance heatmap |
+| Validation | `src/phase5_validation/generate_figures.py` | `main()` | DLE histogram, AUC vs SNR, top-K recall, hemisphere accuracy, learning curve, concordance heatmap |
 
 ### 3.2 Frontend (Next.js, port 3000)
 
@@ -43,7 +43,7 @@ Patient EDF (19ch, 200Hz)
 | `frontend/components/concordance-badge.tsx` | `ConcordanceBadge` | Color-coded tier (HIGH green / MODERATE yellow / LOW red) with overlap count and shared region names |
 | `frontend/hooks/use-websocket.ts` | `useWebSocket` | WebSocket hook returning `status`, `connected`, `phaseAComplete`, `cmaesRunning`, `cmaesProgress`, `result` |
 | `frontend/components/processing-window.tsx` | `ProcessingWindow` | Pipeline step checklist with elapsed timer and real progress bar |
-| `frontend/components/xai-visualization.tsx` | (XAI overlay component) | Channel bar chart + temporal heatmap toggled on EEG waveform |
+| `frontend/components/xai-panel.tsx` | `XaiPanel` | Channel bar chart + temporal heatmap toggled on EEG waveform |
 
 ### 3.3 Infrastructure
 
@@ -195,7 +195,7 @@ frontend/
 ├── components/
 │   ├── concordance-badge.tsx     # Concordance tier display
 │   ├── processing-window.tsx     # Progress tracking checklist
-│   └── xai-visualization.tsx     # XAI channel/time overlay
+│   └── xai-panel.tsx             # XAI channel/time overlay
 ├── hooks/
 │   └── use-websocket.ts          # WebSocket hook for job progress
 └── package.json
@@ -203,8 +203,8 @@ frontend/
 
 ## 9. Inference Behaviour (Do Not Modify)
 
-- Preprocessing applied before model inference: per-channel temporal de-meaning (remove DC per channel) THEN global z-score normalization using `normalization_stats.json`. Training used this exact order — do not reorder or omit.
-- When returning predictions the backend denormalizes outputs to original scale.
+- Preprocessing applied before model inference: NO per-channel de-meaning — global z-score normalization using raw (DC+AC) statistics from `normalization_stats.json`. EEG retains DC spatial prior during training; de-meaning would break the leadfield-constrained forward model. Sources are de-meaned after inference via `global_source_mean`.
+- When returning predictions the backend denormalizes outputs to original scale using `src_mean` and `src_std`.
 - Sliding-window segmentation for EDF uploads: window_length=400 samples (2s at 200 Hz) with 50% overlap (step=200). The backend builds Plotly animation HTML for multi-window outputs and embeds only the body + inline Plotly script when returning to the frontend.
 - CMA-ES runs in a background thread via `asyncio.to_thread()` with a progress callback updating `active_jobs`.
 - XAI occlusion runs on the top concordant region after CMA-ES completes.

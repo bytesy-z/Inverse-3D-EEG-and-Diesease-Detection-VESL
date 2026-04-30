@@ -32,9 +32,9 @@ Best checkpoint: `outputs/models/checkpoint_best.pt` (epoch 47, val_loss=1.3396)
 | 12 | End-to-end integration test with `test_demo.edf` (full pipeline) | 1 hr | ✅ Done (script at `scripts/test_e2e.sh`) |
 | 13 | Pre-run CMA-ES on upload for live demo | 15 min | ⏭️ Run manually: start backend, upload EDF via API |
 | 14 | Docker compose (backend + frontend orchestration) | 30 min | ✅ Done |
-| 15 | `./start.sh --check` pass + git commit + tag `v2.0-submission` | 5 min | ✅ Done (commit `26300fd`, tag `v2.0-submission`) |
+| 15 | `./start.sh --check` pass + git commit + tag `v2.0-submission` | 5 min | ✅ Done (tag v2.0-submission) |
 
-Testing gate: `pytest tests/ -m "not slow" -v` — **135 tests pass** (verified Apr 30).
+Testing gate: `pytest tests/ -m "not slow" -v` — **149 tests pass** (verified Apr 30).
 
 ## 5. System Architecture
 

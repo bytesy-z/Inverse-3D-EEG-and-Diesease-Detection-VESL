@@ -222,9 +222,6 @@ connectivity_weights: Optional[NDArray[np.float32]] = None
 region_centers: Optional[NDArray[np.float32]] = None
 tract_lengths: Optional[NDArray[np.float32]] = None
 
-# In-memory job tracker (replaced by active_jobs below)
-jobs: Dict[str, dict] = {}
-
 # Thread lock for concurrent access to active_jobs dict
 active_jobs_lock = threading.Lock()
 
@@ -395,8 +392,9 @@ async def startup_load_model():
     # Ensure results directory exists
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Run startup validation checks
-    startup_check()
+    # Run startup validation checks (abort if any required files are missing)
+    if not startup_check():
+        raise RuntimeError("Startup check failed: required files are missing. Run ./start.sh --check for details.")
 
     logger.info("=" * 60)
     logger.info("PhysDeepSIF API — Ready to serve requests")
@@ -2034,7 +2032,10 @@ async def _process_analysis_async(
         _set_job_status(job_id, "preprocessing", 20, "Preprocessing EEG...")
 
         _set_job_status(job_id, "inference", 40, "Running PhysDeepSIF inference...")
-        predicted_sources = run_inference(eeg_data)
+        predicted_sources = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, run_inference, eeg_data),
+            timeout=60.0,
+        )
 
         _set_job_status(job_id, "postprocessing", 70, "Computing biomarkers...")
 
@@ -2051,7 +2052,10 @@ async def _process_analysis_async(
                 animated_frames = []
                 frame_timestamps = edf_window_timestamps
                 for win_eeg in edf_all_windows:
-                    win_sources = run_inference(win_eeg)
+                    win_sources = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(None, run_inference, win_eeg),
+                        timeout=60.0,
+                    )
                     win_metrics = compute_source_activity_metrics(win_sources)
                     animated_frames.append(np.array(win_metrics['scores_array'], dtype=np.float32))
 

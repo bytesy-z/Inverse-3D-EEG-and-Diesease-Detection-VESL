@@ -50,7 +50,9 @@ export function useWebSocket(jobId: string | null): UseWebSocketReturn {
 
     let closed = false
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-    const host = window.location.host
+    const host =
+      process.env.NEXT_PUBLIC_PHYSDEEPSIF_BACKEND_WS ||
+      (window.location.host.endsWith(":3000") ? window.location.host.replace(":3000", ":8000") : window.location.host)
     const url = `${protocol}//${host}/ws/${jobId}`
 
     function connect() {
