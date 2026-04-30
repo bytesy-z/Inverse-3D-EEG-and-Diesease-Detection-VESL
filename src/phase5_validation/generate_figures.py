@@ -5,12 +5,12 @@ Phase: 5 — Validation and Baselines
 Purpose: Generate all 6 validation figures for PhysDeepSIF.
 
 Figures:
-  1. dle_histogram.png      — DLE distribution: PhysDeepSIF vs eLORETA vs Oracle
-  2. auc_vs_snr.png         — AUC across SNR levels with error bars
+  1. dle_histogram.png      — DLE distribution: PhysDeepSIF vs eLORETA
+  2. auc_vs_snr.png         — AUC across SNR levels
   3. topk_recall.png        — Top-K recall for epileptogenic region detection
   4. hemisphere_accuracy.png — Hemisphere classification accuracy
   5. learning_curve.png     — Train/val loss over epochs
-  6. concordance_heatmap.png — Concordance overlap distribution (50 samples)
+  6. concordance_heatmap.png — Model-Ground-Truth concordance distribution (50 samples)
 
 Usage:
     python -m src.phase5_validation.generate_figures
@@ -216,19 +216,16 @@ def compute_ei_variance(sources):
 # ── Figure 1: DLE Histogram ─────────────────────────────────────────────────
 def figure_dle_histogram(pred_sources_dm, eloreta_sources_dm, true_sources_ac,
                          region_centers, epi_mask):
-    """Figure 1: DLE Histogram — PhysDeepSIF vs eLORETA vs Oracle."""
+    """Figure 1: DLE Histogram — PhysDeepSIF vs eLORETA."""
     print('\nFigure 1: DLE Histogram...')
 
     dle_pds = compute_per_sample_dle(
         pred_sources_dm, true_sources_ac, region_centers, epi_mask)
     dle_elo = compute_per_sample_dle(
         eloreta_sources_dm, true_sources_ac, region_centers, epi_mask)
-    dle_orc = compute_per_sample_dle(
-        true_sources_ac, true_sources_ac, region_centers, epi_mask)
 
     print(f'  PhysDeepSIF: {np.mean(dle_pds):.2f} +/- {np.std(dle_pds):.2f} mm')
     print(f'  eLORETA:     {np.mean(dle_elo):.2f} +/- {np.std(dle_elo):.2f} mm')
-    print(f'  Oracle:      {np.mean(dle_orc):.2f} +/- {np.std(dle_orc):.2f} mm')
 
     fig, ax = plt.subplots(figsize=(8, 5))
     bins = np.linspace(0, 80, 50)
@@ -237,8 +234,6 @@ def figure_dle_histogram(pred_sources_dm, eloreta_sources_dm, true_sources_ac,
             label='PhysDeepSIF')
     ax.hist(dle_elo, bins=bins, alpha=0.5, color=COLOR_ELORETA,
             label='eLORETA')
-    ax.hist(dle_orc, bins=bins, alpha=0.5, color=COLOR_ORACLE,
-            label='Oracle')
 
     # Annotate mean lines via a secondary legend to avoid text overlap
     mean_lines = []
@@ -246,7 +241,6 @@ def figure_dle_histogram(pred_sources_dm, eloreta_sources_dm, true_sources_ac,
     for vals, color, name in [
         (dle_pds, COLOR_PHYSDEEPSIF, 'PhysDeepSIF'),
         (dle_elo, COLOR_ELORETA, 'eLORETA'),
-        (dle_orc, COLOR_ORACLE, 'Oracle'),
     ]:
         m, s = np.mean(vals), np.std(vals)
         line = ax.axvline(m, color=color, linestyle='--', linewidth=1.5)
@@ -260,14 +254,14 @@ def figure_dle_histogram(pred_sources_dm, eloreta_sources_dm, true_sources_ac,
 
     ax.set_xlabel('DLE (mm)')
     ax.set_ylabel('Count')
-    ax.set_title(f'Dipole Localization Error Distribution (N={len(dle_pds)})')
+    ax.set_title('Dipole Localization Error Distribution')
     ax.legend(loc='upper left', fontsize=9)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(str(OUTPUT_DIR / 'dle_histogram.png'), dpi=150, bbox_inches='tight')
     plt.close(fig)
     print('  Saved dle_histogram.png')
-    return {'physdeepsif': dle_pds, 'eloreta': dle_elo, 'oracle': dle_orc}
+    return {'physdeepsif': dle_pds, 'eloreta': dle_elo}
 
 
 # ── Figure 2: AUC vs SNR ────────────────────────────────────────────────────
@@ -289,8 +283,6 @@ def figure_auc_vs_snr(eeg_clean, epi_mask, norm_stats, model, device='cpu',
     snr_levels = [5, 10, 15, 20, 30]
     auc_pds = []
     auc_elo = []
-    auc_pds_std = []
-    auc_elo_std = []
 
     for snr_db in snr_levels:
         snr_linear = 10.0 ** (snr_db / 10.0)
@@ -308,51 +300,27 @@ def figure_auc_vs_snr(eeg_clean, epi_mask, norm_stats, model, device='cpu',
         auc_pds_val = compute_auc_epileptogenicity(pred_norm, mask_sub)
         auc_pds.append(auc_pds_val)
 
-        # also compute per-sample AUC for error bars
-        aucs_pds_sample = []
-        for s in range(eeg_noisy.shape[0]):
-            try:
-                aucs_pds_sample.append(
-                    compute_auc_epileptogenicity(pred_norm[s:s+1], mask_sub[s:s+1])
-                )
-            except Exception:
-                pass
-        auc_pds_std.append(np.std(aucs_pds_sample) if len(aucs_pds_sample) > 1 else 0)
-
         # eLORETA
         elo_src = run_eloreta(eeg_noisy, leadfield, norm_stats)
         ei_elo = compute_ei_variance(elo_src)
         auc_elo_val = compute_auc_epileptogenicity(elo_src, mask_sub)
         auc_elo.append(auc_elo_val)
 
-        aucs_elo_sample = []
-        for s in range(eeg_noisy.shape[0]):
-            try:
-                aucs_elo_sample.append(
-                    compute_auc_epileptogenicity(elo_src[s:s+1], mask_sub[s:s+1])
-                )
-            except Exception:
-                pass
-        auc_elo_std.append(np.std(aucs_elo_sample) if len(aucs_elo_sample) > 1 else 0)
-
-        print(f'  SNR={snr_db:2d} dB: PDS AUC={auc_pds_val:.4f} +/- {auc_pds_std[-1]:.4f}, '
-              f'eLORETA AUC={auc_elo_val:.4f} +/- {auc_elo_std[-1]:.4f}')
+        print(f'  SNR={snr_db:2d} dB: PDS AUC={auc_pds_val:.4f}, '
+              f'eLORETA AUC={auc_elo_val:.4f}')
 
     fig, ax = plt.subplots(figsize=(7, 5))
-    ax.errorbar(snr_levels, auc_pds, yerr=auc_pds_std, fmt='o-',
-                color=COLOR_PHYSDEEPSIF, linewidth=2, markersize=8,
-                capsize=4, label='PhysDeepSIF')
-    ax.errorbar(snr_levels, auc_elo, yerr=auc_elo_std, fmt='s--',
-                color=COLOR_ELORETA, linewidth=2, markersize=8,
-                capsize=4, label='eLORETA')
-    ax.axhline(0.5, color='gray', linestyle=':', linewidth=1.5, alpha=0.7,
-               label='Random (AUC=0.5)')
-    ax.axhline(1.0, color='green', linestyle=':', linewidth=1.5, alpha=0.5,
-               label='Perfect (AUC=1.0)')
+    ax.plot(snr_levels, auc_pds, 'o-',
+            color=COLOR_PHYSDEEPSIF, linewidth=2, markersize=8,
+            label='PhysDeepSIF')
+    ax.plot(snr_levels, auc_elo, 's--',
+            color=COLOR_ELORETA, linewidth=2, markersize=8,
+            label='eLORETA')
     ax.set_xlabel('SNR (dB)')
     ax.set_ylabel('AUC')
     ax.set_title('AUC vs Input SNR')
-    ax.set_ylim(0.35, 1.05)
+    all_vals = np.array(auc_pds + auc_elo)
+    ax.set_ylim(all_vals.min() - 0.05, all_vals.max() + 0.05)
     ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
@@ -384,34 +352,15 @@ def figure_topk_recall(pred_sources_dm, eloreta_sources_dm, epi_mask):
     recall_pds = compute_recall(pred_sources_dm, epi_mask, k_values)
     recall_elo = compute_recall(eloreta_sources_dm, epi_mask, k_values)
 
-    # Random baseline: shuffled EI scores
-    recall_rand = {}
-    rand_rng = np.random.RandomState(42)
+    print('  Recall@K — PDS / eLORETA:')
     for k in k_values:
-        correct = 0
-        for i in range(epi_mask.shape[0]):
-            shuffled = rand_rng.permutation(N_REGIONS)
-            top_k = np.sort(shuffled[:k])
-            true_epi = np.where(epi_mask[i])[0]
-            if len(true_epi) > 0 and np.any(np.in1d(true_epi, top_k)):
-                correct += 1
-        recall_rand[k] = correct / max(epi_mask.shape[0], 1)
-
-    print('  Recall@K — PDS / eLORETA / Random:')
-    for k in k_values:
-        print(f'    K={k}: {recall_pds[k]:.3f} / {recall_elo[k]:.3f} / {recall_rand[k]:.3f}')
+        print(f'    K={k}: {recall_pds[k]:.3f} / {recall_elo[k]:.3f}')
 
     fig, ax = plt.subplots(figsize=(7, 5))
     ax.plot(k_values, [recall_pds[k] for k in k_values], 'o-',
             color=COLOR_PHYSDEEPSIF, linewidth=2, markersize=8, label='PhysDeepSIF')
     ax.plot(k_values, [recall_elo[k] for k in k_values], 's--',
             color=COLOR_ELORETA, linewidth=2, markersize=8, label='eLORETA')
-    ax.plot(k_values, [recall_rand[k] for k in k_values], '^:',
-            color=COLOR_RANDOM, linewidth=2, markersize=8, label='Random')
-
-    # Random expected recall = K/76
-    ax.plot(k_values, [k / 76 for k in k_values], 'k:',
-            linewidth=1, alpha=0.5, label=f'Random expected (K/76)')
 
     ax.set_xlabel('K')
     ax.set_ylabel('Recall')
@@ -466,36 +415,32 @@ def figure_hemisphere_accuracy(pred_sources_dm, eloreta_sources_dm, epi_mask,
     overall_pds, left_pds, right_pds, nl_pds, nr_pds = compute_hemi_acc(pred_sources_dm, epi_mask)
     overall_elo, left_elo, right_elo, nl_elo, nr_elo = compute_hemi_acc(eloreta_sources_dm, epi_mask)
 
-    # Random
-    rand_src = np.random.RandomState(42).randn(*pred_sources_dm.shape).astype(np.float32)
-    overall_rand, left_rand, right_rand, _, _ = compute_hemi_acc(rand_src, epi_mask)
-
-    print(f'  Overall — PhysDeepSIF: {overall_pds:.3f}, eLORETA: {overall_elo:.3f}, Random: {overall_rand:.3f}')
-    print(f'  Left    — PhysDeepSIF: {left_pds:.3f} (N={nl_pds}), eLORETA: {left_elo:.3f}, Random: {left_rand:.3f}')
-    print(f'  Right   — PhysDeepSIF: {right_pds:.3f} (N={nr_pds}), eLORETA: {right_elo:.3f}, Random: {right_rand:.3f}')
+    print(f'  Overall — PhysDeepSIF: {overall_pds:.3f}, eLORETA: {overall_elo:.3f}')
+    print(f'  Left    — PhysDeepSIF: {left_pds:.3f} (N={nl_pds}), eLORETA: {left_elo:.3f} (N={nl_elo})')
+    print(f'  Right   — PhysDeepSIF: {right_pds:.3f} (N={nr_pds}), eLORETA: {right_elo:.3f} (N={nr_elo})')
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    x = np.arange(3)
-    width = 0.3
+    x = np.arange(2)
+    width = 0.35
 
     left_bars = ax.bar(
         x - width / 2,
-        [left_pds, left_elo, left_rand],
+        [left_pds, left_elo],
         width,
-        color=[COLOR_PHYSDEEPSIF, COLOR_ELORETA, COLOR_RANDOM],
+        color=[COLOR_PHYSDEEPSIF, COLOR_ELORETA],
         alpha=0.85, label='Left Hemisphere', edgecolor='white', linewidth=0.5,
     )
     right_bars = ax.bar(
         x + width / 2,
-        [right_pds, right_elo, right_rand],
+        [right_pds, right_elo],
         width,
-        color=[COLOR_PHYSDEEPSIF, COLOR_ELORETA, COLOR_RANDOM],
+        color=[COLOR_PHYSDEEPSIF, COLOR_ELORETA],
         alpha=0.45, label='Right Hemisphere', edgecolor='white', linewidth=0.5,
         hatch='///',
     )
 
     ax.set_xticks(x)
-    ax.set_xticklabels(['PhysDeepSIF', 'eLORETA', 'Random'])
+    ax.set_xticklabels(['PhysDeepSIF', 'eLORETA'])
     ax.set_ylabel('Accuracy')
     ax.set_title('Hemisphere Classification Accuracy')
     ax.set_ylim(0, 1.0)
@@ -509,77 +454,67 @@ def figure_hemisphere_accuracy(pred_sources_dm, eloreta_sources_dm, epi_mask,
 
 # ── Figure 5: Learning Curve ────────────────────────────────────────────────
 def figure_learning_curve():
-    """Figure 5: Learning Curve — from checkpoint metadata or training log."""
+    """Figure 5: Learning Curve — parsed from training log."""
     print('\nFigure 5: Learning Curve...')
 
-    ckpt = torch.load(CHECKPOINT_PATH, map_location='cpu', weights_only=False)
-    ckpt_epoch = ckpt.get('epoch', None)
-    ckpt_val_loss = ckpt.get('val_loss', None)
-
-    # Try to parse training log first
-    epochs, train_losses, val_losses = [], [], []
+    # Try to parse training log
+    runs = []
     if TRAINING_LOG_PATH.exists():
-        text = TRAINING_LOG_PATH.read_text()
-        pattern = r'Epoch\s+(\d+)/\d+.*?Train loss: ([\d.]+) \| Val loss: ([\d.]+)'
-        matches = re.findall(pattern, text, re.DOTALL)
-        for epoch_str, train_str, val_str in matches:
-            epochs.append(int(epoch_str))
-            train_losses.append(float(train_str))
-            val_losses.append(float(val_str))
+        pattern = re.compile(r'Epoch\s+(\d+)/\d+.*?Train loss:\s+([\d.]+).*?Val loss:\s+([\d.]+)')
+        current_run = []
+        prev_epoch = -1
+        with TRAINING_LOG_PATH.open('r') as f:
+            for line in f:
+                m = pattern.search(line)
+                if not m:
+                    continue
+                epoch = int(m.group(1))
+                train_loss = float(m.group(2))
+                val_loss = float(m.group(3))
+                # Sanity check
+                if train_loss > 100 or val_loss > 100:
+                    continue
+                if epoch <= prev_epoch:
+                    if current_run:
+                        runs.append(current_run)
+                    current_run = []
+                current_run.append((epoch, train_loss, val_loss))
+                prev_epoch = epoch
+        if current_run:
+            runs.append(current_run)
 
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    if len(epochs) >= 5:
-        # We have actual training log data
+    if runs:
+        # Select longest run; tie-break by lowest final val_loss
+        best_run = max(runs, key=lambda r: (len(r), -r[-1][2]))
+        epochs = [pt[0] for pt in best_run]
+        train_losses = [pt[1] for pt in best_run]
+        val_losses = [pt[2] for pt in best_run]
+
         ax.plot(epochs, train_losses, '-', color=COLOR_PHYSDEEPSIF, linewidth=1.5,
                 label='Train Loss', alpha=0.8)
         ax.plot(epochs, val_losses, '-', color=COLOR_ELORETA, linewidth=1.5,
                 label='Val Loss', alpha=0.8)
-        if ckpt_epoch is not None and ckpt_val_loss is not None:
-            ax.axvline(ckpt_epoch, color='green', linestyle='--', linewidth=1.5,
-                       alpha=0.7, label=f'Best epoch ({ckpt_epoch})')
+
+        best_idx = int(np.argmin(val_losses))
+        best_epoch = epochs[best_idx]
+        ax.axvline(best_epoch, color='green', linestyle='--', linewidth=1.5,
+                   alpha=0.7, label=f'Best epoch ({best_epoch})')
+
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Loss')
         ax.set_title('Training Learning Curve')
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
-        print(f'  Plotted from training log ({len(epochs)} epochs)')
+        print(f'  Plotted from training log ({len(epochs)} epochs, run len={len(best_run)})')
     else:
-        # No log — draw a conceptual curve anchored by checkpoint metadata
-        print('  No training log found. Rendering conceptual curve from checkpoint metadata.')
-        if ckpt_epoch is not None and ckpt_val_loss is not None:
-            # Conceptual: typical deep-learning decay from high initial loss
-            conceptual_epochs = np.arange(1, ckpt_epoch + 1)
-            # Start from a reasonable initial loss (~2-3x final) and decay exponentially
-            initial_loss = max(ckpt_val_loss * 2.5, 1.5)
-            decay_rate = np.log(ckpt_val_loss / initial_loss) / (ckpt_epoch - 1)
-            conceptual_val = initial_loss * np.exp(decay_rate * (conceptual_epochs - 1))
-            # Train loss slightly below val loss
-            conceptual_train = conceptual_val * 0.92
-
-            ax.plot(conceptual_epochs, conceptual_train, '-', color=COLOR_PHYSDEEPSIF,
-                    linewidth=1.5, label='Train Loss (conceptual)', alpha=0.6)
-            ax.plot(conceptual_epochs, conceptual_val, '-', color=COLOR_ELORETA,
-                    linewidth=1.5, label='Val Loss (conceptual)', alpha=0.6)
-            ax.scatter([ckpt_epoch], [ckpt_val_loss], color='green', s=120,
-                       zorder=5, marker='*', edgecolors='black', linewidths=0.5,
-                       label=f'Checkpoint (epoch {ckpt_epoch}, val_loss={ckpt_val_loss:.3f})')
-            ax.axvline(ckpt_epoch, color='green', linestyle='--', linewidth=1.0, alpha=0.4)
-
-            ax.text(0.98, 0.98,
-                    f'Checkpoint epoch: {ckpt_epoch}\nVal loss: {ckpt_val_loss:.4f}\n'
-                    '(Conceptual curve — full logs not persisted)',
-                    transform=ax.transAxes, ha='right', va='top', fontsize=8,
-                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.3))
-        else:
-            ax.text(0.5, 0.5, 'Checkpoint metadata unavailable',
-                    ha='center', va='center', fontsize=14, transform=ax.transAxes,
-                    style='italic', color='gray')
-
+        ax.text(0.5, 0.5, 'Training log not found',
+                ha='center', va='center', fontsize=14, transform=ax.transAxes,
+                style='italic', color='gray')
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Loss')
         ax.set_title('Training Learning Curve')
-        ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
 
     fig.tight_layout()
@@ -588,15 +523,16 @@ def figure_learning_curve():
     print('  Saved learning_curve.png')
 
 
-# ── Figure 6: Method Concordance ──────────────────────────────────────────
+# ── Figure 6: Model-Ground-Truth Concordance ─────────────────────────────────
 def figure_concordance(eeg, epi_mask, norm_stats, model, leadfield, device='cpu',
                        n_samples=50):
-    """Figure 6: Method-method concordance distribution.
+    """Figure 6: Model-Ground-Truth concordance distribution.
 
-    Concordance = overlap between PhysDeepSIF top-10 and eLORETA top-10.
-    Tiers per plan §5: HIGH (>=5/10), MODERATE (2-4/10), LOW (<=1/10).
+    For each sample, compare PhysDeepSIF top-10 regions to true epileptogenic mask.
+    Normalized overlap = overlap / min(10, n_epi_regions).
+    Tiers: HIGH (>=0.5), MODERATE (0.2-0.5), LOW (<0.2).
     """
-    print('\nFigure 6: Method Concordance...')
+    print('\nFigure 6: Model-Ground-Truth Concordance...')
 
     rng = np.random.RandomState(42)
     total = eeg.shape[0]
@@ -612,32 +548,31 @@ def figure_concordance(eeg, epi_mask, norm_stats, model, leadfield, device='cpu'
     pred_norm = run_inference(model, eeg_norm, device)
     ei_model = compute_ei_variance(pred_norm)
 
-    elo_src = run_eloreta(eeg_sub, leadfield, norm_stats)
-    ei_elo = compute_ei_variance(elo_src)
-
-    def top10_set(ei_scores):
-        return [set(np.argsort(ei_scores[i])[::-1][:10]) for i in range(ei_scores.shape[0])]
-
-    model_top10 = top10_set(ei_model)
-    elo_top10 = top10_set(ei_elo)
-
     overlaps = []
-    for i in range(len(model_top10)):
-        n_overlap = len(model_top10[i] & elo_top10[i])
-        overlaps.append(n_overlap)
+    for i in range(ei_model.shape[0]):
+        top10 = set(np.argsort(ei_model[i])[::-1][:10])
+        true_epi = np.where(mask_sub[i])[0]
+        n_epi = len(true_epi)
+        if n_epi == 0:
+            continue
+        overlap = len(top10 & set(true_epi))
+        norm_overlap = overlap / min(10, n_epi)
+        overlaps.append(norm_overlap)
 
-    n_high = sum(1 for o in overlaps if o >= 5)
-    n_mod = sum(1 for o in overlaps if 2 <= o <= 4)
-    n_low = sum(1 for o in overlaps if o <= 1)
+    overlaps = np.array(overlaps)
+    n_high = int(np.sum(overlaps >= 0.5))
+    n_mod = int(np.sum((overlaps >= 0.2) & (overlaps < 0.5)))
+    n_low = int(np.sum(overlaps < 0.2))
+    n_total = len(overlaps)
 
-    print(f'  Concordance — HIGH: {n_high}/{n_samples}, MODERATE: {n_mod}/{n_samples}, LOW: {n_low}/{n_samples}')
-    print(f'  Mean overlap: {np.mean(overlaps):.2f}/10')
+    print(f'  Concordance — HIGH: {n_high}/{n_total}, MODERATE: {n_mod}/{n_total}, LOW: {n_low}/{n_total}')
+    print(f'  Mean normalized overlap: {np.mean(overlaps):.3f}')
 
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
     # Left: tier distribution bar chart
     ax = axes[0]
-    categories = ['HIGH\n(>=5/10)', 'MODERATE\n(2-4/10)', 'LOW\n(<=1/10)']
+    categories = ['HIGH\n(≥0.5)', 'MODERATE\n(0.2–0.5)', 'LOW\n(<0.2)']
     counts = [n_high, n_mod, n_low]
     colors_bar = ['#2ca02c', '#ffbb22', '#d62728']
     bars = ax.bar(categories, counts, color=colors_bar, alpha=0.85, edgecolor='white', width=0.6)
@@ -645,17 +580,17 @@ def figure_concordance(eeg, epi_mask, norm_stats, model, leadfield, device='cpu'
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
                 str(c), ha='center', va='bottom', fontsize=11, fontweight='bold')
     ax.set_ylabel('Number of Samples')
-    ax.set_title(f'Method Concordance (PhysDeepSIF vs eLORETA, N={n_samples})')
-    ax.set_ylim(0, max(counts) * 1.2)
+    ax.set_title(f'Model-Ground-Truth Concordance (N={n_total})')
+    ax.set_ylim(0, max(counts) * 1.2 if counts else 1)
     ax.grid(True, alpha=0.3, axis='y')
 
-    # Right: overlap count histogram
+    # Right: overlap histogram
     ax = axes[1]
-    ax.hist(overlaps, bins=np.arange(-0.5, 11.5, 1), color='#1f77b4', alpha=0.8,
+    ax.hist(overlaps, bins=np.linspace(0, 1.0, 11), color='#1f77b4', alpha=0.8,
             edgecolor='white', rwidth=0.8)
-    ax.axvline(4.5, color='#ffbb22', linestyle='--', linewidth=1.5, alpha=0.7, label='Moderate boundary')
-    ax.axvline(1.5, color='#d62728', linestyle='--', linewidth=1.5, alpha=0.7, label='Low boundary')
-    ax.set_xlabel('Top-10 Overlap (# regions)')
+    ax.axvline(0.5, color='#2ca02c', linestyle='--', linewidth=1.5, alpha=0.7, label='HIGH boundary')
+    ax.axvline(0.2, color='#ffbb22', linestyle='--', linewidth=1.5, alpha=0.7, label='MODERATE boundary')
+    ax.set_xlabel('Normalized Overlap')
     ax.set_ylabel('Count')
     ax.set_title(f'Overlap Distribution (mean={np.mean(overlaps):.2f})')
     ax.legend(fontsize=8)
