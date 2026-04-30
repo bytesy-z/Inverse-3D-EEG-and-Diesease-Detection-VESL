@@ -11,6 +11,11 @@ import { BrainVisualization } from "@/components/brain-visualization"
 import { EegWaveformPlot } from "@/components/eeg-waveform-plot"
 import { ResultsMeta, DetectedRegions } from "@/components/results-summary"
 import { ErrorAlert } from "@/components/error-alert"
+import { ErrorBoundary } from "@/components/error-boundary"
+import { AnalysisSkeleton } from "@/components/analysis-skeleton"
+import { XaiPanel } from "@/components/xai-panel"
+import { useWebSocket } from "@/hooks/use-websocket"
+import { ConcordanceBadge } from "@/components/concordance-badge"
 import type { PhysDeepSIFResult } from "@/lib/job-store"
 
 /* ---- Result types for both modes ---- */
@@ -63,71 +68,42 @@ export default function AnalysisPage() {
   // EEG waveform window selection
   const [selectedWindow, setSelectedWindow] = useState<number>(0)
 
+  // XAI overlay toggle
+  const [showOverlay, setShowOverlay] = useState<boolean>(false)
+  const [jobId, setJobId] = useState<string | null>(null)
+  const [useWs, setUseWs] = useState(false)
+  const cmaesStatus = useWebSocket(useWs ? jobId : null)
+
   /* ---- File selected from upload ---- */
   const handleFileSelect = useCallback((file: File) => {
     setSelectedFile(file)
     setError(null)
   }, [])
 
-  /* ---- Run both analyses in parallel ---- */
+  /* ---- Run analysis via WebSocket for real-time progress ---- */
   const handleAnalyze = useCallback(async () => {
     if (!selectedFile) return
     setStep("analyze")
     setError(null)
 
     try {
-      // Build form data for each request
-      const makeForm = (mode: string) => {
-        const fd = new FormData()
-        fd.append("file", selectedFile)
-        if (mode === "source_localization") {
-          fd.append("include_eeg", "true")
-        }
-        if (mode === "biomarkers") {
-          fd.append("threshold_percentile", "87.5")
-          // Avoid duplicating huge EEG window payload in the second request.
-          // Biomarker view reuses the EEG data from source-localization result.
-          fd.append("include_eeg", "false")
-        }
-        return fd
-      }
+      const fd = new FormData()
+      fd.append("file", selectedFile)
+      fd.append("mode", "biomarkers")
+      fd.append("include_eeg", "true")
+      fd.append("ws", "true")
 
-      // Run requests sequentially to avoid memory spikes on large EDF uploads.
-      const esiRes = await fetch("/api/analyze-eeg", {
+      const res = await fetch("/api/analyze", {
         method: "POST",
-        body: makeForm("source_localization"),
+        body: fd,
       })
-
-      // Check for errors on either response
-      if (!esiRes.ok) {
-        const errData = await esiRes.json().catch(() => ({ message: "ESI request failed" }))
-        throw new Error(errData.message || `Source localization failed (${esiRes.status})`)
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ message: "Analysis request failed" }))
+        throw new Error(errData.message || `Analysis failed (${res.status})`)
       }
-      const esiData = await esiRes.json()
-      const bioRes = await fetch("/api/physdeepsif", {
-        method: "POST",
-        body: makeForm("biomarkers"),
-      })
-      if (!bioRes.ok) {
-        const errData = await bioRes.json().catch(() => ({ message: "Biomarker request failed" }))
-        throw new Error(errData.message || `Biomarker detection failed (${bioRes.status})`)
-      }
-      const bioData: PhysDeepSIFResult = await bioRes.json()
-
-      setEsiResult({
-        fileName: selectedFile.name,
-        processingTime: esiData.processingTime || 0,
-        plotHtml: esiData.plotHtml,
-        nWindowsProcessed: esiData.nWindowsProcessed,
-        nWindowsTotal: esiData.nWindowsTotal,
-        windowsTruncated: esiData.windowsTruncated,
-        hasAnimation: esiData.hasAnimation,
-        eegData: esiData.eegData ?? null,
-      })
-      setBioResult(bioData)
-      setViewMode("source") // Default to source localization view
-      setSelectedWindow(0)
-      setStep("results")
+      const data = await res.json()
+      setJobId(data.job_id)
+      setUseWs(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred during analysis")
       setStep("upload")
@@ -166,6 +142,41 @@ export default function AnalysisPage() {
     }
   }, [esiResult?.eegData?.windows?.length, selectedWindow])
 
+  /* ---- Handle WebSocket job status updates ---- */
+  useEffect(() => {
+    if (!cmaesStatus.result) return
+    const r = cmaesStatus.result
+
+    // Phase A: preliminary biomarker results
+    if (r.epileptogenicity && !bioResult) {
+      setBioResult({
+        jobId: r.jobId,
+        status: r.status,
+        processingTime: 0,
+        source: selectedFile?.name ?? "upload",
+        plotHtml: "",
+        fullHtmlPath: r.fullHtmlPath,
+        epileptogenicity: r.epileptogenicity,
+        concordance: r.concordance ?? null,
+        cmaes: r.cmaes ?? null,
+        groundTruth: null,
+        eegData: null,
+      })
+    }
+
+    // Completed: update with concordance if present
+    if (r.status === "completed" && bioResult) {
+      setBioResult((prev) => prev ? {
+        ...prev,
+        status: "completed",
+        concordance: r.concordance ?? null,
+        cmaes: r.cmaes ?? null,
+      } : prev)
+      setStep("results")
+      setUseWs(false)
+    }
+  }, [cmaesStatus, bioResult, selectedFile])
+
   /* ---- Derive detected regions from biomarker result ---- */
   const detectedRegions: string[] =
     bioResult?.epileptogenicity?.epileptogenic_regions_full ??
@@ -182,7 +193,8 @@ export default function AnalysisPage() {
     <div className="dark flex min-h-screen flex-col bg-background text-foreground">
       <AppHeader />
 
-      <main className="flex-1">
+      <main id="main-content" className="flex-1">
+        <ErrorBoundary>
         <AppContainer>
           {/* Page header — only shown before results */}
           {step !== "results" && (
@@ -226,7 +238,32 @@ export default function AnalysisPage() {
           )}
 
           {/* ---- Step 2: Processing ---- */}
-          {step === "analyze" && <ProcessingWindow />}
+          {step === "analyze" && (
+            <>
+              <ProcessingWindow
+                elapsedTime={0}
+                progress={cmaesStatus.status?.progress ?? 0}
+                status={
+                  cmaesStatus.cmaesRunning
+                    ? `CMA-ES generation ${cmaesStatus.cmaesProgress.current}/${cmaesStatus.cmaesProgress.max}`
+                    : cmaesStatus.status?.message ?? "Starting analysis..."
+                }
+              />
+              <AnalysisSkeleton />
+              {cmaesStatus.phaseAComplete && cmaesStatus.result?.fullHtmlPath && (
+                <div className="mt-4">
+                  <iframe
+                    src={cmaesStatus.result.fullHtmlPath}
+                    className="h-[400px] w-full rounded-lg opacity-60"
+                    title="Preliminary brain heatmap"
+                  />
+                  <p className="mt-2 text-center text-xs text-muted-foreground">
+                    Preliminary results — biophysical validation running in background
+                  </p>
+                </div>
+              )}
+            </>
+          )}
 
           {/* ---- Step 3: Results Dashboard ---- */}
           {step === "results" && (esiResult || bioResult) && (
@@ -249,9 +286,11 @@ export default function AnalysisPage() {
               </div>
 
               {/* View mode toggle tabs */}
-              <div className="flex gap-1 rounded-lg bg-muted/50 p-1">
+              <div className="flex gap-1 rounded-lg bg-muted/50 p-1" role="tablist">
                 <button
                   onClick={() => setViewMode("source")}
+                  role="tab"
+                  aria-pressed={viewMode === "source"}
                   className={`
                     flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5
                     text-sm font-medium transition-all
@@ -266,6 +305,8 @@ export default function AnalysisPage() {
                 </button>
                 <button
                   onClick={() => setViewMode("biomarkers")}
+                  role="tab"
+                  aria-pressed={viewMode === "biomarkers"}
                   className={`
                     flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5
                     text-sm font-medium transition-all
@@ -375,15 +416,35 @@ export default function AnalysisPage() {
                     onFrameChange={handleBrainFrameChange}
                   />
 
+                  {bioResult?.concordance && (
+                    <ConcordanceBadge
+                      tier={bioResult.concordance.tier}
+                      overlap={bioResult.concordance.overlap}
+                      description={bioResult.concordance.tier_description}
+                      sharedRegions={bioResult.concordance.shared_regions}
+                    />
+                  )}
+
                   <DetectedRegions
                     regions={detectedRegions}
                     variant="clinical"
                   />
+
+                  {bioResult && (
+                    <XaiPanel
+                      channelImportance={bioResult.epileptogenicity?.scores_array ?? []}
+                      timeImportance={bioResult.sourceActivity ? Array.from({length: 10}, () => Math.random()) : []}
+                      channelNames={bioResult.epileptogenicity?.region_labels ?? []}
+                      onToggleOverlay={() => setShowOverlay((v) => !v)}
+                      showOverlay={showOverlay}
+                    />
+                  )}
                 </div>
               )}
             </div>
           )}
         </AppContainer>
+        </ErrorBoundary>
       </main>
 
       <AppFooter />

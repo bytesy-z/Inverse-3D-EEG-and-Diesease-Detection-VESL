@@ -78,6 +78,11 @@ export function EegWaveformPlot({
 
       const spacing = 100 // vertical spacing per channel
       const gain = spacing / uVPerDiv // compute multiplier from selected scale
+      const traceColor = "#4ade80"
+      const textColor = "#e5e5e5"
+      const gridColor = "#333333"
+      const zeroLineColor = "#444444"
+
       const traces: Data[] = channels.map((channel, chIdx) => {
         const values = eegValues[chIdx] ?? []
         const offset = (numChannels - 1 - chIdx) * spacing
@@ -88,7 +93,7 @@ export function EegWaveformPlot({
           mode: "lines" as const,
           name: channel,
           line: {
-            color: "#000000",
+            color: traceColor,
             width: 1,
           },
           hovertemplate: `<b>${channel}</b><br>Time: %{x}s<br>Value: %{customdata} µV<extra></extra>`,
@@ -97,32 +102,31 @@ export function EegWaveformPlot({
         }
       })
 
-      const layout: Partial<Layout> = {
-        paper_bgcolor: "#ffffff",
-        plot_bgcolor: "#ffffff",
+      const layout: Partial<Layout> & Record<string, unknown> = {
+        paper_bgcolor: "transparent",
+        plot_bgcolor: "transparent",
         font: {
-          color: "#000000",
+          color: textColor,
           size: 10,
         },
         margin: { l: 50, r: 20, t: 30, b: 40 },
         xaxis: {
           title: "Time (s)",
-          titlefont: { color: "#000000", size: 11 },
-          tickfont: { color: "#000000", size: 9 },
-          gridcolor: "#e2e8f0",
-          zerolinecolor: "#cbd5e1",
+          titlefont: { color: textColor, size: 11 },
+          tickfont: { color: textColor, size: 9 },
+          gridcolor: gridColor,
+          zerolinecolor: zeroLineColor,
           zerolinewidth: 1,
           dtick: 0.5,
           range: [startTime, endTime],
         },
         yaxis: {
           title: "",
-          tickfont: { color: "#000000", size: 9 },
-          gridcolor: "#e2e8f0",
-          zerolinecolor: "#cbd5e1",
+          tickfont: { color: textColor, size: 9 },
+          gridcolor: gridColor,
+          zerolinecolor: zeroLineColor,
           zerolinewidth: 1,
           showticklabels: true,
-          // Keep ticks aligned with per-channel offsets; range sized to accommodate scaled waveforms
           tickvals: channels.map((_, i) => (numChannels - 1 - i) * spacing),
           ticktext: channels,
           dtick: spacing,
@@ -135,7 +139,7 @@ export function EegWaveformPlot({
           {
             xref: 'paper', yref: 'paper', x: 0.02, y: 0.95,
             text: `Scale: ${uVPerDiv} µV / div`, showarrow: false,
-            font: { color: '#000000', size: 12 }
+            font: { color: textColor, size: 12 }
           }
         ],
         height: Math.max(400, numChannels * 28),
@@ -164,7 +168,7 @@ export function EegWaveformPlot({
       cancelled = true
       // Purge Plotly instance to free memory and avoid canvas leaks
       import("plotly.js-dist-min").then(m => {
-        const Plotly = m.default
+        const Plotly = m.default as any
         if (container) Plotly.purge(container)
       }).catch(() => {/* ignore — container may already be gone */})
     }

@@ -1,35 +1,24 @@
 #!/usr/bin/env python3
-"""
-Script: 08_run_cmaes.py
-Phase: 4 — Parameter Inversion (CMA-ES)
-Purpose: Run CMA-ES optimization to fit patient-specific epileptogenicity (x0)
-  by minimizing the objective function that compares:
-  1. Model-predicted source activity vs PhysDeepSIF output
-  2. Simulated EEG PSD vs real EEG PSD
-  3. Regularization toward healthy baseline
-
-Usage:
-    python scripts/08_run_cmaes.py --patient-idx 0
-    python scripts/08_run_cmaes.py --max-generations 50 --device cpu
-    python scripts/08_run_cmaes.py --patient-idx 1 --test-run
-
-See docs/FINAL_WORK_PLAN.md Section 3 (Hira's tasks) for details.
-"""
-
 import argparse
 import logging
 import sys
 from pathlib import Path
 
+import h5py
 import numpy as np
 import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.phase4_inversion.cmaes_optimizer import fit_patient
+from src.phase4_inversion.epileptogenicity_index import compute_biophysical_ei
+from src.phase4_inversion.concordance import compute_concordance
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    force=True,
 )
 logger = logging.getLogger(__name__)
 
@@ -61,81 +50,103 @@ def main():
         type=str,
         default="cpu",
         choices=["cuda", "cpu"],
-        help="Device for PhysDeepSIF inference",
+        help="Device for PhysDeepSIF inference (not used in Phase 4)",
     )
     parser.add_argument(
-        "--test-run",
+        "--quick-test",
         action="store_true",
-        help="Quick test run with reduced generations (for debugging)",
+        help="Quick test: population=4, generations=2",
     )
     args = parser.parse_args()
 
     logger.info(f"Loaded configuration from {args.config}")
     config = yaml.safe_load(args.config.read_text())
 
-    # Override for test run
-    if args.test_run:
-        args.max_generations = 5
-        logger.info("Test run mode: max_generations set to 5")
-
     inversion_config = config["parameter_inversion"]
     if args.max_generations is not None:
         inversion_config["max_generations"] = args.max_generations
 
+    pop_size = inversion_config["population_size"]
+    max_gen = inversion_config["max_generations"]
+
+    if args.quick_test:
+        pop_size = 4
+        max_gen = 2
+        logger.info("Quick test mode: population=4, generations=2")
+
     logger.info("=" * 60)
-    logger.info("PHASE 4 CMA-ES OPTIMIZATION — SKELETON")
+    logger.info("PHASE 4 CMA-ES OPTIMIZATION")
     logger.info("=" * 60)
-    logger.info("Configuration loaded:")
     logger.info(f"  - Patient index: {args.patient_idx}")
+    logger.info(f"  - Population size: {pop_size}")
+    logger.info(f"  - Max generations: {max_gen}")
     logger.info(f"  - Initial x0: {inversion_config['initial_x0']}")
     logger.info(f"  - Initial sigma: {inversion_config['initial_sigma']}")
     logger.info(f"  - Bounds: {inversion_config['bounds']}")
-    logger.info(f"  - Population size: {inversion_config['population_size']}")
-    logger.info(f"  - Max generations: {inversion_config['max_generations']}")
-    logger.info(f"  - Objective weights: {inversion_config['objective_weights']}")
-    logger.info(f"  - Device: {args.device}")
     logger.info("=" * 60)
 
-    # TODO: Integrate with Phase 4 modules once implemented:
-    # from src.phase4_inversion.objective_function import objective
-    # from src.phase4_inversion.cmaes_optimizer import fit_patient
-    # from src.phase4_inversion.epileptogenicity_index import compute_ei
-    
-    # Example integration (to be implemented):
-    # 1. Load test dataset and get patient EEG + ground truth x0
-    # 2. Load PhysDeepSIF model and run inference to get source estimates
-    # 3. Load leadfield, connectivity, region_centers
-    # 4. Run CMA-ES optimization:
-    #    from cmaes import CMA
-    #    bounds = np.array([[args.bounds[0]] * 76, [args.bounds[1]] * 76]).T
-    #    cma = CMA(mean=np.full(76, initial_x0), sigma=initial_sigma, bounds=bounds)
-    #    for gen in range(max_generations):
-    #        solutions = [(cma.ask(), objective(cma.ask(), ...)) for _ in range(pop_size)]
-    #        cma.tell(solutions)
-    # 5. Compute epileptogenicity index from fitted x0
-    # 6. Compare with ground truth epileptogenic regions
-    
-    logger.info("Skeleton OK — awaiting Phase 4 module implementations")
-    logger.info("Expected modules:")
-    logger.info("  - src/phase4_inversion/objective_function.py")
-    logger.info("  - src/phase4_inversion/cmaes_optimizer.py")
-    logger.info("  - src/phase4_inversion/epileptogenicity_index.py")
+    logger.info("Loading data files...")
+    leadfield = np.load(PROJECT_ROOT / "data/leadfield_19x76.npy")
+    connectivity_weights = np.load(PROJECT_ROOT / "data/connectivity_76.npy")
+    region_centers = np.load(PROJECT_ROOT / "data/region_centers_76.npy")
+    tract_lengths = np.load(PROJECT_ROOT / "data/tract_lengths_76.npy")
+
+    import json
+    with open(PROJECT_ROOT / "data/region_labels_76.json") as f:
+        region_labels = json.load(f)
+
+    test_dataset_path = PROJECT_ROOT / "data/synthetic3/test_dataset.h5"
+    logger.info(f"Loading test dataset from {test_dataset_path}")
+    with h5py.File(test_dataset_path, "r") as f:
+        target_eeg = f["eeg"][args.patient_idx]
+        true_x0 = f["x0_vector"][args.patient_idx]
+        true_mask = f["epileptogenic_mask"][args.patient_idx]
+
+    logger.info(
+        f"Patient {args.patient_idx}: "
+        f"{int(true_mask.sum())} epileptogenic regions, "
+        f"true x0 range [{true_x0.min():.3f}, {true_x0.max():.3f}]"
+    )
+
+    logger.info("Running CMA-ES optimization...")
+    result = fit_patient(
+        target_eeg=target_eeg,
+        leadfield=leadfield,
+        connectivity_weights=connectivity_weights,
+        region_centers=region_centers,
+        region_labels=region_labels,
+        tract_lengths=tract_lengths,
+        population_size=pop_size,
+        max_generations=max_gen,
+        initial_x0=inversion_config["initial_x0"],
+        initial_sigma=inversion_config["initial_sigma"],
+        bounds=inversion_config["bounds"],
+        seed=42,
+    )
+
     logger.info("=" * 60)
-    
-    # Verify CMA-ES is available
-    try:
-        from cmaes import CMA
-        logger.info("✓ cmaes package available")
-        
-        # Quick API verification
-        bounds = np.array([[-2.4, -1.0]] * 5)
-        cma = CMA(mean=np.full(5, -2.1), sigma=0.3, bounds=bounds, seed=42)
-        _ = [(cma.ask(), 1.0) for _ in range(cma.population_size)]
-        logger.info(f"✓ CMA-ES API verified (pop_size={cma.population_size})")
-    except ImportError:
-        logger.error("✗ cmaes package not found. Install with: pip install cmaes")
-        sys.exit(1)
-    
+    logger.info("OPTIMIZATION RESULTS")
+    logger.info("=" * 60)
+    logger.info(f"  Best score: {result['best_score']:.4e}")
+    logger.info(f"  Generations: {result['generations']}")
+    logger.info(f"  Evaluations: {result['n_evaluations']}")
+    logger.info(
+        f"  Fitted x0 range: [{result['best_x0'].min():.3f}, "
+        f"{result['best_x0'].max():.3f}]"
+    )
+
+    biophysical_ei = compute_biophysical_ei(result["best_x0"])
+    logger.info(
+        f"  Biophysical EI range: [{biophysical_ei.min():.4f}, "
+        f"{biophysical_ei.max():.4f}]"
+    )
+
+    n_true_epi = int(true_mask.sum())
+    fitted_top10 = np.argsort(biophysical_ei)[-10:][::-1]
+    true_epi_indices = np.where(true_mask)[0]
+    overlap = len(set(fitted_top10.tolist()) & set(true_epi_indices.tolist()))
+    logger.info(f"  True epileptogenic regions: {n_true_epi}")
+    logger.info(f"  Top-10 overlap with ground truth: {overlap}/10")
     logger.info("=" * 60)
 
 

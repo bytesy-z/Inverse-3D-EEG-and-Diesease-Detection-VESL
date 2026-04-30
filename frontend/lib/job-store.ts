@@ -74,6 +74,18 @@ export interface PhysDeepSIFResult {
     mean: number
     std: number
   }
+  concordance?: {
+    tier: string
+    overlap: number
+    shared_regions?: string[]
+    tier_description?: string
+  } | null
+  cmaes?: {
+    status: string
+    best_score?: number
+    generations?: number
+    error?: string
+  } | null
 }
 
 interface Job<T> {

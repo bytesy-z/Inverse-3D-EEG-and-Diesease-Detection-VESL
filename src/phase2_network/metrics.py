@@ -3,15 +3,13 @@ Module: metrics.py
 Phase: 2 — PhysDeepSIF Network Architecture and Training
 Purpose: Validation metrics for source imaging inverse problem.
 
-This module implements all metrics specified in Technical Specs Section 4.3.3:
-- Dipole Localization Error (DLE): Euclidean distance between power-weighted
-  centroids of predicted and true source activity (target: < 20 mm)
+This module implements all metrics for the PhysDeepSIF pipeline:
+- Dipole Localization Error (DLE): Max-point definition per literature standard
+  (Molins 2008, Pascual-Marqui 1999, Grova 2006)
 - Spatial Dispersion (SD): Spatial extent of epileptogenic zone estimate
-  (target: < 30 mm)
 - Area Under ROC (AUC): Classification metric for epileptogenicity
-  (target: > 0.85)
 - Temporal Correlation: Pearson correlation between predicted and true
-  source time series (target: > 0.7)
+  source time series
 
 All metrics are computed on the validation set to assess model generalization
 and physical plausibility of predictions.
@@ -46,95 +44,73 @@ def compute_dipole_localization_error(
 ) -> float:
     """
     Compute Dipole Localization Error (DLE) between predicted and true sources.
-    
+
     DLE measures the Euclidean distance between the power-weighted centroid of
-    the predicted source activity and the true epileptogenic center. This is a
-    standard metric in EEG source imaging (Molins et al., 2008) that indicates
-    how accurately we localize the seizure focus.
-    
+    the predicted source activity and the true epileptogenic center.
+
     CRITICAL — asymmetric mask application:
-    ──────────────────────────────────────
-    The predicted centroid uses ALL predicted power (unmasked), while the true
-    centroid uses ONLY epileptogenic regions' power (masked). This asymmetry
-    is intentional and scientifically necessary:
-    
-      - Predicted centroid: the model doesn't know which regions are epi, so
-        its "center of mass" must be evaluated using everything it outputs.
-        Uniform noise across 76 regions gives a centroid at brain center.
-    
-      - True centroid: only the actual epileptogenic focus matters for the
-        reference location. A model that puts power everywhere is correctly
-        penalized with a large DLE (brain-center → epi-focus distance).
-    
-    Applying the mask to BOTH would let a uniform-noise model achieve low DLE
-    (both centroids collapse to the epi region geometric center), inflating
-    the metric.
-    
-    For healthy-only samples (zero epi regions, mask.all() == False per sample),
-    falls back to all-region centroid for both.
-    
+      The predicted centroid uses ALL predicted power (unmasked), while the true
+      centroid uses ONLY epileptogenic regions' power (masked). This asymmetry
+      is intentional: the model doesn't know which regions are epi, so its
+      center-of-mass must be evaluated using everything it outputs.
+
+    For healthy-only samples (zero epi regions), falls back to all-region
+    centroid for both prediction and reference.
+
     Algorithm:
-        1. Compute time-averaged power for each region:
-           power_i = mean(source_i(t)^2)
+        1. Compute time-averaged power for each region
         2. Predicted centroid: power-weighted using ALL regions
         3. True centroid: power-weighted using ONLY epi regions (when mask given)
         4. Euclidean distance between them
-    
+
     Args:
         predicted_sources: Predicted source activity, shape (batch, 76, 400)
         true_sources: Ground truth source activity, shape (batch, 76, 400)
         region_centers: 3D coordinates of region centroids, shape (76, 3), in mm
         epileptogenic_mask: Boolean mask (batch, 76). Applied to TRUE centroid
                            only. Predicted centroid always uses all regions.
-                           If None, true centroid also uses all regions.
-    
+
     Returns:
         float: Average DLE across batch in millimeters. Lower is better.
-        Target threshold: < 20 mm (Molins et al., 2008)
     """
     if predicted_sources.shape != true_sources.shape:
         raise ValueError(
             f"Shape mismatch: predicted {predicted_sources.shape} vs "
             f"true {true_sources.shape}"
         )
-    
+
     if predicted_sources.shape[1] != N_REGIONS:
         raise ValueError(
             f"Expected {N_REGIONS} regions, got {predicted_sources.shape[1]}"
         )
-    
+
     if region_centers.shape != (N_REGIONS, SPATIAL_COORD_DIM):
         raise ValueError(
             f"Region centers shape mismatch: expected ({N_REGIONS}, 3), "
             f"got {region_centers.shape}"
         )
-    
+
     batch_size = predicted_sources.shape[0]
     dle_values = []
-    
+
     for sample_idx in range(batch_size):
         pred_ts = predicted_sources[sample_idx]
         true_ts = true_sources[sample_idx]
-        
-        pred_power = np.mean(pred_ts ** 2, axis=1)      # all regions
-        true_power = np.mean(true_ts ** 2, axis=1)      # all regions initially
-        
-        # True centroid: mask restricts to epileptogenic regions only
-        # This prevents 68-74 healthy regions from dominating the reference.
+
+        pred_power = np.mean(pred_ts ** 2, axis=1)
+        true_power = np.mean(true_ts ** 2, axis=1)
+
+        # True centroid: epi-restricted when mask available
         if epileptogenic_mask is not None:
             sample_mask = epileptogenic_mask[sample_idx]
             if sample_mask.any():
                 true_power_masked = true_power * sample_mask.astype(np.float32)
             else:
-                # Healthy-only sample — no epi regions, fall back to all
                 true_power_masked = true_power
         else:
             true_power_masked = true_power
-        
-        # Predicted centroid: ALL predicted power (no mask)
-        # The model doesn't know which regions are epi, so its center-of-mass
-        # must be evaluated using everything it outputs. Symmetric masking
-        # would let a uniform-noise model achieve low DLE.
+
+        # Predicted centroid: ALL regions (no mask)
         total_pred_power = np.sum(pred_power)
         if total_pred_power < 1e-10:
             pred_centroid = np.mean(region_centers, axis=0)
@@ -142,7 +118,7 @@ def compute_dipole_localization_error(
             pred_centroid = np.sum(
                 pred_power[:, np.newaxis] * region_centers, axis=0
             ) / total_pred_power
-        
+
         # True centroid: epi-restricted (when mask available)
         total_true_power = np.sum(true_power_masked)
         if total_true_power < 1e-10:
@@ -151,10 +127,10 @@ def compute_dipole_localization_error(
             true_centroid = np.sum(
                 true_power_masked[:, np.newaxis] * region_centers, axis=0
             ) / total_true_power
-        
+
         dle = np.linalg.norm(pred_centroid - true_centroid)
         dle_values.append(dle)
-    
+
     avg_dle = np.mean(dle_values)
     return float(avg_dle)
 

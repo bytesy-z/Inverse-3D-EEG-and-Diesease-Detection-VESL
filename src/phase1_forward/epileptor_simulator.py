@@ -289,7 +289,8 @@ def configure_epileptor(
     logger.debug(
         f"Configured Epileptor: x0 range [{x0_vector.min():.3f}, "
         f"{x0_vector.max():.3f}], "
-        f"Iext1={float(model.Iext):.3f}, Iext2={float(model.Iext2):.3f}"
+        f"Iext1={float(np.asarray(model.Iext).flat[0]):.3f}, "
+        f"Iext2={float(np.asarray(model.Iext2).flat[0]):.3f}"
     )
 
     return model

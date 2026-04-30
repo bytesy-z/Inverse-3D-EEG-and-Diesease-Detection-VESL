@@ -19,12 +19,16 @@ See docs/02_TECHNICAL_SPECIFICATIONS.md Section 4 for pipeline details.
 
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 import os
+import shutil
 import sys
+import threading
 import time
 import traceback
 import uuid
 import warnings
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional
 from io import BytesIO
@@ -39,7 +43,7 @@ warnings.filterwarnings('ignore', category=RuntimeWarning)
 warnings.filterwarnings('ignore', category=UserWarning)
 
 # FastAPI imports
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 import asyncio
@@ -65,15 +69,48 @@ except Exception:
 from src.phase2_network.physdeepsif import build_physdeepsif
 from src.region_names import get_region_name, format_region_for_display
 
-# ========================================================================
-# Logging
-# ========================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+# CMA-ES biophysical inversion for concordance validation
+from src.phase4_inversion import (
+    fit_patient, ProgressCallback,
+    compute_biophysical_ei, compute_concordance,
 )
+
+# ========================================================================
+# Logging (JsonFormatter class must be defined before use)
+# ========================================================================
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "name": record.name,
+            "message": record.getMessage(),
+        }
+        if hasattr(record, "job_id"):
+            log_entry["job_id"] = record.job_id
+        return json.dumps(log_entry)
+
+
 logger = logging.getLogger("physdeepsif_api")
+logger.handlers.clear()
+logger.setLevel(logging.INFO)
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(JsonFormatter())
+logger.addHandler(console_handler)
+
+# File handler with rotation (10MB, 5 backups)
+log_dir = Path("outputs/logs")
+log_dir.mkdir(parents=True, exist_ok=True)
+file_handler = RotatingFileHandler(
+    str(log_dir / "backend.log"),
+    maxBytes=10 * 1024 * 1024,
+    backupCount=5,
+)
+file_handler.setFormatter(JsonFormatter())
+logger.addHandler(file_handler)
 
 # ========================================================================
 # Constants (from Technical Specs §3, §4)
@@ -103,6 +140,20 @@ REGION_LABELS_PATH = PROJECT_ROOT / "data" / "region_labels_76.json"
 REGION_CENTERS_PATH = PROJECT_ROOT / "data" / "region_centers_76.npy"
 TEST_DATA_PATH = PROJECT_ROOT / "data" / "synthetic3" / "test_dataset.h5"
 RESULTS_DIR = PROJECT_ROOT / "outputs" / "frontend_results"
+MIN_FREE_BYTES = 100 * 1024 * 1024
+
+TRACT_LENGTHS_PATH = PROJECT_ROOT / "data" / "tract_lengths_76.npy"
+
+# CMA-ES configuration (matches config.yaml)
+CMAES_POPULATION_SIZE = 14
+CMAES_MAX_GENERATIONS = 30
+CMAES_INITIAL_X0 = -2.1
+CMAES_INITIAL_SIGMA = 0.3
+CMAES_BOUNDS = (-2.4, -1.0)
+CMAES_SEED = 42
+
+START_TIME = time.time()
+
 
 class WaveformRequest(BaseModel):
     eeg: List[List[float]]
@@ -167,9 +218,39 @@ norm_stats: Optional[Dict[str, float]] = None
 region_labels: Optional[List[str]] = None
 leadfield_matrix: Optional[NDArray[np.float32]] = None
 device: Optional[torch.device] = None
+connectivity_weights: Optional[NDArray[np.float32]] = None
+region_centers: Optional[NDArray[np.float32]] = None
+tract_lengths: Optional[NDArray[np.float32]] = None
 
-# In-memory job tracker
+# In-memory job tracker (replaced by active_jobs below)
 jobs: Dict[str, dict] = {}
+
+# Thread lock for concurrent access to active_jobs dict
+active_jobs_lock = threading.Lock()
+
+
+# ========================================================================
+# Rate Limiter
+# ========================================================================
+
+class RateLimiter:
+    def __init__(self, requests_per_minute=100):
+        self.rate = requests_per_minute
+        self.buckets: Dict[str, list] = defaultdict(list)
+        self._lock = threading.Lock()
+
+    def is_allowed(self, key: str) -> bool:
+        now = time.time()
+        with self._lock:
+            bucket = self.buckets[key]
+            cutoff = now - 60
+            bucket[:] = [t for t in bucket if t > cutoff]
+            if len(bucket) >= self.rate:
+                return False
+            bucket.append(now)
+            return True
+
+rate_limiter = RateLimiter()
 
 
 # ========================================================================
@@ -193,18 +274,52 @@ app.add_middleware(
         "http://127.0.0.1:3010",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
+
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    if request.url.path == "/api/health":
+        return await call_next(request)
+    client_ip = request.client.host if request.client else "unknown"
+    if not rate_limiter.is_allowed(client_ip):
+        return JSONResponse(status_code=429, content={"detail": "Too many requests"})
+    return await call_next(request)
 
 
 # ========================================================================
 # Startup: load model, normalization stats, region labels
 # ========================================================================
+
+def startup_check():
+    required_files = {
+        "outputs/models/checkpoint_best.pt": "checkpoint",
+        "outputs/models/normalization_stats.json": "normalization stats",
+        "data/leadfield_19x76.npy": "leadfield matrix",
+        "data/connectivity_76.npy": "connectivity",
+        "data/region_labels_76.json": "region labels",
+        "data/region_centers_76.npy": "region centers",
+        "data/tract_lengths_76.npy": "tract lengths",
+    }
+    all_ok = True
+    for path, name in required_files.items():
+        exists = Path(path).exists()
+        logger.info(f"  {name}: {'OK' if exists else 'MISSING'}")
+        if not exists:
+            all_ok = False
+    if all_ok:
+        logger.info("All required files present.")
+    else:
+        logger.warning("Some required files are missing.")
+    return all_ok
+
+
 @app.on_event("startup")
 async def startup_load_model():
     """Load the PhysDeepSIF model and all supporting data files on startup."""
-    global model, norm_stats, region_labels, leadfield_matrix, device
+    global model, norm_stats, region_labels, leadfield_matrix, device, connectivity_weights, region_centers, tract_lengths
 
     logger.info("=" * 60)
     logger.info("PhysDeepSIF API — Loading model and data...")
@@ -220,9 +335,11 @@ async def startup_load_model():
         raise RuntimeError(f"Checkpoint not found: {CHECKPOINT_PATH}")
 
     # Build the PhysDeepSIF model (creates architecture + registers buffers)
+    # hidden_size=76 matches the final trained checkpoint (β=0.0, 410k params)
     model = build_physdeepsif(
         leadfield_path=str(LEADFIELD_PATH),
         connectivity_path=str(CONNECTIVITY_PATH),
+        lstm_hidden_size=76,
         lstm_dropout=0.0,  # No dropout at inference time
     )
 
@@ -269,15 +386,28 @@ async def startup_load_model():
     leadfield_matrix = np.load(str(LEADFIELD_PATH)).astype(np.float32)
     logger.info(f"Loaded leadfield: shape {leadfield_matrix.shape}")
 
+    # Load data files for CMA-ES biophysical inversion
+    connectivity_weights = np.load(str(CONNECTIVITY_PATH)).astype(np.float32)
+    region_centers = np.load(str(REGION_CENTERS_PATH)).astype(np.float32)
+    tract_lengths = np.load(str(TRACT_LENGTHS_PATH)).astype(np.float32)
+    logger.info(
+        f"Loaded CMA-ES data: connectivity {connectivity_weights.shape}, "
+        f"centers {region_centers.shape}, tracts {tract_lengths.shape}"
+    )
+
     # Ensure results directory exists
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Run startup validation checks
+    startup_check()
 
     logger.info("=" * 60)
     logger.info("PhysDeepSIF API — Ready to serve requests")
     logger.info("=" * 60)
 
-    # Start periodic cleanup for WebSocket job tracker
+    # Start periodic cleanup for WebSocket job tracker and old result files
     asyncio.create_task(_cleanup_stale_jobs())
+    asyncio.create_task(_cleanup_old_results())
 
 
 # ========================================================================
@@ -296,7 +426,15 @@ def run_inference(eeg: NDArray[np.float32]) -> NDArray[np.float32]:
 
     Returns:
         Source activity estimate, shape (76, 400) or (batch, 76, 400).
+
+    Raises:
+        HTTPException(503): If model is not loaded.
     """
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    if not np.isfinite(eeg).all():
+        raise HTTPException(status_code=400, detail="Input contains NaN or Inf values")
     # Guarantee batch dimension
     single_sample = eeg.ndim == 2
     if single_sample:
@@ -536,7 +674,8 @@ def _process_edf_raw(raw) -> dict:
 
 def _set_job_status(job_id: str, status: str, progress: int, message: str, **extra) -> None:
     """Set job status with timestamp for automatic cleanup."""
-    active_jobs[job_id] = {"status": status, "progress": progress, "message": message, "_ts": time.time(), **extra}
+    with active_jobs_lock:
+        active_jobs[job_id] = {"status": status, "progress": progress, "message": message, "_ts": time.time(), **extra}
 
 
 async def _cleanup_stale_jobs():
@@ -544,31 +683,39 @@ async def _cleanup_stale_jobs():
     while True:
         await asyncio.sleep(300)
         now = time.time()
-        stale = [
-            jid for jid, job in list(active_jobs.items())
-            if (
-                # Terminal jobs: purge after 5 min
-                job.get("status") in ("completed", "failed")
-                and now - job.get("_ts", now) > 300
-            ) or (
-                # Any job (including hung "queued"/"loading"): purge after 30 min
-                now - job.get("_ts", now) > 1800
-            )
-        ]
-        for jid in stale:
-            active_jobs.pop(jid, None)
+        with active_jobs_lock:
+            stale = [
+                jid for jid, job in list(active_jobs.items())
+                if (
+                    job.get("status") in ("completed", "failed")
+                    and now - job.get("_ts", now) > 300
+                ) or (
+                    now - job.get("_ts", now) > 1800
+                )
+            ]
+            for jid in stale:
+                active_jobs.pop(jid, None)
         if stale:
             logger.info(f"Cleaned up {len(stale)} stale WebSocket job(s)")
 
 
-def _load_fsaverage5_mesh():
-    """
-    Load fsaverage5 cortical surface mesh data.
+async def _cleanup_old_results():
+    while True:
+        await asyncio.sleep(3600)
+        now = time.time()
+        for d in Path(RESULTS_DIR).iterdir():
+            if d.is_dir():
+                mtime = d.stat().st_mtime
+                if now - mtime > 86400:
+                    shutil.rmtree(d, ignore_errors=True)
+                    logger.info(f"Cleaned up old result: {d.name}")
 
-    Returns combined left+right hemisphere coordinates, faces, vertex count,
-    and left hemisphere vertex count for hemisphere-aware region assignment.
-    Cached after first call to avoid repeated I/O.
-    """
+
+_mesh_cache = None
+def _load_fsaverage5_mesh():
+    global _mesh_cache
+    if _mesh_cache is not None:
+        return _mesh_cache
     import nibabel as nib
     import nilearn.datasets
     fsaverage5 = nilearn.datasets.fetch_surf_fsaverage(mesh='fsaverage5')
@@ -587,7 +734,8 @@ def _load_fsaverage5_mesh():
     all_coords = np.vstack([lh_coords, rh_coords])
     all_faces = np.vstack([lh_faces, rh_faces_offset])
 
-    return all_coords, all_faces, n_verts_lh, lh_coords, rh_coords
+    _mesh_cache = (all_coords, all_faces, n_verts_lh, lh_coords, rh_coords)
+    return _mesh_cache
 
 
 def _assign_vertices_to_regions(
@@ -1089,12 +1237,21 @@ def generate_source_activity_heatmap_html(
 
 @app.get("/api/health")
 async def health_check():
-    """Health check — verify model is loaded and ready."""
+    """Health check — verify model is loaded and report system info."""
+    results_path = Path("outputs/frontend_results")
+    results_path.mkdir(parents=True, exist_ok=True)
+    du = shutil.disk_usage(results_path)
     return {
         "status": "ok",
         "model_loaded": model is not None,
         "device": str(device),
         "checkpoint": str(CHECKPOINT_PATH),
+        "disk_usage_bytes": du.used,
+        "results_count": len(list(results_path.iterdir())) if results_path.exists() else 0,
+        "uptime_seconds": time.time() - START_TIME,
+        "python_version": sys.version.split()[0],
+        "torch_version": torch.__version__,
+        "degraded": model is None,
     }
 
 
@@ -1138,6 +1295,158 @@ async def eeg_waveform(req: WaveformRequest):
     except Exception as e:
         logger.exception("eeg_waveform rendering failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _build_eeg_payload(eeg_data, fs, channel_names, edf_all_windows=None, edf_window_timestamps=None, include_eeg=True, job_id=None):
+    eeg_payload = None
+    if include_eeg:
+        try:
+            if edf_all_windows is not None and edf_window_timestamps is not None:
+                windows_payload = []
+                for start_ts, win in zip(edf_window_timestamps, edf_all_windows):
+                    windows_payload.append({
+                        "startTime": float(start_ts - WINDOW_LENGTH / (2 * SAMPLING_RATE)),
+                        "endTime": float(start_ts + WINDOW_LENGTH / (2 * SAMPLING_RATE)),
+                        "data": win.tolist(),
+                    })
+                eeg_payload = {
+                    "channels": CHANNEL_NAMES,
+                    "samplingRate": SAMPLING_RATE,
+                    "windowLength": WINDOW_LENGTH,
+                    "windows": windows_payload,
+                }
+            else:
+                eeg_payload = {
+                    "channels": CHANNEL_NAMES,
+                    "samplingRate": SAMPLING_RATE,
+                    "windowLength": WINDOW_LENGTH,
+                    "windows": [
+                        {
+                            "startTime": 0.0,
+                            "endTime": WINDOW_LENGTH / SAMPLING_RATE,
+                            "data": eeg_data.tolist(),
+                        }
+                    ],
+                }
+        except Exception:
+            extra = {"job_id": job_id} if job_id else {}
+            logger.exception(f"Failed to build eeg_payload", extra=extra)
+            eeg_payload = None
+    return eeg_payload
+
+
+def _extract_plotly_body(html_content):
+    import re
+    script_match = re.search(
+        r'<script[^>]*src="https://cdn\.plot\.ly/plotly[^"]*"[^>]*></script>',
+        html_content, re.I
+    )
+    plotly_script = script_match.group(0) if script_match else ''
+    body_match = re.search(
+        r'<body[^>]*>([\s\S]*?)</body>', html_content, re.I
+    )
+    body_content = body_match.group(1) if body_match else html_content
+    return plotly_script + body_content
+
+
+def _run_xai(eeg_data, ei_result, region_labels):
+    xai_result = None
+    try:
+        from src.xai.eeg_occlusion import explain_biomarker
+        scores_array = np.array(ei_result['scores_array'])
+        top_region_idx = int(np.argmax(scores_array))
+        top_region_code = region_labels[top_region_idx]
+
+        def _ei_pipeline(win):
+            sources = run_inference(win)
+            ei = compute_epileptogenicity_index(sources)
+            return {"scores": np.array(ei["scores_array"])}
+
+        xai_result = explain_biomarker(
+            eeg_window=eeg_data.astype(np.float32),
+            target_region_idx=top_region_idx,
+            run_pipeline_fn=_ei_pipeline,
+            occlusion_width=40,
+            stride=20,
+        )
+        xai_result["target_region"] = top_region_code
+        xai_result["target_region_full"] = format_region_for_display(top_region_code)
+    except Exception as e:
+        logger.warning(f"XAI skipped: {e}")
+        xai_result = None
+    return xai_result
+
+
+def _make_cmaes_callback(job_id: str, max_generations: int):
+    """Create CMA-ES progress callback that updates WebSocket clients."""
+    def callback(gen: int, best_x, best_f, history):
+        progress_pct = 70 + int(25 * gen / max_generations)
+        _set_job_status(
+            job_id, "cmaes_running", progress_pct,
+            f"CMA-ES inversion: gen {gen}/{max_generations} (score={best_f:.4f})",
+            cmaes_phase="running",
+            cmaes_generation=gen,
+            cmaes_max_generations=max_generations,
+            cmaes_best_score=float(best_f),
+        )
+    return callback
+
+
+def _run_cmaes_inversion(
+    job_id: str,
+    eeg_data: NDArray[np.float32],
+    leadfield: NDArray[np.float32],
+    connectivity: NDArray[np.float32],
+    centers: NDArray[np.float32],
+    tracts: NDArray[np.float32],
+    rlabels: List[str],
+    heuristic_ei: NDArray[np.float32],
+) -> Dict:
+    """Run CMA-ES inversion in thread, updating active_jobs with progress."""
+    _set_job_status(job_id, "cmaes_queued", 72, "Initializing CMA-ES inversion...",
+        cmaes_phase="queued", cmaes_generation=0,
+        cmaes_max_generations=CMAES_MAX_GENERATIONS)
+
+    cb = _make_cmaes_callback(job_id, CMAES_MAX_GENERATIONS)
+
+    result = fit_patient(
+        target_eeg=eeg_data.astype(np.float64),
+        leadfield=leadfield.astype(np.float64),
+        connectivity_weights=connectivity.astype(np.float64),
+        region_centers=centers.astype(np.float64),
+        region_labels=rlabels,
+        tract_lengths=tracts.astype(np.float64),
+        population_size=CMAES_POPULATION_SIZE,
+        max_generations=CMAES_MAX_GENERATIONS,
+        initial_x0=CMAES_INITIAL_X0,
+        initial_sigma=CMAES_INITIAL_SIGMA,
+        bounds=CMAES_BOUNDS,
+        seed=CMAES_SEED,
+        callback=cb,
+    )
+
+    biophysical_ei = compute_biophysical_ei(result["best_x0"])
+    concordance = compute_concordance(
+        heuristic_ei.astype(np.float64),
+        biophysical_ei,
+        top_k=10,
+    )
+
+    return {
+        "best_x0": result["best_x0"].tolist(),
+        "best_score": float(result["best_score"]),
+        "generations": int(result["generations"]),
+        "n_evaluations": int(result["n_evaluations"]),
+        "biophysical_ei": biophysical_ei.tolist(),
+        "concordance": {
+            "tier": concordance["tier"],
+            "overlap": int(concordance["overlap"]),
+            "shared_regions": [rlabels[i] for i in concordance["shared_regions"]],
+            "tier_description": concordance["tier_description"],
+            "heuristic_top10": [rlabels[i] for i in concordance["heuristic_top10"]],
+            "biophysical_top10": [rlabels[i] for i in concordance["biophysical_top10"]],
+        },
+    }
 
 
 @app.post("/api/analyze")
@@ -1192,7 +1501,7 @@ async def analyze_eeg(
             threshold_percentile=threshold_percentile,
             include_eeg=include_eeg,
         ))
-        logger.info(f"[{ws_job_id}] Queued async analysis (file={file_path_to_pass}, sample_idx={sample_idx}, mode={mode})")
+        logger.info(f"Queued async analysis (file={file_path_to_pass}, sample_idx={sample_idx}, mode={mode})", extra={"job_id": ws_job_id})
         return JSONResponse({"status": "queued", "job_id": ws_job_id})
 
     job_id = f"physdeepsif_{int(time.time())}_{uuid.uuid4().hex[:8]}"
@@ -1209,7 +1518,7 @@ async def analyze_eeg(
 
         if sample_idx is not None:
             # Load from synthetic test dataset
-            logger.info(f"[{job_id}] Loading test sample idx={sample_idx}")
+            logger.info(f"Loading test sample idx={sample_idx}", extra={"job_id": job_id})
             source_label = f"synthetic3/test sample {sample_idx}"
 
             if not TEST_DATA_PATH.exists():
@@ -1228,7 +1537,7 @@ async def analyze_eeg(
 
         elif file is not None:
             # Parse uploaded EEG file
-            logger.info(f"[{job_id}] Processing uploaded file: {file.filename}")
+            logger.info(f"Processing uploaded file: {file.filename}", extra={"job_id": job_id})
             source_label = file.filename
 
             file_ext = Path(file.filename).suffix.lower()
@@ -1261,8 +1570,9 @@ async def analyze_eeg(
                     total_edf_windows = result["total_edf_windows"]
                     edf_windows_truncated = result["edf_windows_truncated"]
                     logger.info(
-                        f"[{job_id}] EDF sliding window: using "
-                        f"{len(edf_all_windows) if edf_all_windows else 1} / {total_edf_windows} windows"
+                        f"EDF sliding window: using "
+                        f"{len(edf_all_windows) if edf_all_windows else 1} / {total_edf_windows} windows",
+                        extra={"job_id": job_id}
                     )
                 finally:
                     os.unlink(tmp_path)
@@ -1308,7 +1618,7 @@ async def analyze_eeg(
                         )
 
                 raw_mat = np.array(mat_data[eeg_key], dtype=np.float32)
-                logger.info(f"[{job_id}] MAT key='{eeg_key}', raw shape={raw_mat.shape}")
+                logger.info(f"MAT key='{eeg_key}', raw shape={raw_mat.shape}", extra={"job_id": job_id})
 
                 # Accept (channels, time) or (time, channels) and auto-transpose
                 if raw_mat.ndim != 2:
@@ -1349,12 +1659,16 @@ async def analyze_eeg(
             )
 
         # ---- Run inference ----
-        logger.info(f"[{job_id}] Running PhysDeepSIF inference (mode={mode})...")
-        predicted_sources = run_inference(eeg_data)  # (76, 400)
+        logger.info(f"Running PhysDeepSIF inference (mode={mode})...", extra={"job_id": job_id})
+        predicted_sources = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, run_inference, eeg_data),
+            timeout=60.0
+        )
         logger.info(
-            f"[{job_id}] Inference complete: "
+            f"Inference complete: "
             f"source shape {predicted_sources.shape}, "
-            f"range [{predicted_sources.min():.4f}, {predicted_sources.max():.4f}]"
+            f"range [{predicted_sources.min():.4f}, {predicted_sources.max():.4f}]",
+            extra={"job_id": job_id}
         )
 
         # Save results to disk
@@ -1374,7 +1688,7 @@ async def analyze_eeg(
         # MODE: source_localization — ESI activity heatmap
         # ==============================================================
         if mode == 'source_localization':
-            logger.info(f"[{job_id}] Computing source activity metrics...")
+            logger.info(f"Computing source activity metrics...", extra={"job_id": job_id})
             activity_result = compute_source_activity_metrics(predicted_sources)
 
             # ---- Sliding window animation (EDF files with > 1 window) ----
@@ -1384,7 +1698,8 @@ async def analyze_eeg(
 
             if edf_all_windows is not None and edf_window_timestamps is not None:
                 logger.info(
-                    f"[{job_id}] Processing {len(edf_all_windows)} sliding windows..."
+                    f"Processing {len(edf_all_windows)} sliding windows...",
+                    extra={"job_id": job_id}
                 )
                 animated_frames = []
                 frame_timestamps = edf_window_timestamps
@@ -1398,15 +1713,18 @@ async def analyze_eeg(
                         np.array(win_metrics['scores_array'], dtype=np.float32)
                     )
 
-                logger.info(f"[{job_id}] Sliding window processing complete.")
+                logger.info(f"Sliding window processing complete.", extra={"job_id": job_id})
 
-            logger.info(f"[{job_id}] Generating source activity 3D heatmap...")
+            logger.info(f"Generating source activity 3D heatmap...", extra={"job_id": job_id})
             heatmap_html = generate_source_activity_heatmap_html(
                 activity_scores=np.array(activity_result['scores_array']),
                 title="EEG Source Imaging — Estimated Brain Activity",
                 animated_frames=animated_frames,
                 frame_timestamps=frame_timestamps,
             )
+
+            if shutil.disk_usage(RESULTS_DIR).free < MIN_FREE_BYTES:
+                raise HTTPException(status_code=507, detail="Insufficient disk space")
 
             # Save HTML to disk
             heatmap_path = job_dir / "source_activity_heatmap.html"
@@ -1423,63 +1741,15 @@ async def analyze_eeg(
                 json.dump(json_result, f, indent=2)
 
             processing_time = time.time() - start_time
-            logger.info(f"[{job_id}] Complete in {processing_time:.1f}s")
+            logger.info(f"Complete in {processing_time:.1f}s", extra={"job_id": job_id})
 
-            # Extract content for frontend embedding
-            # CRITICAL: Include the external Plotly CDN script so Plotly.js loads in the frontend
-            import re
-            
-            # Extract the external Plotly script from head
-            script_match = re.search(
-                r'<script[^>]*src="https://cdn\.plot\.ly/plotly[^"]*"[^>]*></script>',
-                heatmap_html, re.I
+            plot_content = _extract_plotly_body(heatmap_html)
+            eeg_payload = _build_eeg_payload(
+                eeg_data, SAMPLING_RATE, CHANNEL_NAMES,
+                edf_all_windows=edf_all_windows,
+                edf_window_timestamps=edf_window_timestamps,
+                include_eeg=include_eeg, job_id=job_id,
             )
-            plotly_script = script_match.group(0) if script_match else ''
-            
-            # Extract body content
-            body_match = re.search(
-                r'<body[^>]*>([\s\S]*?)</body>', heatmap_html, re.I
-            )
-            body_content = body_match.group(1) if body_match else heatmap_html
-            
-            # Combine: Plotly script + body HTML (so frontend gets everything needed)
-            plot_content = plotly_script + body_content
-
-            # Prepare EEG data payload for frontend (channels, samplingRate, windowLength, windows)
-            eeg_payload = None
-            if include_eeg:
-                try:
-                    if edf_all_windows is not None and edf_window_timestamps is not None:
-                        windows_payload = []
-                        for start_ts, win in zip(edf_window_timestamps, edf_all_windows):
-                            windows_payload.append({
-                                "startTime": float(start_ts - WINDOW_LENGTH / (2 * SAMPLING_RATE)),
-                                "endTime": float(start_ts + WINDOW_LENGTH / (2 * SAMPLING_RATE)),
-                                "data": win.tolist(),
-                            })
-                        eeg_payload = {
-                            "channels": CHANNEL_NAMES,
-                            "samplingRate": SAMPLING_RATE,
-                            "windowLength": WINDOW_LENGTH,
-                            "windows": windows_payload,
-                        }
-                    else:
-                        # Single-window EEG (use eeg_data)
-                        eeg_payload = {
-                            "channels": CHANNEL_NAMES,
-                            "samplingRate": SAMPLING_RATE,
-                            "windowLength": WINDOW_LENGTH,
-                            "windows": [
-                                {
-                                    "startTime": 0.0,
-                                    "endTime": WINDOW_LENGTH / SAMPLING_RATE,
-                                    "data": eeg_data.tolist(),
-                                }
-                            ],
-                        }
-                except Exception:
-                    logger.exception(f"[{job_id}] Failed to build eeg_payload")
-                    eeg_payload = None
 
             return JSONResponse({
                 "jobId": job_id,
@@ -1514,7 +1784,7 @@ async def analyze_eeg(
         # MODE: biomarkers — Epileptogenicity index heatmap (default)
         # ==============================================================
         else:
-            logger.info(f"[{job_id}] Computing epileptogenicity index...")
+            logger.info(f"Computing epileptogenicity index...", extra={"job_id": job_id})
             ei_result = compute_epileptogenicity_index(
                 predicted_sources,
                 epileptogenic_mask=mask,
@@ -1522,34 +1792,11 @@ async def analyze_eeg(
             )
 
             # ── XAI: Explain top detected region via occlusion ──
-            xai_result = None
-            try:
-                from src.xai.eeg_occlusion import explain_biomarker
+            xai_result = _run_xai(eeg_data, ei_result, region_labels)
+            if xai_result:
+                logger.info(f"XAI complete", extra={"job_id": job_id})
 
-                scores_array = np.array(ei_result['scores_array'])
-                top_region_idx = int(np.argmax(scores_array))
-                top_region_code = region_labels[top_region_idx]
-
-                def _ei_pipeline(win):
-                    sources = run_inference(win)
-                    ei = compute_epileptogenicity_index(sources)
-                    return {"scores": np.array(ei["scores_array"])}
-
-                xai_result = explain_biomarker(
-                    eeg_window=eeg_data.astype(np.float32),
-                    target_region_idx=top_region_idx,
-                    run_pipeline_fn=_ei_pipeline,
-                    occlusion_width=40,
-                    stride=20,
-                )
-                xai_result["target_region"] = top_region_code
-                xai_result["target_region_full"] = format_region_for_display(top_region_code)
-                logger.info(f"[{job_id}] XAI complete: top region {top_region_code} explained")
-            except Exception as e:
-                logger.warning(f"[{job_id}] XAI skipped: {e}")
-                xai_result = None
-
-            logger.info(f"[{job_id}] Generating epileptogenicity 3D heatmap...")
+            logger.info(f"Generating epileptogenicity 3D heatmap...", extra={"job_id": job_id})
             heatmap_html = generate_heatmap_html(
                 ei_scores=np.array(ei_result['scores_array']),
                 title="Epileptogenic Zone Detection",
@@ -1557,6 +1804,8 @@ async def analyze_eeg(
             )
 
             # Save HTML to disk
+            if shutil.disk_usage(RESULTS_DIR).free < MIN_FREE_BYTES:
+                raise HTTPException(status_code=507, detail="Insufficient disk space")
             heatmap_path = job_dir / "brain_heatmap.html"
             with open(heatmap_path, 'w') as f:
                 f.write(heatmap_html)
@@ -1571,64 +1820,15 @@ async def analyze_eeg(
                 json.dump(json_result, f, indent=2)
 
             processing_time = time.time() - start_time
-            logger.info(f"[{job_id}] Complete in {processing_time:.1f}s")
+            logger.info(f"Complete in {processing_time:.1f}s", extra={"job_id": job_id})
 
-            # Extract content for frontend embedding
-            # CRITICAL: Include the external Plotly CDN script so Plotly.js loads in the frontend
-            import re
-            
-            # Extract the external Plotly script from head
-            script_match = re.search(
-                r'<script[^>]*src="https://cdn\.plot\.ly/plotly[^"]*"[^>]*></script>',
-                heatmap_html, re.I
+            plot_content = _extract_plotly_body(heatmap_html)
+            eeg_payload = _build_eeg_payload(
+                eeg_data, SAMPLING_RATE, CHANNEL_NAMES,
+                edf_all_windows=edf_all_windows,
+                edf_window_timestamps=edf_window_timestamps,
+                include_eeg=include_eeg, job_id=job_id,
             )
-            plotly_script = script_match.group(0) if script_match else ''
-            
-            # Extract body content
-            body_match = re.search(
-                r'<body[^>]*>([\s\S]*?)</body>', heatmap_html, re.I
-            )
-            body_content = body_match.group(1) if body_match else heatmap_html
-            
-            # Combine: Plotly script + body HTML (so frontend gets everything needed)
-            plot_content = plotly_script + body_content
-
-            # Prepare EEG payload — include all sliding windows for EDF uploads
-            # so the frontend can show each window's waveform in the biomarker view.
-            eeg_payload = None
-            if include_eeg:
-                try:
-                    if edf_all_windows is not None and edf_window_timestamps is not None:
-                        windows_payload = []
-                        for start_ts, win in zip(edf_window_timestamps, edf_all_windows):
-                            windows_payload.append({
-                                "startTime": float(start_ts - WINDOW_LENGTH / (2 * SAMPLING_RATE)),
-                                "endTime": float(start_ts + WINDOW_LENGTH / (2 * SAMPLING_RATE)),
-                                "data": win.tolist(),
-                            })
-                        eeg_payload = {
-                            "channels": CHANNEL_NAMES,
-                            "samplingRate": SAMPLING_RATE,
-                            "windowLength": WINDOW_LENGTH,
-                            "windows": windows_payload,
-                        }
-                    else:
-                        # Single-window input (NPY/MAT or single-window EDF)
-                        eeg_payload = {
-                            "channels": CHANNEL_NAMES,
-                            "samplingRate": SAMPLING_RATE,
-                            "windowLength": WINDOW_LENGTH,
-                            "windows": [
-                                {
-                                    "startTime": 0.0,
-                                    "endTime": WINDOW_LENGTH / SAMPLING_RATE,
-                                    "data": eeg_data.tolist(),
-                                }
-                            ],
-                        }
-                except Exception:
-                    logger.exception(f"[{job_id}] Failed to build eeg_payload for biomarkers")
-                    eeg_payload = None
 
             return JSONResponse({
                 "jobId": job_id,
@@ -1672,7 +1872,7 @@ async def analyze_eeg(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[{job_id}] Error: {traceback.format_exc()}")
+        logger.error(f"Error: {traceback.format_exc()}", extra={"job_id": job_id})
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1872,6 +2072,13 @@ async def _process_analysis_async(
                 animated_frames=animated_frames,
                 frame_timestamps=frame_timestamps,
             )
+
+            if shutil.disk_usage(RESULTS_DIR).free < MIN_FREE_BYTES:
+                raise HTTPException(status_code=507, detail="Insufficient disk space")
+            heatmap_path = job_dir / "source_activity_heatmap.html"
+            with open(heatmap_path, 'w') as f:
+                f.write(heatmap_html)
+
             _set_job_status(job_id, "completed", 100, "Analysis complete",
                 result={
                     "jobId": job_id,
@@ -1887,36 +2094,15 @@ async def _process_analysis_async(
                 threshold_percentile=threshold_percentile,
             )
 
-            # ── XAI: Explain top detected region via occlusion ──
-            xai_result = None
-            try:
-                from src.xai.eeg_occlusion import explain_biomarker
-                scores_array = np.array(ei_result['scores_array'])
-                top_region_idx = int(np.argmax(scores_array))
-                top_region_code = region_labels[top_region_idx]
-                def _ei_pipeline(win):
-                    sources = run_inference(win)
-                    ei = compute_epileptogenicity_index(sources)
-                    return {"scores": np.array(ei["scores_array"])}
-                xai_result = explain_biomarker(
-                    eeg_window=eeg_data.astype(np.float32),
-                    target_region_idx=top_region_idx,
-                    run_pipeline_fn=_ei_pipeline,
-                    occlusion_width=40, stride=20,
-                )
-                xai_result["target_region"] = top_region_code
-                xai_result["target_region_full"] = format_region_for_display(top_region_code)
-                logger.info(f"[{job_id}] XAI complete: top region {top_region_code} explained")
-            except Exception as e:
-                logger.warning(f"[{job_id}] XAI skipped: {e}")
-                xai_result = None
+            xai_result = _run_xai(eeg_data, ei_result, region_labels)
+            if xai_result:
+                logger.info(f"XAI complete", extra={"job_id": job_id})
 
             heatmap_html = generate_heatmap_html(
                 ei_scores=np.array(ei_result['scores_array']),
                 title="Epileptogenic Zone Detection",
                 top_k=5,
             )
-            # Save scores JSON (mirrors sync path)
             scores_path = job_dir / "epileptogenicity_scores.json"
             json_result = {
                 k: v for k, v in ei_result.items()
@@ -1925,32 +2111,80 @@ async def _process_analysis_async(
             with open(scores_path, 'w') as f:
                 json.dump(json_result, f, indent=2)
 
-            _set_job_status(job_id, "completed", 100, "Analysis complete",
-                result={
-                    "jobId": job_id,
-                    "status": "completed",
-                    "mode": "biomarkers",
-                    "fullHtmlPath": f"/api/results/{job_id}/brain_heatmap.html",
-                    "xai": xai_result,
-                    "epileptogenicity": {
-                        "scores": list(ei_result.get('scores', {}).items()),
-                        "epileptogenic_regions": ei_result.get('epileptogenic_regions', []),
-                        "epileptogenic_regions_full": ei_result.get('epileptogenic_regions_full', []),
-                        "threshold": ei_result.get('threshold'),
-                        "threshold_percentile": ei_result.get('threshold_percentile'),
-                        "max_score_region": ei_result.get('max_score_region'),
-                        "max_score": ei_result.get('max_score'),
-                    },
-                }
+            # Save heatmap NOW so frontend can load via fullHtmlPath
+            if shutil.disk_usage(RESULTS_DIR).free < MIN_FREE_BYTES:
+                raise HTTPException(status_code=507, detail="Insufficient disk space")
+            heatmap_path = job_dir / "brain_heatmap.html"
+            with open(heatmap_path, 'w') as f:
+                f.write(heatmap_html)
+
+            # Build common result payload (shared between phase_a and completed)
+            result_payload = {
+                "jobId": job_id,
+                "mode": "biomarkers",
+                "fullHtmlPath": f"/api/results/{job_id}/brain_heatmap.html",
+                "xai": xai_result,
+                "epileptogenicity": {
+                    "scores": list(ei_result.get('scores', {}).items()),
+                    "epileptogenic_regions": ei_result.get('epileptogenic_regions', []),
+                    "epileptogenic_regions_full": ei_result.get('epileptogenic_regions_full', []),
+                    "threshold": ei_result.get('threshold'),
+                    "threshold_percentile": ei_result.get('threshold_percentile'),
+                    "max_score_region": ei_result.get('max_score_region'),
+                    "max_score": ei_result.get('max_score'),
+                },
+            }
+
+            # Phase A complete — WS stays open for CMA-ES progress
+            _set_job_status(job_id, "phase_a_complete", 70,
+                "Biomarker detection complete. Running biophysical validation...",
+                result=result_payload,
+                cmaes_phase="scheduled", cmaes_generation=0,
+                cmaes_max_generations=CMAES_MAX_GENERATIONS,
             )
 
-        heatmap_filename = "source_activity_heatmap.html" if mode == "source_localization" else "brain_heatmap.html"
-        heatmap_path = job_dir / heatmap_filename
-        with open(heatmap_path, 'w') as f:
-            f.write(heatmap_html)
+            # Phase B: CMA-ES biophysical inversion (runs in executor thread)
+            try:
+                if connectivity_weights is None or tract_lengths is None:
+                    raise RuntimeError("CMA-ES data files not loaded at startup")
+                heuristic_scores = np.array(ei_result.get('scores_array', []), dtype=np.float32)
+
+                cmaes_out = await asyncio.to_thread(
+                    _run_cmaes_inversion,
+                    job_id, eeg_data,
+                    leadfield_matrix, connectivity_weights,
+                    region_centers, tract_lengths,
+                    region_labels, heuristic_scores,
+                )
+
+                result_payload["status"] = "completed"
+                result_payload["concordance"] = cmaes_out["concordance"]
+                result_payload["cmaes"] = {
+                    "status": "completed",
+                    "best_score": cmaes_out["best_score"],
+                    "generations": cmaes_out["generations"],
+                }
+
+                _set_job_status(job_id, "completed", 100,
+                    "Analysis complete — biophysical validation concordant",
+                    result=result_payload,
+                    cmaes_phase="completed",
+                    cmaes_generation=CMAES_MAX_GENERATIONS,
+                    cmaes_max_generations=CMAES_MAX_GENERATIONS,
+                )
+            except Exception as cmae_err:
+                logger.warning(f"CMA-ES skipped: {cmae_err}", extra={"job_id": job_id})
+                result_payload["status"] = "completed"
+                result_payload["concordance"] = None
+                result_payload["cmaes"] = {"status": "failed", "error": str(cmae_err)}
+                _set_job_status(job_id, "completed", 100,
+                    "Analysis complete (biophysical validation skipped)",
+                    result=result_payload,
+                    cmaes_phase="failed",
+                )
 
     except Exception as e:
-        logger.error(f"[{job_id}] Async processing failed: {e}")
+        logger.error(f"Async processing failed: {e}", extra={"job_id": job_id})
         _set_job_status(job_id, "failed", 0, str(e))
 
 
@@ -1959,15 +2193,17 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
     await websocket.accept()
     try:
         while True:
-            if job_id in active_jobs:
-                await websocket.send_json(active_jobs[job_id])
-                if active_jobs[job_id].get("status") in ("completed", "failed"):
-                    break
+            with active_jobs_lock:
+                if job_id in active_jobs:
+                    await websocket.send_json(active_jobs[job_id])
+                    if active_jobs[job_id].get("status") in ("completed", "failed"):
+                        break
             await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         pass
     finally:
-        active_jobs.pop(job_id, None)
+        with active_jobs_lock:
+            active_jobs.pop(job_id, None)
 
 
 # ========================================================================
@@ -1981,4 +2217,5 @@ if __name__ == "__main__":
         port=8000,
         reload=False,
         log_level="info",
+        timeout_keep_alive=30,
     )

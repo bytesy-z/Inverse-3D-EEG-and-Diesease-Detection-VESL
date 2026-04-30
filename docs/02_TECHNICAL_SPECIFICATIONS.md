@@ -11,13 +11,19 @@
 3. [Phase 1: Forward Modeling and Synthetic Data Generation](#3-phase-1-forward-modeling-and-synthetic-data-generation)
 4. [Phase 2: PhysDeepSIF Network Architecture and Training](#4-phase-2-physdeepsif-network-architecture-and-training)
 5. [Phase 3: Real EEG Preprocessing and Inference](#5-phase-3-real-eeg-preprocessing-and-inference)
-6. [Phase 4: Patient-Specific Parameter Inversion](#6-phase-4-patient-specific-parameter-inversion)
-7. [Phase 5: Validation Framework](#7-phase-5-validation-framework)
-8. [Data Formats and Inter-Module Interfaces](#8-data-formats-and-inter-module-interfaces)
-9. [Web Application (Demo Interface)](#9-web-application-demo-interface)
-10. [Project Directory Structure](#10-project-directory-structure)
-11. [Academic References and Justifications](#11-academic-references-and-justifications)
-12. [Project Completion Status](#12-project-completion-status)
+6. [Corrected DLE Metric](#6-corrected-dle-metric)
+7. [CMA-ES Concordance Engine](#7-cma-es-concordance-engine)
+8. [XAI Occlusion Module](#8-xai-occlusion-module)
+9. [Updated System Architecture](#9-updated-system-architecture)
+10. [Rationale for β=0.0](#10-rationale-for-β00)
+11. [Engineering Architecture](#11-engineering-architecture)
+12. [Phase 4: Patient-Specific Parameter Inversion](#12-phase-4-patient-specific-parameter-inversion)
+13. [Phase 5: Validation Framework](#13-phase-5-validation-framework)
+14. [Data Formats and Inter-Module Interfaces](#14-data-formats-and-inter-module-interfaces)
+15. [Web Application (Demo Interface)](#15-web-application-demo-interface)
+16. [Project Directory Structure](#16-project-directory-structure)
+17. [Academic References and Justifications](#17-academic-references-and-justifications)
+18. [Project Completion Status](#18-project-completion-status)
 
 ---
 
@@ -693,7 +699,7 @@ The model remains compact relative to the original DeepSIF (~2M parameters).
 
 **Best model metrics** (epoch 8, validation set):
 
-| Metric | Value | Target (Section 7.1.1) | Status |
+| Metric | Value | Target (Section 13.1.1) | Status |
 |--------|-------|----------------------|--------|
 | Validation loss | 1.0105 | Minimize | — |
 | DLE | 15.48 mm | < 20 mm | ✅ Pass |
@@ -1007,9 +1013,244 @@ with torch.no_grad():
 
 ---
 
-# 6. Phase 4: Patient-Specific Parameter Inversion
+# 6. Corrected DLE Metric
 
-## 6.1 Problem Formulation
+## 6.1 Centroid-Based Distance Localization Error
+
+The Distance Localization Error (DLE) measures the spatial accuracy of source imaging. After extensive evaluation, the centroid-based DLE was adopted over the max-point variant.
+
+**Definition:**
+$$\text{DLE}_{\text{centroid}} = \|\mathbf{C}_{\text{true}} - \mathbf{C}_{\text{pred}}\|_2$$
+
+where $\mathbf{C}_{\text{true}}$ and $\mathbf{C}_{\text{pred}}$ are the 3D centroids of active source regions, computed as:
+
+$$\mathbf{C} = \frac{\sum_i (s_i \cdot \mathbf{r}_i)}{\sum_i s_i}$$
+
+with $s_i$ the source activity at region $i$ and $\mathbf{r}_i = (x_i, y_i, z_i)$ the region centroid coordinates.
+
+**Rationale:** On the 19→76 inverse problem, all methods including the oracle (self-DLE of true sources) perform near-randomly under max-point DLE. Centroid DLE provides meaningful discrimination:
+
+| Method | Centroid DLE (mm) |
+|--------|-------------------|
+| Oracle (self-DLE) | 15.6 |
+| PhysDeepSIF β=0.0 | 31.1 |
+| v1 (March) | 32.8 |
+| MNE | 49.6 |
+| eLORETA | 53.5 |
+| dSPM | 54.6 |
+| sLORETA | 56.5 |
+| Random | 53.7 |
+
+## 6.2 Asymmetric Mask Convention
+
+The mask convention used for DLE evaluation is **asymmetric**:
+- **Predicted:** all 76 regions contribute to the centroid (no threshold)
+- **True:** only epileptogenic regions (from ground-truth mask) contribute
+
+This matches clinical reality where the model produces a distributed estimate while the ground truth is focal.
+
+---
+
+# 7. CMA-ES Concordance Engine
+
+## 7.1 Purpose
+
+The concordance engine cross-validates the fast heuristic biomarker detection (Phase A) against a slow but biophysically principled CMA-ES inversion (Phase B). This provides a confidence estimate for detected epileptogenic zones without requiring stereotactic EEG ground truth.
+
+## 7.2 Algorithm
+
+**Phase A — Heuristic EI (Biomarker Detection, ~1 second):**
+1. PhysDeepSIF predicts source activity Ŝ ∈ ℝ⁷⁶ˣ⁴⁰⁰ from patient EEG
+2. Per-region temporal variance (AC power): Pᵢ = Var(Ŝᵢ)
+3. Z-score normalization: Zᵢ = (Pᵢ − μ(P)) / σ(P)
+4. Sigmoid: EI_heuristicᵢ = σ(Zᵢ) ∈ [0, 1]
+5. Top-10 regions reported as preliminary candidates
+
+**Phase B — Biophysical EI (CMA-ES, ~7 minutes):**
+1. CMA-ES optimizes excitability vector x₀ ∈ ℝ⁷⁶ to match patient EEG PSD
+2. Population size 14, 30 generations, bounds [−2.4, −1.0], σ = 0.3
+3. Objective: J(x₀) = MSE(PSD_sim, PSD_target) + 0.1·∑(x₀ + 2.2)²
+4. PSD_sim from Epileptor simulation → leadfield → Welch PSD
+5. Biophysical EI: EI_bioᵢ = σ((x₀*ᵢ + 2.2) / 0.15)
+
+**Concordance Scoring:**
+```
+overlap = |top10(EI_heuristic) ∩ top10(EI_bio)|
+tier = HIGH if overlap ≥ 5
+       MODERATE if 2 ≤ overlap ≤ 4
+       LOW if overlap ≤ 1
+```
+
+## 7.3 Clinical Interpretation
+
+| Tier | Overlap | Display |
+|------|---------|---------|
+| HIGH | ≥5/10 | Both methods independently agree: strong evidence |
+| MODERATE | 2–4/10 | Partial agreement: correlate with clinical findings |
+| LOW | ≤1/10 | Methods disagree: consider longer recording or stereo-EEG |
+
+## 7.4 Implementation
+
+Module `src/phase4_inversion/`:
+- `cmaes_optimizer.py`: fit_patient() wraps cmaes library
+- `objective_function.py`: build_objective() returns TVB Epileptor simulation ↔ PSD closure
+- `concordance.py`: compute_concordance() performs top-K overlap
+- `epileptogenicity_index.py`: compute_biophysical_ei() maps x₀ → EI via logistic
+
+Server runs Phase B via `asyncio.to_thread()` to avoid event loop blocking. Progress broadcast via WebSocket at `/ws/{job_id}`.
+
+---
+
+# 8. XAI Occlusion Module
+
+## 8.1 Method
+
+Occlusion-based attribution identifies EEG channels and time segments that most influence the epileptogenicity score for the top-detected region.
+
+## 8.2 Algorithm
+
+1. Identify top-scoring epileptogenic region R* from Phase A
+2. Occlusion window: 200 ms width (40 samples at 200 Hz), 100 ms stride (20 samples)
+3. For each channel-time occlusion:
+   a. Mask EEG by setting occluded segment to zero
+   b. Re-run biomarker pipeline on occluded EEG
+   c. Record EI change ΔEI = EI_original − EI_occluded
+4. Aggregate:
+   - Channel importance: mean ΔEI across time per channel (19-dim)
+   - Time importance: mean ΔEI across channels per segment (T-dim)
+
+## 8.3 Frontend Display
+
+Horizontal bar chart for channel importance, time-segment heatmap, and overlay on EEG waveform.
+
+## 8.4 Implementation
+
+Module `src/xai/eeg_occlusion.py`: function `explain_biomarker()`. Called from `backend/server.py:_run_xai()`.
+
+---
+
+# 9. Updated System Architecture
+
+## 9.1 Pipeline
+
+```
+Patient uploads EDF (19ch, 200Hz)
+    │
+    ▼
+[Preprocessing: MNE → bandpass 0.5–70 Hz → notch 50 Hz → 2s windows → z-score]
+    │
+    ▼
+[PhysDeepSIF: SpatialModule (19→128→256→256→128→76) + BiLSTM (hidden=76)]  →  410k params
+    │
+    ├── Phase A — Biomarker Detection (~1s)
+    │   AC variance → z-score → sigmoid → EI ∈ [0,1] → Top-10 candidates
+    │
+    ├── Phase B — CMA-ES Concordance (~7 min, auto-started)
+    │   CMA-ES → x₀ → Epileptor simulation → PSD match → concordance tier
+    │
+    └── XAI — Occlusion Attribution
+        Mask EEG segments → measure EI change → channel/time importance
+```
+
+## 9.2 Dimensional Constants
+
+| Symbol | Value | Description |
+|--------|-------|-------------|
+| N_REGIONS | 76 | Desikan-Killiany parcellation |
+| N_CHANNELS | 19 | 10-20 montage |
+| FS | 200 Hz | Sampling rate |
+| WINDOW_LENGTH | 400 | 2s per segment |
+| MODEL_PARAMS | 410,000 | PhysDeepSIF |
+| CMAES_POP | 14 | Per generation |
+| CMAES_GENS | 30 | Max generations |
+
+## 9.3 Deployment
+
+```
+Browser (Next.js :3000) ←→ FastAPI Backend (:8000)
+  HTTP REST + WebSocket /ws/{job_id}
+```
+
+---
+
+# 10. Rationale for β=0.0 (Physics-Free Loss)
+
+## 10.1 Key Insight
+
+The forward loss term β·∥L·Ŝ − EEG∥² degrades performance. Controlled experiments show β=0.0 is optimal.
+
+## 10.2 Experimental Evidence
+
+| β | DLE (mm) | AUC | Temporal Corr |
+|---|----------|-----|---------------|
+| 0.0 | 31.08 | 0.697 | 0.274 |
+| 0.01 | 32.5 | 0.681 | 0.265 |
+| 0.1 | 35.2 | 0.662 | 0.251 |
+| 1.0 | 38.9 | 0.621 | 0.203 |
+
+Increasing β monotonically degrades all metrics. The gradient Lᵀ(L·Ŝ − EEG) pulls toward the pseudoinverse (DLE ≈ 50 mm).
+
+## 10.3 SVD Analysis
+
+Leadfield L ∈ ℝ¹⁹ˣ⁷⁶ has rank 18, nullspace dimension 58 (76% of source space). Forward loss gradients in the nullspace are pure noise.
+
+## 10.4 Conclusion
+
+Physics information is encoded through TVB training data (80k samples), not explicit loss constraints.
+
+---
+
+# 11. Engineering Architecture
+
+## 11.1 Concurrency Model
+
+| Component | Model | Notes |
+|-----------|-------|-------|
+| HTTP endpoints | FastAPI async | Non-blocking I/O |
+| Model inference | Synchronous in event loop | Sub-second |
+| CMA-ES inversion | `asyncio.to_thread()` | ~7 min, prevents blocking |
+| Shared state | `threading.Lock()` on `active_jobs` | Cross-thread safe |
+| Cleanup tasks | `asyncio.create_task()` | 5-min / 1-hour periodic |
+
+## 11.2 Error Handling
+
+| Scenario | Response | Mechanism |
+|----------|----------|-----------|
+| Model not loaded | 503 | None guard in run_inference() |
+| NaN/Inf input | 400 | np.isfinite() check |
+| Request timeout | Raised | asyncio.wait_for(60s) |
+| Disk full | 507 | shutil.disk_usage() guard |
+| Rate limit | 429 | Token bucket, 100/min/IP |
+| CMA-ES failure | Graceful | Caught, concordance=null |
+
+## 11.3 Security
+
+- Path traversal: `Path.resolve().is_relative_to()`
+- CORS: explicit origins, methods, headers
+- Body limit: 200 MB for EDF
+- Rate limiting: per-IP token bucket
+
+## 11.4 Monitoring
+
+- Structured JSON logging via JsonFormatter
+- Rotating file: 10 MB, 5 backups to `outputs/logs/backend.log`
+- Health endpoint: uptime, model status, disk, degraded flag
+- Result cleanup: 24h TTL
+
+## 11.5 Testing
+
+- Unit: 18 files (losses, metrics, modules, trainer, CMA-ES)
+- Functional: 4 files
+- System: 4 files
+- Integration: 3 files (server lifecycle)
+- Regression: 3 files (known bug prevention)
+- API error paths: 15 test cases
+
+---
+
+# 12. Phase 4: Patient-Specific Parameter Inversion
+
+## 12.1 Problem Formulation
 
 **Goal**: Find the excitability vector $\mathbf{x}_0 \in \mathbb{R}^{76}$ such that a TVB simulation with those parameters produces source activity and EEG that match the patient's observed data.
 
@@ -1019,7 +1260,7 @@ with torch.no_grad():
 
 $$J(\mathbf{x}_0) = w_1 \cdot J_{source}(\mathbf{x}_0) + w_2 \cdot J_{eeg}(\mathbf{x}_0) + w_3 \cdot J_{reg}(\mathbf{x}_0)$$
 
-### 6.1.1 Source Similarity Term
+### 12.1.1 Source Similarity Term
 
 $$J_{source}(\mathbf{x}_0) = 1 - \frac{1}{N_r} \sum_{i=1}^{N_r} \text{corr}\left( P_i^{sim}(\mathbf{x}_0),\; P_i^{est} \right)$$
 
@@ -1032,7 +1273,7 @@ Alternatively, using a power-profile matching metric:
 
 $$J_{source}(\mathbf{x}_0) = \frac{\| \mathbf{P}^{sim} - \mathbf{P}^{est} \|_2}{\| \mathbf{P}^{est} \|_2}$$
 
-### 6.1.2 EEG Similarity Term
+### 12.1.2 EEG Similarity Term
 
 $$J_{eeg}(\mathbf{x}_0) = 1 - \frac{1}{N_c} \sum_{j=1}^{N_c} \rho\left( \text{PSD}_j^{sim}(\mathbf{x}_0),\; \text{PSD}_j^{real} \right)$$
 
@@ -1045,7 +1286,7 @@ PSD is computed using Welch's method (`scipy.signal.welch`) with:
 - Overlap: 50%
 - Frequency range: 1–70 Hz
 
-### 6.1.3 Regularization Term
+### 12.1.3 Regularization Term
 
 $$J_{reg}(\mathbf{x}_0) = \frac{1}{N_r} \sum_{i=1}^{N_r} \max(0, x_{0,i} + 1.2)^2 + \frac{1}{N_r} \sum_{i=1}^{N_r} \max(0, -2.4 - x_{0,i})^2 + \lambda_{sparse} \cdot \frac{1}{N_r} \sum_{i=1}^{N_r} \max(0, x_{0,i} + 2.0)$$
 
@@ -1053,7 +1294,7 @@ This regularization:
 1. Penalizes excitability values outside the physiological range.
 2. Encourages sparsity of epileptogenic regions (most regions should remain at healthy $x_0 \leq -2.0$).
 
-### 6.1.4 Objective Weights
+### 12.1.4 Objective Weights
 
 | Weight | Symbol | Value | Justification |
 |--------|--------|-------|---------------|
@@ -1062,7 +1303,7 @@ This regularization:
 | Regularization | $w_3$ | 0.2 | Prevent overfitting to noise |
 | Sparsity | $\lambda_{sparse}$ | 0.1 | Neurological prior: focal epilepsy involves few regions |
 
-## 6.2 Optimization Algorithm
+## 12.2 Optimization Algorithm
 
 ### CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
 
@@ -1117,9 +1358,9 @@ for generation in range(max_generations):
 
 As a secondary approach, we implement Bayesian optimization with Gaussian Process surrogate, following the BVEP framework (Hashemi et al., 2020). This provides uncertainty estimates on the inferred parameters but is more computationally expensive.
 
-## 6.3 Epileptogenicity Heatmap Construction
+## 12.3 Epileptogenicity Heatmap Construction
 
-### 6.3.1 Epileptogenicity Index (EI)
+### 12.3.1 Epileptogenicity Index (EI)
 
 From the optimized $\mathbf{x}_0^*$ vector:
 
@@ -1129,9 +1370,9 @@ where $x_{0,min} = -2.4$, $x_{0,max} = -1.0$. This maps the excitability to $[0,
 
 **Thresholding**: Regions with $\text{EI}_i > 0.5$ (corresponding to $x_0 > -1.7$) are classified as epileptogenic. This threshold corresponds approximately to the bifurcation boundary of the Epileptor where the system transitions from stable to oscillatory behavior (Jirsa et al., 2014).
 
-### 6.3.2 Visualization
+### 12.3.2 Visualization
 
-Visualization is delivered through the web application (Section 9) using Plotly Mesh3d on the fsaverage5 cortical surface. The 76-region EI values are mapped onto the cortical mesh by assigning each vertex to its nearest DK76 region center (Euclidean distance in MNI space).
+Visualization is delivered through the web application (Section 15) using Plotly Mesh3d on the fsaverage5 cortical surface. The 76-region EI values are mapped onto the cortical mesh by assigning each vertex to its nearest DK76 region center (Euclidean distance in MNI space).
 
 **Two visualization modes** are implemented:
 
@@ -1158,7 +1399,7 @@ Output:
 - Interactive 3D HTML embedded in the web application via iframe
 - Top detected regions listed as labeled badges in the UI
 
-### 6.3.3 Explainable AI (XAI) for Biomarker Evidence
+### 12.3.3 Explainable AI (XAI) for Biomarker Evidence
 
 To improve clinical interpretability, the biomarkers pipeline includes a lightweight post-hoc XAI module that identifies which parts of the EEG most influenced a detected epileptogenic region. The goal is not to explain the full TVB or neural dynamics mechanistically, but to expose the model evidence used by the biomarker score in a clinician-readable form.
 
@@ -1216,11 +1457,11 @@ This module explains the model's decision evidence, not causal neurophysiology. 
 
 ---
 
-# 7. Phase 5: Validation Framework
+# 13. Phase 5: Validation Framework
 
-## 7.1 Synthetic Data Validation (Inverse Solver)
+## 13.1 Synthetic Data Validation (Inverse Solver)
 
-### 7.1.1 Metrics on Held-Out Synthetic Test Set
+### 13.1.1 Metrics on Held-Out Synthetic Test Set
 
 | Metric | Definition | Acceptable Threshold | Reference |
 |--------|------------|---------------------|-----------|
@@ -1232,7 +1473,7 @@ This module explains the model's decision evidence, not causal neurophysiology. 
 | Temporal correlation | Pearson $r$ between predicted and true source waveforms in active regions | > 0.7 | Sun et al. (2022) |
 | F1 Score | Harmonic mean of precision and recall for epileptogenic region detection | > 0.6 | Standard |
 
-### 7.1.2 Comparison to Classical Inverse Methods
+### 13.1.2 Comparison to Classical Inverse Methods
 
 We compare PhysDeepSIF against the following classical baselines, all computed using MNE-Python:
 
@@ -1243,13 +1484,13 @@ We compare PhysDeepSIF against the following classical baselines, all computed u
 
 For each method, we adapt the vertex-level solutions to the 76-region parcellation by averaging within each DK parcel.
 
-### 7.1.3 Noise Robustness Analysis
+### 13.1.3 Noise Robustness Analysis
 
 Evaluate all metrics at SNR levels: 5, 10, 15, 20, 30 dB. Plot metric vs. SNR curves.
 
-## 7.2 Patient-Level Validation (Epileptogenicity Heatmaps)
+## 13.2 Patient-Level Validation (Epileptogenicity Heatmaps)
 
-### 7.2.1 Intra-Patient Consistency
+### 13.2.1 Intra-Patient Consistency
 
 For each patient, generate heatmaps from:
 - 5 different non-overlapping EEG segments
@@ -1258,13 +1499,13 @@ For each patient, generate heatmaps from:
 
 **Acceptable**: Mean pairwise $\rho > 0.7$.
 
-### 7.2.2 Cross-Segment Stability
+### 13.2.2 Cross-Segment Stability
 
 Bootstrap analysis: randomly sample 50% of available epochs, run full pipeline, repeat 20 times. Report coefficient of variation (CV) of EI per region.
 
 **Acceptable**: Median CV < 0.3 across regions.
 
-### 7.2.3 Comparison to Clinical Labels
+### 13.2.3 Comparison to Clinical Labels
 
 The NMT dataset provides binary normal/abnormal labels at the recording level. We can validate:
 
@@ -1272,7 +1513,7 @@ The NMT dataset provides binary normal/abnormal labels at the recording level. W
 2. **Abnormal recordings should produce non-trivial heatmaps**: For abnormal recordings, at least one region should have $\text{EI} > 0.5$.
 3. **Discriminability**: Compute AUROC for distinguishing normal from abnormal recordings using $\max(\text{EI})$ as the score.
 
-### 7.2.4 Goodness-of-Fit Metrics for Parameter Inversion
+### 13.2.4 Goodness-of-Fit Metrics for Parameter Inversion
 
 | Metric | Formula | Acceptable |
 |--------|---------|------------|
@@ -1281,7 +1522,7 @@ The NMT dataset provides binary normal/abnormal labels at the recording level. W
 | Relative EEG error | $\frac{\|EEG^{sim} - EEG^{real}\|_F}{\|EEG^{real}\|_F}$ | < 0.5 |
 | Convergence | Final $J$ value relative to initial | < 0.3 × initial |
 
-### 7.2.5 XAI Plausibility Validation
+### 13.2.5 XAI Plausibility Validation
 
 For recordings with expert annotations or clearly abnormal channels, the EEG attribution map is evaluated qualitatively for plausibility:
 
@@ -1293,9 +1534,9 @@ For the NMT sample `0001082.edf`, the expected abnormal channels are FP2/F4/F8 f
 
 ---
 
-# 8. Data Formats and Inter-Module Interfaces
+# 14. Data Formats and Inter-Module Interfaces
 
-## 8.1 Interface Specification Table
+## 14.1 Interface Specification Table
 
 | From Module | To Module | Data Object | Format | Shape | dtype |
 |-------------|-----------|-------------|--------|-------|-------|
@@ -1322,7 +1563,7 @@ For the NMT sample `0001082.edf`, the expected abnormal channels are FP2/F4/F8 f
 | Web Backend | Web Frontend | `nWindowsProcessed` | integer | scalar | int |
 | Web Backend | Web Frontend | `hasAnimation` | boolean | scalar | bool |
 
-## 8.2 Configuration File Format
+## 14.2 Configuration File Format
 
 A single YAML configuration file controls all modules:
 
@@ -1450,11 +1691,11 @@ heatmap:
 
 ---
 
-# 9. Web Application (Demo Interface)
+# 15. Web Application (Demo Interface)
 
 The web application provides a clinical-grade, interactive demo interface for the PhysDeepSIF pipeline. It exposes both EEG Source Imaging and Epileptogenic Zone Detection through a **unified analysis dashboard** (`/analysis`) where users upload one EEG file and switch between the two views via tabs.
 
-## 9.1 Architecture
+## 15.1 Architecture
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -1489,7 +1730,7 @@ The frontend proxies all `/api/*` requests to the FastAPI backend via Next.js AP
 
 **Startup**: `start.sh` manages both servers (start/stop/kill). Backend binds to port 8000, frontend to port 3000.
 
-## 9.2 Backend API Endpoints
+## 15.2 Backend API Endpoints
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -1601,7 +1842,7 @@ Both modes generate Plotly HTML via `fig.to_html(include_plotlyjs='cdn', full_ht
 
 The Plotly-native play/pause buttons and timeline slider are the sole animation controls. The frontend's `BrainVisualization` component can dynamically adjust frame duration via `Plotly.relayout()` for speed control.
 
-## 9.3 Frontend Design System
+## 15.3 Frontend Design System
 
 ### Theme Tokens (`lib/theme.ts`)
 
@@ -1632,7 +1873,7 @@ Both visualization modes use dark canvas (`#1a1a2e`) with light text. ESI uses t
 - `.plotly-container iframe` has `border: none`, `width: 100%`, `height: 100%`, `min-height: 420px`
 - Fade-in utility animation for smooth content loading
 
-## 9.4 Frontend Components
+## 15.4 Frontend Components
 
 ### Shared Layout — `components/app-shell.tsx`
 
@@ -1715,7 +1956,7 @@ Compact card shown during inference: Loader2 spinner, monospace timer (elapsed s
 
 Uses shadcn `Alert` / `AlertTitle` / `AlertDescription` with destructive variant for error display.
 
-## 9.5 Frontend Pages
+## 15.5 Frontend Pages
 
 ### Landing Page (`/`)
 
@@ -1750,7 +1991,7 @@ Single dark-themed page that handles both Source Localization and Biomarker Dete
 
 These use Next.js `redirect()` from `next/navigation` for server-side redirects.
 
-## 9.6 Visualization Pipeline
+## 15.6 Visualization Pipeline
 
 Both modes use the same 3D rendering pipeline:
 
@@ -1772,7 +2013,7 @@ For EDF recordings longer than a single 400-sample (2s) window:
 - **Autoplay**: Disabled via `auto_play=False` in `fig.to_html()` — user must explicitly click play
 - **Bottom margin**: `b=60` on animated figures to ensure slider visibility
 
-## 9.7 Web Dependencies
+## 15.7 Web Dependencies
 
 ### Backend (Python)
 
@@ -1798,7 +2039,7 @@ For EDF recordings longer than a single 400-sample (2s) window:
 
 ---
 
-# 10. Project Directory Structure
+# 16. Project Directory Structure
 
 ```
 fyp-2.0/
@@ -1957,9 +2198,9 @@ fyp-2.0/
 
 ---
 
-# 11. Academic References and Justifications
+# 17. Academic References and Justifications
 
-## 11.1 Core Methodological References
+## 17.1 Core Methodological References
 
 | Component | Reference | Justification |
 |-----------|-----------|---------------|
@@ -1976,7 +2217,7 @@ fyp-2.0/
 | Physics-informed source imaging | 3D-PIUNet — "Enhancing Brain Source Reconstruction through Physics-Informed Deep Learning." arXiv:2411.00143, 2024. | Physics-informed neural network for EEG source localization with forward consistency constraints. |
 | Virtual epilepsy cohort | "Virtual epilepsy patient cohort: Generation and evaluation." *PLoS Comput. Biol.*, 2024. | Validates $x_0$ range [−2.2, −1.2] for epileptogenicity mapping in cohort studies. |
 
-## 11.2 Justification for Key Design Decisions
+## 17.2 Justification for Key Design Decisions
 
 ### Why train on synthetic data?
 
@@ -2008,7 +2249,7 @@ PSD matching via Pearson correlation of log-PSDs is standard in model-fitting co
 
 ---
 
-## 11.3 Key Equations Summary
+## 17.3 Key Equations Summary
 
 ### Forward Model
 $$\text{EEG}(t) = \mathbf{L} \cdot \mathbf{S}(t) + \boldsymbol{\eta}(t)$$
@@ -2027,7 +2268,7 @@ $$\text{EI}_i = \frac{x_{0,i}^* - x_{0,min}}{x_{0,max} - x_{0,min}}, \quad i = 1
 
 ---
 
-## 12. PROJECT COMPLETION STATUS (Last Updated: 2026-03-03)
+## 18. PROJECT COMPLETION STATUS (Last Updated: 2026-03-03)
 
 ### Phase 1: Forward Modeling and Synthetic Data Generation — ✅ SUBSTANTIALLY COMPLETE
 
@@ -2248,9 +2489,9 @@ The per-frame adaptive approach (for alpha) is necessary because:
 - ✅ **Side-by-side layout (W4d)**: Source Localization view uses `lg:grid-cols-2` to place EEG waveform and 3D brain side by side on wide screens.
 - ✅ **Frame synchronization (W4d)**: `BrainVisualization` listens to Plotly’s `plotly_animatingframe` event and calls `onFrameChange(frameIndex)`. The analysis page passes `onFrameChange={setSelectedWindow}`, so the EEG waveform automatically scrolls to the active window as the brain animation plays.
 - ✅ **Multi-window EEG in Biomarkers mode (W4c fix)**: Backend biomarkers branch now sends all sliding windows (not just the first) in the `eegData` payload, matching source localization mode behavior.
-- ✅ **`eegData` API field (W4c)**: Both `/api/analyze-eeg` and `/api/physdeepsif` proxy routes pass `eegData` through to the frontend; field documented in §9.2 response schemas.
+- ✅ **`eegData` API field (W4c)**: Both `/api/analyze-eeg` and `/api/physdeepsif` proxy routes pass `eegData` through to the frontend; field documented in §15.2 response schemas.
 - ✅ Clean demo UI: no debug information, no threshold controls, no ground truth exposure
-- See Section 9 for full technical details
+- See Section 15 for full technical details
 
 ### Dataset Generation Status
 
@@ -2273,8 +2514,8 @@ The per-frame adaptive approach (for alpha) is necessary because:
 | Spatial-spectral structure | Not specified (implicit uniform) | STFT-based integrated spectral shaping with delta/theta suppression, adaptive alpha redistribution, and fixed beta gradient gains, applied during generation in `synthetic_dataset.py` | Standard forward models (leadfield × sources) lack anteroposterior gradients and have wrong band power distribution (alpha 12% vs clinical 30%); integrated approach corrects both absolute spectrum and spatial gradients; no prior ESI paper addresses this; reduces synthetic-to-real domain gap |
 | Test set amplitude | Generated with scaled leadfield | Auto-detected and corrected (~13× too large) | Test split was generated before leadfield scale (13.736191) was applied; post-processor detects via RMS comparison to training reference and applies correction |
 | Source normalization | Global z-score only (§3.4.5 v1) | Per-region temporal de-meaning + global z-score (§3.4.5 v2) | Epileptor x2-x1 DC offset (98.1% of signal power) masks the dynamics component (1.9%) which carries the epileptogenicity-discriminative information. De-meaning aligns with AC-coupled clinical EEG and focuses MSE loss on the useful variance signal. See §4.4.7 for full analysis |
-| Visualization | nilearn glass brain / pyvista (§6.3.2 v1) | Plotly Mesh3d on fsaverage5 cortical surface (§6.3.2 v2) | Web-native interactive 3D visualization; no server-side rendering required; supports Plotly animation frames for temporal playback; two distinct colorschemes for ESI (inferno) vs biomarkers (top-K warm gradient) |
-| Heatmap thresholding | Continuous EI > 0.5 (§6.3.1) | Top-K=5 hard threshold with binary coloring | Continuous colorscale made entire brain appear orange; hard threshold provides clinical-style clarity with sharp separation between detected and non-detected regions |
+| Visualization | nilearn glass brain / pyvista (§12.3.2 v1) | Plotly Mesh3d on fsaverage5 cortical surface (§12.3.2 v2) | Web-native interactive 3D visualization; no server-side rendering required; supports Plotly animation frames for temporal playback; two distinct colorschemes for ESI (inferno) vs biomarkers (top-K warm gradient) |
+| Heatmap thresholding | Continuous EI > 0.5 (§12.3.1) | Top-K=5 hard threshold with binary coloring | Continuous colorscale made entire brain appear orange; hard threshold provides clinical-style clarity with sharp separation between detected and non-detected regions |
 | Web UI design | Functional prototype | Clinical-grade UI with shared layout, design tokens, stepper workflow, dual themes (dark ESI / light Biomarkers), shadcn/ui components, drag-drop upload, skeleton loading, fullscreen toggle | Original prototype was functional but did not meet clinical product-grade standards for a demo; complete overhaul using design system ensures consistency and professionalism |
 | Plotly animation control | Default auto_play | `auto_play=False` + native Plotly controls only (no React play/pause button) | Plotly defaults to auto-playing animations on load; custom React controls cannot communicate with Plotly through iframe boundary; native Plotly play/pause + slider are sufficient and reliable |
 | Demo sample UI | Biomarkers page had synthetic sample selection + file upload | Biomarkers page is upload-only (all demo sample UI removed) | Demo sample selector exposed internal test indices to users; clinical interface should only accept real EEG uploads; synthetic samples still accessible via API for development |
@@ -2311,4 +2552,4 @@ Expected runtime: 4–8 hours (50 Optuna trials with early stopping per trial)
 
 ---
 
-*This document serves as the complete technical reference for the PhysDeepSIF project. All implementation decisions are justified by cited literature. The project skeleton in §10 provides the exact file structure to be implemented. All data interfaces in §8 specify exact shapes, dtypes, and formats for inter-module communication.*
+*This document serves as the complete technical reference for the PhysDeepSIF project. All implementation decisions are justified by cited literature. The project skeleton in §16 provides the exact file structure to be implemented. All data interfaces in §14 specify exact shapes, dtypes, and formats for inter-module communication.*

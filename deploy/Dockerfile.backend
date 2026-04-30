@@ -1,0 +1,32 @@
+FROM python:3.9-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Required data files
+COPY outputs/models/checkpoint_best.pt outputs/models/checkpoint_best.pt
+COPY outputs/models/normalization_stats.json outputs/models/normalization_stats.json
+COPY data/leadfield_19x76.npy data/leadfield_19x76.npy
+COPY data/connectivity_76.npy data/connectivity_76.npy
+COPY data/region_labels_76.json data/region_labels_76.json
+COPY data/region_centers_76.npy data/region_centers_76.npy
+
+# Source code
+COPY src/ src/
+COPY backend/ backend/
+
+EXPOSE 8000
+
+CMD ["uvicorn", "backend.server:app", "--host", "0.0.0.0", "--port", "8000"]

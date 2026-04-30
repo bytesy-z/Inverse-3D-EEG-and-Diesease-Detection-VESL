@@ -190,17 +190,12 @@ class HDF5Dataset(IterableDataset):
                     f['source_activity'][sorted_idx].astype(np.float32)
                 )
                 
-                # --- Per-region temporal de-meaning DISABLED ---
-                # Sources are kept raw (DC+AC). The source loss splits into
-                # DC (per-region mean) and AC (de-meaned) components, giving
-                # the model strong spatial localisation signal from DC while
-                # training AC dynamics for epileptogenicity discrimination.
-                # See Technical Specs §4.4.7 for full analysis.
-                # NOTE: EEG is also NOT de-meaned — the per-channel temporal
-                # mean carries spatial structure (L @ source_DC).
+                # Per-region source de-meaning (AC-only targets)
+                # EEG is NOT de-meaned — per-channel mean carries spatial prior
 
                 # Apply z-score normalization using pre-computed stats
-                # (stats computed on raw EEG with DC, raw sources with DC)
+                # EEG: raw (DC+AC); Sources: de-meaned first (AC-only)
+                sources_batch = sources_batch - sources_batch.mean(dim=-1, keepdim=True)
                 eeg_batch = (eeg_batch - self.eeg_mean) / (self.eeg_std + eps)
                 sources_batch = (sources_batch - self.src_mean) / (self.src_std + eps)
                 
@@ -330,9 +325,9 @@ def normalize_data(
     """
     Z-score normalize data using train set statistics (IN-PLACE).
 
-    NO de-meaning is applied. EEG and sources retain their per-channel/per-region
-    temporal means (DC). The loss function splits source loss into DC (mean)
-    and AC (de-meaned) components.
+    EEG is NOT de-meaned (retains DC spatial prior, L @ source_mean carries
+    spatial structure). Sources ARE de-meaned (AC-only targets) so the model
+    learns dynamics, not DC.
 
     Returns:
         (eeg_train, sources_train, eeg_val, sources_val,
@@ -340,51 +335,52 @@ def normalize_data(
          eeg_mean_ac, eeg_std_ac, src_mean_ac, src_std_ac)
     where _ac suffixed stats are for inference (de-meaned data).
     """
-    # No de-meaning — keep both EEG and sources raw (DC+AC)
+    # --- Per-region source de-meaning (AC-only targets) ---
+    logger.info("Applying per-region source de-meaning (AC-only targets)...")
+    sources_train = sources_train - sources_train.mean(dim=-1, keepdim=True)
+    sources_val = sources_val - sources_val.mean(dim=-1, keepdim=True)
 
     # --- Global z-score normalization ---
-    logger.info("Computing normalization statistics (raw EEG and sources with DC)...")
+    logger.info("Computing normalization statistics...")
     
-    # Compute statistics on training set only (no de-meaning)
+    # EEG stats on raw (DC+AC) — retains spatial structure
     eeg_mean = eeg_train.mean()
     eeg_std = eeg_train.std()
+    
+    # Source stats on de-meaned (AC-only) targets
     sources_mean = sources_train.mean()
     sources_std = sources_train.std()
 
-    # Compute AC-only stats for inference (clinical EEG is AC-coupled)
+    # AC-only stats for inference
     eeg_probe_ac = eeg_train - eeg_train.mean(dim=-1, keepdim=True)
     eeg_mean_ac = eeg_probe_ac.mean()
     eeg_std_ac = eeg_probe_ac.std()
     del eeg_probe_ac
-    
-    src_probe_ac = sources_train - sources_train.mean(dim=-1, keepdim=True)
-    src_mean_ac = src_probe_ac.mean()
-    src_std_ac = src_probe_ac.std()
-    del src_probe_ac
+
+    src_mean_ac = sources_mean  # sources already AC-only after de-meaning
+    src_std_ac = sources_std
 
     logger.info(
         f"Normalization stats: EEG (raw) μ={eeg_mean:.4f} σ={eeg_std:.4f}, "
         f"EEG (AC) μ={eeg_mean_ac:.4f} σ={eeg_std_ac:.4f}, "
-        f"Source (raw) μ={sources_mean:.4f} σ={sources_std:.4f}, "
-        f"Source (AC) μ={src_mean_ac:.4f} σ={src_std_ac:.4f}"
+        f"Source (AC-only) μ={sources_mean:.4f} σ={sources_std:.4f}"
     )
 
-    # Normalize (add small epsilon to avoid division by zero)
     eps = 1e-7
     
-    logger.debug("Normalizing training EEG in-place...")
+    logger.debug("Normalizing training EEG in-place (raw DC+AC)...")
     eeg_train.sub_(eeg_mean).div_(eeg_std + eps)
     
-    logger.debug("Normalizing validation EEG in-place (using training stats)...")
+    logger.debug("Normalizing validation EEG in-place...")
     eeg_val.sub_(eeg_mean).div_(eeg_std + eps)
     
-    logger.debug("Normalizing training sources in-place...")
+    logger.debug("Normalizing training sources (AC-only) in-place...")
     sources_train.sub_(sources_mean).div_(sources_std + eps)
     
-    logger.debug("Normalizing validation sources in-place (using training stats)...")
+    logger.debug("Normalizing validation sources (AC-only) in-place...")
     sources_val.sub_(sources_mean).div_(sources_std + eps)
 
-    logger.info("✓ Normalization complete (raw DC+AC, in-place operations)")
+    logger.info("Normalization complete (EEG raw DC+AC, sources AC-only)")
 
     return (eeg_train, sources_train, eeg_val, sources_val,
             eeg_std, sources_std,
@@ -540,22 +536,20 @@ def main() -> None:
         eeg_mean = float(np.mean(eeg_probe))
         eeg_std = float(np.std(eeg_probe))
 
-        # Compute raw source stats (with DC) for training
+        # De-mean sources per-region (AC-only targets), then compute stats
+        src_probe = src_probe - src_probe.mean(axis=-1, keepdims=True)
         src_mean = float(np.mean(src_probe))
         src_std = float(np.std(src_probe))
 
-        # Compute AC-only source stats (de-meaned) for inference
-        src_probe_ac = src_probe - src_probe.mean(axis=-1, keepdims=True)
-        src_mean_ac = float(np.mean(src_probe_ac))
-        src_std_ac = float(np.std(src_probe_ac))
-        del src_probe_ac, eeg_probe, src_probe
+        # AC-only source stats (identical since already de-meaned)
+        src_mean_ac = src_mean
+        src_std_ac = src_std
 
         logger.info(
             f"Normalization stats (train, {n_probe} samples): "
             f"EEG (raw) μ={eeg_mean:.4f} σ={eeg_std:.4f}, "
             f"EEG (AC) μ={eeg_mean_ac:.4f} σ={eeg_std_ac:.4f}, "
-            f"Source (raw) μ={src_mean:.4f} σ={src_std:.4f}, "
-            f"Source (AC) μ={src_mean_ac:.4f} σ={src_std_ac:.4f}"
+            f"Source (AC-only) μ={src_mean:.4f} σ={src_std:.4f}"
         )
 
         train_dataset = HDF5Dataset(
@@ -652,9 +646,8 @@ def main() -> None:
             with h5py.File(str(train_path), 'r') as f:
                 eeg_probe = f['eeg'][probe_idx].astype(np.float32)
                 src_probe = f['source_activity'][probe_idx].astype(np.float32)
-            # Apply per-region/channel de-meaning before computing stats
+            # De-mean sources (AC-only) but keep EEG raw (DC+AC)
             src_probe = src_probe - src_probe.mean(axis=-1, keepdims=True)
-            eeg_probe = eeg_probe - eeg_probe.mean(axis=-1, keepdims=True)
             eeg_mean = float(np.mean(eeg_probe))
             eeg_std = float(np.std(eeg_probe))
             src_mean = float(np.mean(src_probe))
@@ -782,21 +775,18 @@ def main() -> None:
         with h5py.File(str(train_path), 'r') as f:
             eeg_probe = f['eeg'][probe_idx].astype(np.float32)
             src_probe = f['source_activity'][probe_idx].astype(np.float32)
-        # Raw EEG/source stats (with DC) for training
+        # EEG stats on raw (DC+AC)
         eeg_mean = float(np.mean(eeg_probe))
         eeg_std = float(np.std(eeg_probe))
+        # Source stats on de-meaned (AC-only) data
+        src_probe = src_probe - src_probe.mean(axis=-1, keepdims=True)
         src_mean = float(np.mean(src_probe))
         src_std = float(np.std(src_probe))
-        # AC-only EEG stats for inference (de-meaned)
+        # AC-only EEG stats for inference
         eeg_probe_ac = eeg_probe - eeg_probe.mean(axis=-1, keepdims=True)
         eeg_mean_ac = float(np.mean(eeg_probe_ac))
         eeg_std_ac = float(np.std(eeg_probe_ac))
         del eeg_probe_ac
-        # AC-only source stats for inference (de-meaned)
-        src_probe_ac = src_probe - src_probe.mean(axis=-1, keepdims=True)
-        src_mean_ac = float(np.mean(src_probe_ac))
-        src_std_ac = float(np.std(src_probe_ac))
-        del src_probe_ac
         norm_stats = {
             'eeg_mean': eeg_mean,
             'eeg_std': eeg_std,
@@ -804,8 +794,8 @@ def main() -> None:
             'eeg_std_ac': eeg_std_ac,
             'src_mean': src_mean,
             'src_std': src_std,
-            'src_mean_ac': src_mean_ac,
-            'src_std_ac': src_std_ac,
+            'src_mean_ac': src_mean,
+            'src_std_ac': src_std,
         }
         del eeg_probe, src_probe
     

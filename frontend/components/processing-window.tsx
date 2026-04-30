@@ -6,8 +6,12 @@ import { Progress } from "@/components/ui/progress"
 import { Loader2, Check } from "lucide-react"
 
 interface ProcessingWindowProps {
-  /** Optional real elapsed-time counter from the parent */
+  /** Real elapsed time from the parent */
   elapsedTime?: number
+  /** Real progress percentage (0-100) from the parent */
+  progress?: number
+  /** Status message from the parent */
+  status?: string
 }
 
 const pipelineSteps = [
@@ -26,20 +30,19 @@ const pipelineSteps = [
  *  - A smooth progress bar
  *  - Pipeline step checklist that ticks off over time
  */
-export function ProcessingWindow({ elapsedTime = 0 }: ProcessingWindowProps) {
-  const [progress, setProgress] = useState(0)
+export function ProcessingWindow({ elapsedTime = 0, progress = 0, status = "" }: ProcessingWindowProps) {
   const [elapsed, setElapsed] = useState(0)
 
-  // Internal timer / fake progress (real completion comes from parent)
+  // Internal timer fallback when no elapsedTime is provided
   useEffect(() => {
     const id = setInterval(() => {
-      setProgress((p) => Math.min(92, p + Math.random() * 3))
       setElapsed((e) => e + 1)
     }, 1000)
     return () => clearInterval(id)
   }, [])
 
   const displayElapsed = elapsedTime > 0 ? elapsedTime : elapsed
+  const displayProgress = progress
 
   const fmt = (s: number) => {
     const m = Math.floor(s / 60)
@@ -48,7 +51,7 @@ export function ProcessingWindow({ elapsedTime = 0 }: ProcessingWindowProps) {
   }
 
   return (
-    <Card className="mx-auto max-w-md p-8">
+    <Card className="mx-auto max-w-md p-8" aria-live="polite">
       {/* Spinner + title */}
       <div className="flex items-center justify-center gap-3 mb-6">
         <Loader2 className="h-5 w-5 animate-spin text-primary" />
@@ -63,7 +66,11 @@ export function ProcessingWindow({ elapsedTime = 0 }: ProcessingWindowProps) {
       </p>
 
       {/* Progress bar */}
-      <Progress value={progress} className="mb-6 h-1.5" />
+      <Progress value={displayProgress} className="mb-6 h-1.5" />
+
+      {status && (
+        <p className="text-center text-sm text-muted-foreground mb-4">{status}</p>
+      )}
 
       {/* Pipeline steps */}
       <ul className="space-y-2">
