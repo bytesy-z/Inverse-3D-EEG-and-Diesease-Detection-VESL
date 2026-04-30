@@ -12,6 +12,7 @@ outputs/hyperparam_search/*.db*
 
 # Old codebase / archives
 old_codebase/
+archive/
 
 # Inference results and uploads
 results/

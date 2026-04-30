@@ -33,19 +33,13 @@ def explain_biomarker(
     Occlusion-based attribution for a biomarker detection.
 
     Occludes channel-time segments by setting them to the per-channel
-    mean of that segment, creating a flat (zero-variance) region with
-    no temporal dynamics.  After `run_pipeline_fn` applies per-channel
-    temporal de-meaning, the occluded segment carries zero variance —
-    a true null-dynamics baseline for assessing the segment's
-    contribution to the biomarker score.
-
-    This is preferable to zero-out occlusion because setting to 0 in
-    the raw (pre-de-mean) space introduces a negative DC offset equal
-    to the channel mean after de-meaning — a strong, channel-dependent
-    artifact whose magnitude varies with the channel's DC level.
+    mean, creating a constant-valued region with no temporal dynamics.
+    After z-score normalization, the occluded segment is a non-zero
+    constant — the model sees the correct DC level but no dynamics,
+    isolating the contribution of temporal dynamics to the EI score.
 
     Args:
-        eeg_window: Single EEG window (19, 400), raw (pre-de-mean).
+        eeg_window: Single EEG window (19, 400), raw.
         target_region_idx: Index of the top-1 detected region to explain.
         run_pipeline_fn: Function that takes (19,400) EEG and returns
                         dict with "scores" key -> (76,) array of EI scores.

@@ -364,12 +364,9 @@ async def startup_load_model():
     if NORM_STATS_PATH.exists():
         with open(NORM_STATS_PATH, 'r') as f:
             norm_stats = json.load(f)
-        # Support both v1 (AC-only stats) and v2 (dual raw+AC stats) formats
-        eeg_mean_inf = norm_stats.get('eeg_mean_ac', norm_stats['eeg_mean'])
-        eeg_std_inf = norm_stats.get('eeg_std_ac', norm_stats['eeg_std'])
         logger.info(
-            f"Normalization stats: EEG inf μ={eeg_mean_inf:.4f} "
-            f"σ={eeg_std_inf:.4f}, "
+            f"Normalization stats: EEG μ={norm_stats['eeg_mean']:.4f} "
+            f"σ={norm_stats['eeg_std']:.4f}, "
             f"Src μ={norm_stats['src_mean']:.6f} "
             f"σ={norm_stats['src_std']:.6f}"
         )
@@ -418,8 +415,9 @@ def run_inference(eeg: NDArray[np.float32]) -> NDArray[np.float32]:
     """
     Run PhysDeepSIF inference on EEG data.
 
-    Applies: per-channel temporal de-meaning (DC removal, matches clinical
-    AC-coupling), then global z-score using AC-only inference stats from training.
+    Applies: global z-score normalization using raw (DC+AC) training statistics.
+    NO per-channel de-meaning — matches training pipeline (EEG retains DC spatial
+    prior during training).
 
     Args:
         eeg: Raw EEG data, shape (19, 400) or (batch, 19, 400).
@@ -443,29 +441,19 @@ def run_inference(eeg: NDArray[np.float32]) -> NDArray[np.float32]:
     eeg_tensor = torch.from_numpy(eeg.astype(np.float32)).to(device)
     eps = 1e-7
 
-    # Per-channel temporal de-meaning (matches training pipeline, Tech Specs §4.4.7)
-    # Clinical EEG is AC-coupled; de-meaning is a no-op for already AC-coupled
-    # data. For compatibility with v2 training (EEG retains DC), de-mean here
-    # and use AC-only normalisation stats.
-    eeg_tensor = eeg_tensor - eeg_tensor.mean(dim=-1, keepdim=True)
-
-    # Global z-score normalization using saved AC-only inference statistics
-    eeg_mean_inf = norm_stats.get('eeg_mean_ac', norm_stats['eeg_mean'])
-    eeg_std_inf = norm_stats.get('eeg_std_ac', norm_stats['eeg_std'])
-    eeg_tensor = (eeg_tensor - eeg_mean_inf) / (eeg_std_inf + eps)
+    # Global z-score normalization using training statistics (RAW DC+AC).
+    # NO per-channel de-meaning — matches training pipeline (EEG retains DC).
+    # Training: EEG → z-score with raw (DC+AC) stats, sources → de-mean → z-score.
+    # Inference: same EEG normalization → model → denormalize as AC-only sources.
+    eeg_tensor = (eeg_tensor - norm_stats['eeg_mean']) / (norm_stats['eeg_std'] + eps)
 
     # Forward pass (inference mode — no gradient computation)
     with torch.no_grad():
         source_pred = model(eeg_tensor)  # (batch, 76, 400)
 
-    # Denormalize source predictions back to original (AC) scale
-    # After training with raw sources (DC+AC), the model predicts DC+AC.
-    # For inference on real (AC-coupled) EEG, we de-mean the prediction
-    # to isolate the AC component and denormalize with AC-only stats.
-    source_pred_ac = source_pred - source_pred.mean(dim=-1, keepdim=True)
-    src_mean_inf = norm_stats.get('src_mean_ac', norm_stats['src_mean'])
-    src_std_inf = norm_stats.get('src_std_ac', norm_stats['src_std'])
-    source_pred = source_pred_ac * (src_std_inf + eps) + src_mean_inf
+    # Denormalize: model outputs (de_meaned_src - src_mean) / src_std
+    # Reverse: pred * src_std + src_mean → AC-only source activity
+    source_pred = source_pred * (norm_stats['src_std'] + eps) + norm_stats['src_mean']
 
     source_np = source_pred.cpu().numpy()
     if single_sample:
