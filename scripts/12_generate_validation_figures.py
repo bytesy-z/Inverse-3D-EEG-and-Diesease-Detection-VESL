@@ -64,17 +64,17 @@ def setup_plotting():
 
 
 def preprocess_eeg(eeg, norm_stats):
-    eeg = eeg - eeg.mean(axis=-1, keepdims=True)
-    eeg_mean = norm_stats.get('eeg_mean_ac', norm_stats['eeg_mean'])
-    eeg_std = norm_stats.get('eeg_std_ac', norm_stats['eeg_std'])
+    """Preprocess EEG: global z-score using raw (DC+AC) stats, NO per-channel de-mean."""
+    eeg_mean = norm_stats.get('eeg_mean', 0.0)
+    eeg_std = norm_stats.get('eeg_std', 1.0)
     eeg = (eeg - eeg_mean) / (eeg_std + 1e-7)
     return eeg.astype(np.float32)
 
 
 def denormalize_sources(sources, norm_stats):
-    sources = sources - sources.mean(axis=-1, keepdims=True)
-    src_mean = norm_stats.get('src_mean_ac', norm_stats['src_mean'])
-    src_std = norm_stats.get('src_std_ac', norm_stats['src_std'])
+    """Reverse global z-score for sources (retains DC spatial prior)."""
+    src_mean = norm_stats.get('src_mean', 0.0)
+    src_std = norm_stats.get('src_std', 1.0)
     sources = sources * (src_std + 1e-7) + src_mean
     return sources.astype(np.float32)
 
@@ -152,8 +152,9 @@ def compute_hemisphere_accuracy(sources, epi_mask, region_labels):
         if true_left and true_right:
             continue
         power = np.mean(sources[i] ** 2, axis=-1)
-        max_power_region = int(np.argmax(power))
-        pred_hemisphere = 'left' if max_power_region in left_idx else 'right'
+        left_power = power[left_idx].sum()
+        right_power = power[right_idx].sum()
+        pred_hemisphere = 'left' if left_power > right_power else 'right'
         if true_left and not true_right:
             n_left_epi += 1
             if pred_hemisphere == 'left':
@@ -259,21 +260,30 @@ def main():
     ax1.hist(dle_eloreta_per, bins=bins, alpha=0.5, color=COLOR_ELORETA, label='eLORETA')
     ax1.hist(dle_oracle_per, bins=bins, alpha=0.5, color=COLOR_ORACLE, label='Oracle')
 
-    ylim = ax1.get_ylim()
+    # Add mean lines and annotate in a clean legend box instead of rotated text
+    mean_lines = []
+    mean_labels = []
     for vals, color, name in [
         (dle_physdeepsif_per, COLOR_PHYSDEEPSIF, 'PhysDeepSIF'),
         (dle_eloreta_per, COLOR_ELORETA, 'eLORETA'),
         (dle_oracle_per, COLOR_ORACLE, 'Oracle'),
     ]:
         mean_val = np.mean(vals)
-        ax1.axvline(mean_val, color=color, linestyle='--', linewidth=1.5)
-        ax1.text(mean_val, ylim[1] * 0.95, f'{name}: {mean_val:.1f}mm',
-                 color=color, fontsize=9, rotation=90, va='top', ha='right')
+        std_val = np.std(vals)
+        line = ax1.axvline(mean_val, color=color, linestyle='--', linewidth=1.5)
+        mean_lines.append(line)
+        mean_labels.append(f'{name} μ={mean_val:.1f}±{std_val:.1f} mm')
+
+    # Secondary legend for means
+    ax1_twin = ax1.twinx()
+    ax1_twin.set_ylim(ax1.get_ylim())
+    ax1_twin.set_yticks([])
+    ax1_twin.legend(mean_lines, mean_labels, loc='upper right', fontsize=8, framealpha=0.9)
 
     ax1.set_xlabel('DLE (mm)')
     ax1.set_ylabel('Count')
     ax1.set_title(f'Dipole Localization Error Distribution (Test Set, N={actual_n})')
-    ax1.legend()
+    ax1.legend(loc='upper left')
     ax1.grid(True, alpha=0.3)
 
     fig1.tight_layout()
