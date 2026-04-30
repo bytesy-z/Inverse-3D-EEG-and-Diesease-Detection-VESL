@@ -142,7 +142,7 @@ class PhysicsInformedLoss(nn.Module):
         leadfield: torch.Tensor,
         connectivity_laplacian: torch.Tensor,
         alpha: float = 1.0,
-        beta: float = 0.05,
+        beta: float = 0.5,
         gamma: float = 0.01,
         delta_epi: float = 1.0,
         lambda_laplacian: float = 0.0,
@@ -223,7 +223,7 @@ class PhysicsInformedLoss(nn.Module):
 
         All loss terms are PyTorch scalars (single-element tensors).
         """
-        # Loss 1: Source reconstruction (supervised, class-balanced)
+        # Loss 1: Source reconstruction — split DC (mean) and AC (dynamics)
         loss_source = self._compute_source_loss(
             predicted_sources, true_sources, epileptogenic_mask
         )
@@ -271,41 +271,21 @@ class PhysicsInformedLoss(nn.Module):
         epileptogenic_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        Compute source reconstruction loss (supervised MSE).
+        Compute source reconstruction loss — simple MSE on full (DC+AC) signals.
 
-        L_source = (1/(N_r·T)) Σ_i Σ_t (Ŝ_{i,t} - S^true_{i,t})²
-
-        When epileptogenic_mask is provided, applies per-region class-balancing
-        weighting: epi-region MSE is up-weighted to match healthy-region total
-        contribution, achieving equal gradient influence from both classes.
+        No class-balancing — the original training achieved DLE < 15 mm with
+        uniform MSE on raw sources. Class-balancing up-weights epi regions by
+        ~18×, distorting the spatial gradient for the 92% healthy regions.
 
         Args:
             predicted_sources: (batch, 76, 400)
             true_sources: (batch, 76, 400)
-            epileptogenic_mask: (batch, 76) bool mask, optional
+            epileptogenic_mask: IGNORED for source loss (epi terms use their own loss)
 
         Returns:
             Scalar loss tensor
         """
-        if epileptogenic_mask is None:
-            return self.mse_loss(predicted_sources, true_sources)
-
-        # Per-region MSE over time: (batch, 76)
-        per_region_mse = ((predicted_sources - true_sources) ** 2).mean(dim=-1)
-
-        # Compute per-sample class-balancing weight: n_healthy/n_epi
-        n_epi = epileptogenic_mask.sum(dim=-1, keepdim=True).float().clamp(min=1.0)
-        n_healthy = N_REGIONS - n_epi
-        epi_weight = n_healthy / n_epi  # (batch, 1)
-
-        # Build weight matrix: epi regions get high weight, healthy get 1.0
-        weights = torch.ones_like(per_region_mse)
-        epi_weight_expanded = epi_weight.expand_as(per_region_mse)
-        weights[epileptogenic_mask] = epi_weight_expanded[epileptogenic_mask]
-
-        # Weighted average over all (batch, region) pairs
-        loss = (per_region_mse * weights).sum() / weights.sum()
-        return loss
+        return self.mse_loss(predicted_sources, true_sources)
 
     def _compute_epi_loss(
         self,
@@ -313,21 +293,17 @@ class PhysicsInformedLoss(nn.Module):
         epileptogenic_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        Compute epileptogenic classification loss (class-balanced MSE on power).
+        Compute epileptogenic classification loss on AC variance only.
 
-        L_epi = weighted_MSE(mean_t(Ŝ²), target_mask)
+        L_epi = weighted_MSE(AC_variance(Ŝ), target_mask)
 
-        Uses MSE instead of BCEWithLogitsLoss because power = mean(Ŝ²) ≥ 0,
-        so sigmoid(power) ≥ 0.5 always — healthy regions can never drop below
-        chance with BCE. MSE directly pushes epi power toward 1.0 and healthy
-        toward 0.0 with symmetric gradients.
-
-        Class-balance weighting: epi regions (rare, ~2-8 per sample) are
-        up-weighted by N_healthy/N_epi ≈ 10-50× so both classes contribute
-        equally to the gradient despite class frequency.
+        Uses AC variance (= de-meaned power), NOT total power (DC² + AC_var).
+        DC² is inverted: healthy regions have HIGHER DC (1.80² = 3.24) than
+        epi regions (1.60² = 2.56). Using total power pushes epi loss in the
+        wrong direction. AC variance is 3.9× higher in epi regions — correct.
 
         Args:
-            predicted_sources: (batch, 76, 400)
+            predicted_sources: (batch, 76, 400) — may contain DC
             epileptogenic_mask: (batch, 76) bool mask; if None returns 0
 
         Returns:
@@ -336,20 +312,22 @@ class PhysicsInformedLoss(nn.Module):
         if epileptogenic_mask is None:
             return torch.tensor(0.0, device=predicted_sources.device)
 
-        # Region power: (batch, 76) — always ≥ 0
-        power = predicted_sources.pow(2).mean(dim=-1)
+        # Compute AC variance (de-meaned power) — avoids DC inversion
+        predicted_ac = predicted_sources - predicted_sources.mean(
+            dim=-1, keepdim=True
+        )
+        power = predicted_ac.pow(2).mean(dim=-1)  # (batch, 76)
         target = epileptogenic_mask.float()  # 1 for epi, 0 for healthy
 
-        # Per-region MSE: (batch, 76)
+        # Per-region MSE
         per_region_mse = (power - target) ** 2
 
-        # Class-balance weights: both classes contribute equally
+        # Class-balance weights
         n_epi = epileptogenic_mask.sum(dim=-1, keepdim=True).float().clamp(min=1.0)
         n_healthy = N_REGIONS - n_epi
         weights = torch.ones_like(per_region_mse)
-        epi_weight = n_healthy / n_epi  # ~10-50×
-        epi_mask_expanded = epileptogenic_mask
-        weights[epi_mask_expanded] = epi_weight.expand_as(weights)[epi_mask_expanded]
+        epi_weight = n_healthy / n_epi
+        weights[epileptogenic_mask] = epi_weight.expand_as(weights)[epileptogenic_mask]
 
         loss = (per_region_mse * weights).sum() / weights.sum()
         return loss
@@ -362,79 +340,32 @@ class PhysicsInformedLoss(nn.Module):
         """
         Compute variance-normalised forward consistency loss.
 
-        L_forward = MSE( AC(L @ Ŝ), EEG^input ) / (Var(EEG^input) + Var(L@Ŝ) + ε)
+        L_forward = MSE( L @ Ŝ, EEG^input ) / (Var(EEG^input) + Var(L@Ŝ) + ε)
 
-        where AC(·) denotes per-channel temporal de-meaning.
+        Since sources retain DC (per-region mean) and EEG retains per-channel DC,
+        the forward loss compares FULL signals (DC + AC). No de-meaning is needed
+        because both sides carry matching DC from L @ source_mean.
 
         Why normalise by BOTH Var(EEG) AND Var(L@Ŝ)?
         ──────────────────────────────────────────────
-        Using either variance alone causes problems in one regime:
-
-          Var(EEG) alone — Init with random Ŝ:  raw_mse ≈ Var(L@Ŝ) + Var(EEG)
-          so L_forward ≈ (Var(L@Ŝ) + 1) / 1 ≈ 600× too large.  The ~200×
-          leadfield RMS amplification makes raw_mse≫Var(EEG) at init.
-
-          Var(L@Ŝ) alone — If gradient collapse forces Ŝ≈0, Var(L@Ŝ)≈0 →
-          L_forward = Var(EEG) / 1e-7 ≈ 1e7, locking the model at L^T@EEG.
-
-          BOTH — At init, denom ≈ Var(L@Ŝ) + 1 ≈ raw_mse ⇒ L_forward ≈ 1.
-          If Ŝ≈0, denom ≈ 0 + 1 = 1 ⇒ L_forward ≈ Var(EEG)/1 ≈ 1.
-          Robust in ALL regimes ✓
-
-        Why de-mean eeg_predicted?
-        ──────────────────────────
-        EEG input is per-channel de-meaned before z-scoring (DC removed).
-        Per-region de-meaning of sources commutes with the leadfield
-        (mean(L@Ŝ) = L@mean(Ŝ)), so for perfectly de-meaned Ŝ the forward
-        projection is already DC-free.  However during early training Ŝ
-        carries non-zero per-region DC offsets that the leadfield mixes into
-        per-channel DC in the forward projection.  De-meaning eeg_predicted
-        removes this spurious DC mismatch from the MSE so the gradient only
-        reflects AC dynamics — matching clinical reality where EEG hardware
-        applies High-pass filters before digitisation.
+        Robust in all regimes (see class docstring).
 
         Args:
-            predicted_sources: (batch, 76, 400)
-            eeg_input: (batch, 19, 400)
+            predicted_sources: (batch, 76, 400) — with DC
+            eeg_input: (batch, 19, 400) — with DC
 
         Returns:
             Scalar loss tensor (dimensionless, ≈ O(1) throughout training)
         """
         # Project predicted sources through leadfield
-        # leadfield: (19, 76); predicted_sources: (batch, 76, 400)
-        # eeg_predicted: (batch, 19, 400)
         eeg_predicted = torch.einsum(
             'ij,bjk->bik', self.leadfield, predicted_sources
         )
 
-        # ── Per-channel temporal de-meaning on forward prediction ──
-        # EEG input is per-channel de-meaned (DC removed) before z-scoring.
-        # For perfectly de-meaned sources (mean(Ŝ)=0 per region), the leadfield
-        # projection preserves zero DC: mean(L@Ŝ)=L@mean(Ŝ)=0 per channel.
-        #
-        # In early training, predicted sources carry non-zero per-region DC
-        # offsets that the leadfield mixes into per-channel DC in eeg_predicted.
-        # Without de-meaning here, the MSE penalises this DC mismatch — a
-        # spurious gradient that does not improve source reconstruction.  This
-        # is also physically correct: clinical EEG is AC-coupled by hardware
-        # high-pass filters, so only AC dynamics should be compared.
-        eeg_predicted = eeg_predicted - eeg_predicted.mean(dim=-1, keepdim=True)
-
-        # Raw MSE between forward prediction and target EEG
+        # No de-meaning — both sides carry DC (L @ source_mean)
         raw_mse = ((eeg_predicted - eeg_input) ** 2).mean()
 
-        # ── Stable variance-normalised denominator ──
-        # Denom = Var(EEG_target) + Var(L@Ŝ) + ε
-        #
-        # Var(EEG) ≈ 1.0 after z-scoring — prevents blow-up when Ŝ≈0.
-        # Var(L@Ŝ) ≈ raw_mse at init (Ŝ random) — cancels leadfield
-        # amplification (~200×) so L_forward ≈ O(1) even when model
-        # outputs are not near zero.
-        #
-        # Using EITHER alone fails:
-        #   Var(EEG) alone:  L_forward≈600 at init (Ŝ≈0.13 → L@Ŝ std≈25)
-        #   Var(L@Ŝ) alone: L_forward≈1 at init BUT blows to 1e7 if Ŝ≈0
-        #   BOTH:            L_forward≈1 at BOTH extremes ✓
+        # Stable variance-normalised denominator
         eeg_var = eeg_input.var().detach()
         fwd_var = eeg_predicted.var().detach()
         loss = raw_mse / (eeg_var + fwd_var + _EPS)

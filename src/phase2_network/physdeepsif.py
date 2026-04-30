@@ -395,7 +395,8 @@ class PhysDeepSIF(nn.Module):
             torch.Size([32, 76, 400])
         """
         spatial_out = self.spatial_module(eeg)
-        return spatial_out
+        source_estimate = self.temporal_module(spatial_out)
+        return source_estimate
     
     def get_parameter_count(self) -> dict:
         """

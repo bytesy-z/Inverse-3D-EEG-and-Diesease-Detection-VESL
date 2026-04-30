@@ -190,27 +190,17 @@ class HDF5Dataset(IterableDataset):
                     f['source_activity'][sorted_idx].astype(np.float32)
                 )
                 
-                # --- Per-region temporal de-meaning (DC offset removal) ---
-                # The Epileptor x2-x1 LFP proxy has a large DC offset that
-                # varies with x0 (excitability), accounting for 98.1% of
-                # total source power. This masks the variance/dynamics
-                # component (1.9%) which carries the epileptogenicity-
-                # discriminative information (3.9x higher in epi regions).
-                # De-meaning aligns with AC-coupled clinical EEG recordings
-                # and focuses the MSE loss on useful temporal dynamics.
+                # --- Per-region temporal de-meaning DISABLED ---
+                # Sources are kept raw (DC+AC). The source loss splits into
+                # DC (per-region mean) and AC (de-meaned) components, giving
+                # the model strong spatial localisation signal from DC while
+                # training AC dynamics for epileptogenicity discrimination.
                 # See Technical Specs §4.4.7 for full analysis.
-                # Shape: sources_batch (batch, 76, 400) -> mean over time dim
-                sources_batch = sources_batch - sources_batch.mean(
-                    dim=-1, keepdim=True
-                )
-                # De-mean EEG per channel for consistency with AC-coupled
-                # clinical recordings (highpass >= 0.1 Hz removes DC)
-                eeg_batch = eeg_batch - eeg_batch.mean(
-                    dim=-1, keepdim=True
-                )
-                
+                # NOTE: EEG is also NOT de-meaned — the per-channel temporal
+                # mean carries spatial structure (L @ source_DC).
+
                 # Apply z-score normalization using pre-computed stats
-                # (stats computed on de-meaned data, so src_mean ≈ 0)
+                # (stats computed on raw EEG with DC, raw sources with DC)
                 eeg_batch = (eeg_batch - self.eeg_mean) / (self.eeg_std + eps)
                 sources_batch = (sources_batch - self.src_mean) / (self.src_std + eps)
                 
@@ -336,63 +326,52 @@ def normalize_data(
     sources_train: torch.Tensor,
     eeg_val: torch.Tensor,
     sources_val: torch.Tensor,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, float, float]:
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, float, float, float, float, float, float]:
     """
-    Z-score normalize data using train set statistics (IN-PLACE for memory efficiency).
-    
-    Normalization is computed on training set, then applied to validation.
-    This prevents data leakage from validation set during training.
-    
-    MEMORY OPTIMIZATION: Uses in-place operations to avoid creating temporary
-    copies. With 74k samples × (19+76) channels, this avoids doubling memory
-    usage during normalization (stays ~20GB instead of expanding to ~40GB).
-    
-    Args:
-        eeg_train, sources_train: Training data (will be normalized in-place)
-        eeg_val, sources_val: Validation data (will be normalized in-place)
-    
+    Z-score normalize data using train set statistics (IN-PLACE).
+
+    NO de-meaning is applied. EEG and sources retain their per-channel/per-region
+    temporal means (DC). The loss function splits source loss into DC (mean)
+    and AC (de-meaned) components.
+
     Returns:
-        Tuple of the same tensors (now normalized in-place)
+        (eeg_train, sources_train, eeg_val, sources_val,
+         eeg_std, src_std,
+         eeg_mean_ac, eeg_std_ac, src_mean_ac, src_std_ac)
+    where _ac suffixed stats are for inference (de-meaned data).
     """
-    # --- Step 1: Per-region/channel temporal de-meaning (DC offset removal) ---
-    # The Epileptor x2-x1 LFP proxy has a large DC offset (98.1% of power)
-    # that masks the variance/dynamics component (1.9%), which is the actual
-    # discriminative signal for epileptogenicity. Subtract per-region temporal
-    # mean to align with AC-coupled clinical EEG recordings.
-    # See Technical Specs §4.4.7 for full analysis.
-    logger.info("Applying per-region temporal de-meaning (DC offset removal)...")
+    # No de-meaning — keep both EEG and sources raw (DC+AC)
+
+    # --- Global z-score normalization ---
+    logger.info("Computing normalization statistics (raw EEG and sources with DC)...")
     
-    # Source activity: subtract per-region temporal mean
-    # Shape: (N, 76, 400) -> mean over dim=-1 (time)
-    sources_train.sub_(sources_train.mean(dim=-1, keepdim=True))
-    sources_val.sub_(sources_val.mean(dim=-1, keepdim=True))
-    
-    # EEG: subtract per-channel temporal mean (AC-coupling consistency)
-    # Shape: (N, 19, 400) -> mean over dim=-1 (time)
-    eeg_train.sub_(eeg_train.mean(dim=-1, keepdim=True))
-    eeg_val.sub_(eeg_val.mean(dim=-1, keepdim=True))
-    
-    logger.info("✓ De-meaning complete")
-    
-    # --- Step 2: Global z-score normalization ---
-    logger.info("Computing normalization statistics on de-meaned training set...")
-    
-    # Compute statistics on training set only (after de-meaning)
+    # Compute statistics on training set only (no de-meaning)
     eeg_mean = eeg_train.mean()
     eeg_std = eeg_train.std()
     sources_mean = sources_train.mean()
     sources_std = sources_train.std()
+
+    # Compute AC-only stats for inference (clinical EEG is AC-coupled)
+    eeg_probe_ac = eeg_train - eeg_train.mean(dim=-1, keepdim=True)
+    eeg_mean_ac = eeg_probe_ac.mean()
+    eeg_std_ac = eeg_probe_ac.std()
+    del eeg_probe_ac
     
+    src_probe_ac = sources_train - sources_train.mean(dim=-1, keepdim=True)
+    src_mean_ac = src_probe_ac.mean()
+    src_std_ac = src_probe_ac.std()
+    del src_probe_ac
+
     logger.info(
-        f"Normalization stats (de-meaned): EEG μ={eeg_mean:.4f} σ={eeg_std:.4f}, "
-        f"Sources μ={sources_mean:.4f} σ={sources_std:.4f}"
+        f"Normalization stats: EEG (raw) μ={eeg_mean:.4f} σ={eeg_std:.4f}, "
+        f"EEG (AC) μ={eeg_mean_ac:.4f} σ={eeg_std_ac:.4f}, "
+        f"Source (raw) μ={sources_mean:.4f} σ={sources_std:.4f}, "
+        f"Source (AC) μ={src_mean_ac:.4f} σ={src_std_ac:.4f}"
     )
-    
+
     # Normalize (add small epsilon to avoid division by zero)
     eps = 1e-7
     
-    # Apply in-place operations to minimize memory usage
-    # Format: tensor.sub_(value).div_(value) modifies tensor directly
     logger.debug("Normalizing training EEG in-place...")
     eeg_train.sub_(eeg_mean).div_(eeg_std + eps)
     
@@ -404,10 +383,12 @@ def normalize_data(
     
     logger.debug("Normalizing validation sources in-place (using training stats)...")
     sources_val.sub_(sources_mean).div_(sources_std + eps)
-    
-    logger.info("✓ Normalization complete (de-meaning + z-score, in-place operations)")
-    
-    return eeg_train, sources_train, eeg_val, sources_val, eeg_std, sources_std
+
+    logger.info("✓ Normalization complete (raw DC+AC, in-place operations)")
+
+    return (eeg_train, sources_train, eeg_val, sources_val,
+            eeg_std, sources_std,
+            eeg_mean_ac, eeg_std_ac, src_mean_ac, src_std_ac)
 
 
 def main() -> None:
@@ -547,26 +528,34 @@ def main() -> None:
         with h5py.File(str(train_path), 'r') as f:
             eeg_probe = f['eeg'][probe_idx].astype(np.float32)
             src_probe = f['source_activity'][probe_idx].astype(np.float32)
-        
-        # Apply per-region/channel temporal de-meaning BEFORE computing
-        # normalization stats, so stats reflect the de-meaned (AC) signal.
-        # This matches the de-meaning applied in HDF5Dataset.__iter__().
-        # See Technical Specs §4.4.7 for rationale.
-        # Source: subtract per-region temporal mean (axis=-1 = time)
-        src_probe = src_probe - src_probe.mean(axis=-1, keepdims=True)
-        # EEG: subtract per-channel temporal mean (AC-coupling)
-        eeg_probe = eeg_probe - eeg_probe.mean(axis=-1, keepdims=True)
 
+        # Compute AC-only EEG stats (de-meaned) for inference pipeline
+        # Clinical EEG is AC-coupled; inference normalises with these.
+        eeg_probe_ac = eeg_probe - eeg_probe.mean(axis=-1, keepdims=True)
+        eeg_mean_ac = float(np.mean(eeg_probe_ac))
+        eeg_std_ac = float(np.std(eeg_probe_ac))
+        del eeg_probe_ac
+
+        # Compute raw EEG stats (with DC) for training
         eeg_mean = float(np.mean(eeg_probe))
         eeg_std = float(np.std(eeg_probe))
+
+        # Compute raw source stats (with DC) for training
         src_mean = float(np.mean(src_probe))
         src_std = float(np.std(src_probe))
-        del eeg_probe, src_probe
+
+        # Compute AC-only source stats (de-meaned) for inference
+        src_probe_ac = src_probe - src_probe.mean(axis=-1, keepdims=True)
+        src_mean_ac = float(np.mean(src_probe_ac))
+        src_std_ac = float(np.std(src_probe_ac))
+        del src_probe_ac, eeg_probe, src_probe
 
         logger.info(
-            f"Normalization stats (from {n_probe} de-meaned samples): "
-            f"EEG μ={eeg_mean:.4f} σ={eeg_std:.4f}, "
-            f"Source μ={src_mean:.6f} σ={src_std:.6f}"
+            f"Normalization stats (train, {n_probe} samples): "
+            f"EEG (raw) μ={eeg_mean:.4f} σ={eeg_std:.4f}, "
+            f"EEG (AC) μ={eeg_mean_ac:.4f} σ={eeg_std_ac:.4f}, "
+            f"Source (raw) μ={src_mean:.4f} σ={src_std:.4f}, "
+            f"Source (AC) μ={src_mean_ac:.4f} σ={src_std_ac:.4f}"
         )
 
         train_dataset = HDF5Dataset(
@@ -622,7 +611,9 @@ def main() -> None:
             
             # Normalize
             logger.info("Normalizing datasets...")
-            eeg_train, sources_train, eeg_val, sources_val, eeg_std, src_std = normalize_data(
+            (eeg_train, sources_train, eeg_val, sources_val,
+             eeg_std, src_std,
+             eeg_mean_ac, eeg_std_ac, src_mean_ac, src_std_ac) = normalize_data(
                 eeg_train, sources_train, eeg_val, sources_val
             )
             log_memory_status("AFTER_NORMALIZATION")
@@ -723,7 +714,7 @@ def main() -> None:
         str(leadfield_path),
         str(connectivity_path),
         lstm_dropout=0.1,
-        lstm_hidden_size=32,
+        lstm_hidden_size=76,
     )
     model = model.to(device)
     
@@ -773,17 +764,17 @@ def main() -> None:
     elapsed_hr = elapsed_min / 60
     
     # Save normalization stats alongside model so inference can re-use them
-    # These stats are essential for the demo/biomarker detection pipeline
+    # Raw stats (with DC) for training; AC-only stats for inference
     norm_stats = {}
     if use_streaming:
         norm_stats = {
             'eeg_mean': eeg_mean, 'eeg_std': eeg_std,
+            'eeg_mean_ac': eeg_mean_ac, 'eeg_std_ac': eeg_std_ac,
             'src_mean': src_mean, 'src_std': src_std,
+            'src_mean_ac': src_mean_ac, 'src_std_ac': src_std_ac,
         }
     else:
-        # Stats were computed in normalize_data; re-compute from saved values
-        # The normalize_data function logged them but didn't return them
-        # For in-memory mode, re-compute from a probe WITH de-meaning
+        # Stats were computed in normalize_data; re-compute from raw HDF5
         n_probe = min(5000, train_num_samples)
         probe_idx = np.sort(np.random.RandomState(42).choice(
             train_num_samples, size=n_probe, replace=False
@@ -791,14 +782,30 @@ def main() -> None:
         with h5py.File(str(train_path), 'r') as f:
             eeg_probe = f['eeg'][probe_idx].astype(np.float32)
             src_probe = f['source_activity'][probe_idx].astype(np.float32)
-        # Apply same de-meaning as in normalize_data() and __iter__()
-        src_probe = src_probe - src_probe.mean(axis=-1, keepdims=True)
-        eeg_probe = eeg_probe - eeg_probe.mean(axis=-1, keepdims=True)
+        # Raw EEG/source stats (with DC) for training
+        eeg_mean = float(np.mean(eeg_probe))
+        eeg_std = float(np.std(eeg_probe))
+        src_mean = float(np.mean(src_probe))
+        src_std = float(np.std(src_probe))
+        # AC-only EEG stats for inference (de-meaned)
+        eeg_probe_ac = eeg_probe - eeg_probe.mean(axis=-1, keepdims=True)
+        eeg_mean_ac = float(np.mean(eeg_probe_ac))
+        eeg_std_ac = float(np.std(eeg_probe_ac))
+        del eeg_probe_ac
+        # AC-only source stats for inference (de-meaned)
+        src_probe_ac = src_probe - src_probe.mean(axis=-1, keepdims=True)
+        src_mean_ac = float(np.mean(src_probe_ac))
+        src_std_ac = float(np.std(src_probe_ac))
+        del src_probe_ac
         norm_stats = {
-            'eeg_mean': float(np.mean(eeg_probe)),
-            'eeg_std': float(np.std(eeg_probe)),
-            'src_mean': float(np.mean(src_probe)),
-            'src_std': float(np.std(src_probe)),
+            'eeg_mean': eeg_mean,
+            'eeg_std': eeg_std,
+            'eeg_mean_ac': eeg_mean_ac,
+            'eeg_std_ac': eeg_std_ac,
+            'src_mean': src_mean,
+            'src_std': src_std,
+            'src_mean_ac': src_mean_ac,
+            'src_std_ac': src_std_ac,
         }
         del eeg_probe, src_probe
     

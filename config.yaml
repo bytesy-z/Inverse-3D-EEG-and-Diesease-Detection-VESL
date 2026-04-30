@@ -120,13 +120,10 @@ training:
     # Source reconstruction weight (supervised MSE).
     # Kept at 1.0 (unchanged from original config and overfit test).
     alpha_source: 1.0
-    # Forward physics weight — increased from 0.05 to 0.1.
-    # The overfit test (DAY2 §1.6, epoch 90) validated beta=0.1 produces
-    # DLE=8.4mm and AUC=0.732.  The forward loss provides an MNE-like
-    # gradient ∝ -L^T·EEG at the Ŝ≈0 fixed point (see §4.4.5), which
-    # breaks the trivial zero-output attractor.  At 0.05 this gradient
-    # was too weak to escape the attractor within the 15-epoch early stop.
-    beta_forward: 0.0
+    # Forward physics weight — 0.1 validated on overfit test (DLE=8.4mm, AUC=0.732).
+    # The forward loss provides an MNE-like gradient ∝ -L^T·EEG that breaks
+    # the trivial zero-output attractor and provides spatial regularisation.
+    beta_forward: 0.1
     # Physics regularization weight (unchanged from original config).
     gamma_physics: 0.01
     # Epileptogenic classification weight — increased from 0.1 to 1.0.
