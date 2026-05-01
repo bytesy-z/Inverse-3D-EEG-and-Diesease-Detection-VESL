@@ -17,12 +17,15 @@ sleep 2
 echo "[smoke] Waiting for backend health..."
 HEALTH_OK=0
 for i in {1..60}; do
-  if curl -sS http://127.0.0.1:8000/api/health | python3 - <<'PY'
+  HEALTH_JSON=$(curl -sS http://127.0.0.1:8000/api/health 2>/dev/null || true)
+  if echo "$HEALTH_JSON" | python3 -c "
 import sys, json
-data = json.load(sys.stdin)
-print(data.get('status'))
-PY
-  then
+try:
+    data = json.load(sys.stdin)
+    print(data.get('status', ''))
+except Exception:
+    pass
+" | grep -q ok; then
     HEALTH_OK=1
     break
   fi
@@ -51,7 +54,7 @@ fi
 echo "[smoke] Frontend reachable (HTTP 200)."
 
 echo "[smoke] Verifying frontend page contents..."
-FRONT_PAGE=$(curl -sS http://127.0.0.1:3000/ | head -n 1)
+FRONT_PAGE=$(curl -sS http://127.0.0.1:3000/ 2>/dev/null | head -n 1) || true
 if [[ "$FRONT_PAGE" != *"<!DOCTYPE html>"* && "$FRONT_PAGE" != *"Plotly"* && "$FRONT_PAGE" != *"Brain"* ]]; then
   echo "[smoke] Frontend page content not as expected."
   # Do not fail hard; it's still useful to proceed to API test
@@ -61,7 +64,7 @@ echo "[smoke] Creating synthetic EEG data..."
 TMP_EEG=/tmp/synthetic_eeg.npy
 python3 - <<'PY'
 import numpy as np
-arr = np.random.randn(400).astype('float32')
+arr = np.random.randn(19, 400).astype('float32')
 np.save('/tmp/synthetic_eeg.npy', arr)
 print('/tmp/synthetic_eeg.npy')
 PY
@@ -78,7 +81,8 @@ if [ -z "$RESPONSE" ]; then
   echo "[smoke] Empty response from /api/analyze"; exit 1
 fi
 
-echo "$RESPONSE" | python3 - <<'PY'
+set +o pipefail
+echo "$RESPONSE" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
 if 'eegData' not in data:
@@ -90,8 +94,9 @@ for key in ('waveform','waveformImage','image','plot','waveform_data'):
     sys.exit(0)
 print('NO_WAVEFORM_KEY')
 sys.exit(0)
-PY
+"
 EXIT_CODE=$?
+set -o pipefail
 if [ "$EXIT_CODE" -ne 0 ]; then
   echo "[smoke] analyze response validation failed. See details above."
   ./start.sh --kill || true

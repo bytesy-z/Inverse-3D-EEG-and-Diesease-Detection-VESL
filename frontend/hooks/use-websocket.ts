@@ -28,17 +28,17 @@ export function useWebSocket(jobId: string | null): UseWebSocketReturn {
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>()
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const cleanup = useCallback(() => {
     if (wsRef.current) {
       wsRef.current.close()
       wsRef.current = null
     }
-    setConnected(false)
+    queueMicrotask(() => setConnected(false))
     if (reconnectTimer.current) {
       clearTimeout(reconnectTimer.current)
-      reconnectTimer.current = undefined
+      reconnectTimer.current = null
     }
   }, [])
 

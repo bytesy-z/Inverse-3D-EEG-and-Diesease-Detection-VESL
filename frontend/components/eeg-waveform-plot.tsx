@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { Data, Layout, Config } from "plotly.js-dist-min"
 import { Maximize2, Minimize2 } from "lucide-react"
 import { Card } from "@/components/ui/card"
@@ -39,7 +39,7 @@ export function EegWaveformPlot({
   const windowCount = eegData.windows?.length ?? 0
   const effectiveWindowIndex = Math.min(Math.max(selectedWindow ?? 0, 0), Math.max(windowCount - 1, 0))
   const currentWindow = eegData.windows?.[effectiveWindowIndex]
-  const channels = eegData.channels ?? []
+  const channels = useMemo(() => eegData.channels ?? [], [eegData.channels])
   const samplingRate = eegData.samplingRate ?? 200
   const windowLength = eegData.windowLength ?? 400
 

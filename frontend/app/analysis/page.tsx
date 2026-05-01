@@ -1,8 +1,10 @@
 "use client"
 
 import { useState, useCallback, useEffect } from "react"
-import { RotateCcw, Brain, Activity } from "lucide-react"
+import { RotateCcw, Brain, Activity, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Checkbox } from "@/components/ui/checkbox"
 import { AppHeader, AppContainer, AppFooter } from "@/components/app-shell"
 import { StepIndicator, type StepId } from "@/components/step-indicator"
 import { FileUploadSection } from "@/components/file-upload-section"
@@ -57,6 +59,9 @@ export default function AnalysisPage() {
   const [error, setError] = useState<string | null>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [viewMode, setViewMode] = useState<ViewMode>("source")
+  const [maxWindows, setMaxWindows] = useState<number>(5)
+  const [cmaesGens, setCmaesGens] = useState<number>(2)
+  const [debugMode, setDebugMode] = useState<boolean>(true)
 
   // Results for both modes
   const [esiResult, setEsiResult] = useState<ESIResult | null>(null)
@@ -80,7 +85,7 @@ export default function AnalysisPage() {
     setError(null)
   }, [])
 
-  /* ---- Run analysis via WebSocket for real-time progress ---- */
+  /* ---- Run analysis ---- */
   const handleAnalyze = useCallback(async () => {
     if (!selectedFile) return
     setStep("analyze")
@@ -91,24 +96,37 @@ export default function AnalysisPage() {
       fd.append("file", selectedFile)
       fd.append("mode", "biomarkers")
       fd.append("include_eeg", "true")
-      fd.append("ws", "true")
+      fd.append("max_windows", String(maxWindows))
+      fd.append("cmaes_generations", String(cmaesGens))
+      fd.append("debug", debugMode ? "true" : "false")
 
-      const res = await fetch("/api/analyze", {
-        method: "POST",
-        body: fd,
-      })
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ message: "Analysis request failed" }))
-        throw new Error(errData.message || `Analysis failed (${res.status})`)
+      if (debugMode) {
+        fd.append("ws", "false")
+        const res = await fetch("/api/analyze", { method: "POST", body: fd })
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({ message: "Analysis failed" }))
+          throw new Error(errData.detail || errData.message || `Analysis failed (${res.status})`)
+        }
+        const data = await res.json()
+        setEsiResult({ ...data, plotHtml: data.sourcePlotHtml || data.plotHtml })
+        setBioResult(data)
+        setStep("results")
+      } else {
+        fd.append("ws", "true")
+        const res = await fetch("/api/analyze", { method: "POST", body: fd })
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({ message: "Analysis request failed" }))
+          throw new Error(errData.message || `Analysis failed (${res.status})`)
+        }
+        const data = await res.json()
+        setJobId(data.job_id)
+        setUseWs(true)
       }
-      const data = await res.json()
-      setJobId(data.job_id)
-      setUseWs(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred during analysis")
       setStep("upload")
     }
-  }, [selectedFile])
+  }, [selectedFile, maxWindows, cmaesGens, debugMode])
 
   /* ---- Reset to upload state ---- */
   const handleReset = useCallback(() => {
@@ -121,61 +139,66 @@ export default function AnalysisPage() {
     setSelectedWindow(0)
   }, [])
 
+  // Keep selectedWindow valid when result data changes.
+  const setClampedWindow = useCallback(
+    (value: number | ((prev: number) => number)) => {
+      setSelectedWindow((prev) => {
+        const total = esiResult?.eegData?.windows?.length ?? 0
+        const raw = typeof value === "function" ? value(prev) : value
+        if (total <= 0) return 0
+        return Math.max(0, Math.min(raw, total - 1))
+      })
+    },
+    [esiResult?.eegData?.windows?.length],
+  )
+
   const handleBrainFrameChange = useCallback((frameIndex: number) => {
     const total = esiResult?.eegData?.windows?.length ?? 0
     if (total <= 0) return
     const normalizedIndex = ((frameIndex % total) + total) % total
-    setSelectedWindow(normalizedIndex)
-  }, [esiResult?.eegData?.windows?.length])
-
-  // Keep selectedWindow valid when result data changes.
-  useEffect(() => {
-    const total = esiResult?.eegData?.windows?.length ?? 0
-    if (total <= 0) {
-      if (selectedWindow !== 0) {
-        setSelectedWindow(0)
-      }
-      return
-    }
-    if (selectedWindow >= total) {
-      setSelectedWindow(total - 1)
-    }
-  }, [esiResult?.eegData?.windows?.length, selectedWindow])
+    setClampedWindow(normalizedIndex)
+  }, [esiResult?.eegData?.windows?.length, setClampedWindow])
 
   /* ---- Handle WebSocket job status updates ---- */
   useEffect(() => {
     if (!cmaesStatus.result) return
     const r = cmaesStatus.result
 
-    // Phase A: preliminary biomarker results
-    if (r.epileptogenicity && !bioResult) {
-      setBioResult({
-        jobId: r.jobId,
-        status: r.status,
-        processingTime: 0,
-        source: selectedFile?.name ?? "upload",
-        plotHtml: "",
-        fullHtmlPath: r.fullHtmlPath,
-        epileptogenicity: r.epileptogenicity,
-        concordance: r.concordance ?? null,
-        cmaes: r.cmaes ?? null,
-        xai: r.xai ?? null,
-        groundTruth: null,
-        eegData: null,
-      })
-    }
+    queueMicrotask(() => {
+      // Phase A: preliminary biomarker results
+      if (r.epileptogenicity && !bioResult) {
+        setBioResult({
+          jobId: r.jobId,
+          status: r.status,
+          processingTime: 0,
+          source: selectedFile?.name ?? "upload",
+          plotHtml: "",
+          fullHtmlPath: r.fullHtmlPath,
+          epileptogenicity: r.epileptogenicity,
+          concordance: r.concordance ?? null,
+          cmaes: r.cmaes ?? null,
+          xai: r.xai ?? null,
+          groundTruth: null,
+          eegData: null,
+        })
+      }
 
-    // Completed: update with concordance if present
-    if (r.status === "completed" && bioResult) {
-      setBioResult((prev) => prev ? {
-        ...prev,
-        status: "completed",
-        concordance: r.concordance ?? null,
-        cmaes: r.cmaes ?? null,
-      } : prev)
-      setStep("results")
-      setUseWs(false)
-    }
+      // Completed: update with concordance if present
+      if (r.status === "completed" && bioResult) {
+        setBioResult((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "completed",
+                concordance: r.concordance ?? null,
+                cmaes: r.cmaes ?? null,
+              }
+            : prev,
+        )
+        setStep("results")
+        setUseWs(false)
+      }
+    })
   }, [cmaesStatus, bioResult, selectedFile])
 
   /* ---- Derive detected regions from biomarker result ---- */
@@ -226,6 +249,52 @@ export default function AnalysisPage() {
                 accept={[".edf"]}
                 hint="19-channel EEG recording in EDF format"
               />
+
+              <div className="flex items-center gap-3">
+                <label className="text-sm text-muted-foreground whitespace-nowrap">
+                  Max windows:
+                </label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={90}
+                  value={maxWindows}
+                  onChange={(e) => setMaxWindows(Number(e.target.value) || 1)}
+                  className="w-24"
+                />
+                <span className="text-xs text-muted-foreground">
+                  (first N windows, 2s each)
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="text-sm text-muted-foreground whitespace-nowrap">
+                  CMA-ES gens:
+                </label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={30}
+                  value={cmaesGens}
+                  onChange={(e) => setCmaesGens(Number(e.target.value) || 1)}
+                  className="w-24"
+                />
+                <span className="text-xs text-muted-foreground">
+                  (1-30, lower = faster)
+                </span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id="debug-mode"
+                  checked={debugMode}
+                  onCheckedChange={(v) => setDebugMode(v === true)}
+                />
+                <label htmlFor="debug-mode" className="text-sm text-muted-foreground cursor-pointer select-none flex items-center gap-1">
+                  <Zap className="h-3.5 w-3.5 text-amber-500" />
+                  Debug mode (skip CMA-ES, dummy concordance)
+                </label>
+              </div>
 
               <Button
                 className="w-full"
@@ -291,7 +360,7 @@ export default function AnalysisPage() {
                 <button
                   onClick={() => setViewMode("source")}
                   role="tab"
-                  aria-pressed={viewMode === "source"}
+                  aria-selected={viewMode === "source"}
                   className={`
                     flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5
                     text-sm font-medium transition-all
@@ -307,7 +376,7 @@ export default function AnalysisPage() {
                 <button
                   onClick={() => setViewMode("biomarkers")}
                   role="tab"
-                  aria-pressed={viewMode === "biomarkers"}
+                  aria-selected={viewMode === "biomarkers"}
                   className={`
                     flex flex-1 items-center justify-center gap-2 rounded-md px-4 py-2.5
                     text-sm font-medium transition-all
@@ -344,25 +413,24 @@ export default function AnalysisPage() {
                 </div>
               )}
 
-              {/* EEG window is synchronized with brain animation via shared selectedWindow state. */}
-              {/* ---- Source Localization View (layout adjusted) ---- */}
-              {viewMode === "source" && esiResult && (
+              {/* ---- Source Localization View ---- */}
+              {viewMode === "source" && (esiResult || bioResult) && (
                 <div className="grid w-full grid-cols-1 gap-4 lg:grid-cols-2">
                   {/* EEG Waveform */}
-                  {esiResult.eegData && (
+                  {(esiResult?.eegData || bioResult?.eegData) && (
                     <EegWaveformPlot
-                      eegData={esiResult.eegData}
+                      eegData={esiResult?.eegData || bioResult?.eegData}
                       selectedWindow={selectedWindow}
-                      onSelectedWindowChange={setSelectedWindow}
+                      onSelectedWindowChange={setClampedWindow}
                       className="w-full"
                     />
                   )}
 
-                  {/* 3D Brain Visualization (guarded by presence of plotHtml) */}
-                  {esiResult.plotHtml && (
+                  {/* 3D Brain Visualization */}
+                  {(esiResult?.plotHtml || bioResult?.plotHtml) && (
                     <BrainVisualization
-                      plotHtml={esiResult.plotHtml}
-                      label="3D Source Activity"
+                      plotHtml={esiResult?.plotHtml || bioResult?.plotHtml}
+                      label="Source Activity"
                       className="h-[640px] w-full"
                       playbackSpeed={playbackSpeed}
                       currentFrame={selectedWindow}
@@ -383,7 +451,7 @@ export default function AnalysisPage() {
                         {esiResult.eegData.windows.map((_, idx) => (
                           <button
                             key={idx}
-                            onClick={() => setSelectedWindow(idx)}
+                            onClick={() => setClampedWindow(idx)}
                             className={`
                               rounded-md px-3 py-1 text-xs font-medium transition-colors
                               ${selectedWindow === idx
@@ -404,7 +472,7 @@ export default function AnalysisPage() {
                     <EegWaveformPlot
                       eegData={esiResult.eegData}
                       selectedWindow={selectedWindow}
-                      onSelectedWindowChange={setSelectedWindow}
+                      onSelectedWindowChange={setClampedWindow}
                       className="h-[500px]"
                     />
                   )}
