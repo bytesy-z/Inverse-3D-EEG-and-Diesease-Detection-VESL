@@ -28,7 +28,6 @@ export function useWebSocket(jobId: string | null): UseWebSocketReturn {
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const wsRef = useRef<WebSocket | null>(null)
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const cleanup = useCallback(() => {
     if (wsRef.current) {
@@ -36,10 +35,6 @@ export function useWebSocket(jobId: string | null): UseWebSocketReturn {
       wsRef.current = null
     }
     queueMicrotask(() => setConnected(false))
-    if (reconnectTimer.current) {
-      clearTimeout(reconnectTimer.current)
-      reconnectTimer.current = null
-    }
   }, [])
 
   useEffect(() => {
@@ -83,9 +78,6 @@ export function useWebSocket(jobId: string | null): UseWebSocketReturn {
       ws.onclose = () => {
         setConnected(false)
         wsRef.current = null
-        if (!closed) {
-          reconnectTimer.current = setTimeout(connect, 2000)
-        }
       }
     }
 

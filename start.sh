@@ -269,14 +269,19 @@ fix_swc_binary() {
     rm -rf "$tmp_tgz" "$tmp_dir"
 }
 
+_port_in_use() {
+    local port=$1
+    ss -tln 2>/dev/null | grep -qP ":$port "
+}
+
 check_ports() {
     log_info "Checking port availability..."
 
     local port_issues=false
     for port in $BACKEND_PORT $FRONTEND_PORT; do
-        local pid
-        pid=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' || true)
-        if [[ -n "$pid" ]]; then
+        if _port_in_use "$port"; then
+            local pid
+            pid=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' || echo "(Docker/proxy)")
             log_warn "Port $port already in use (PID $pid)"
             port_issues=true
         else
@@ -289,15 +294,33 @@ check_ports() {
         kill_servers
         sleep 2
         # Verify ports are now free
+        local still_busy=()
         for port in $BACKEND_PORT $FRONTEND_PORT; do
-            local pid
-            pid=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' || true)
-            if [[ -n "$pid" ]]; then
-                log_error "Port $port still in use (PID $pid) after kill attempt"
-                log_info "Try manually: kill $pid"
-                return 1
+            if _port_in_use "$port"; then
+                still_busy+=("$port")
             fi
         done
+
+        # If frontend port still busy, try fallback ports
+        if [[ " ${still_busy[*]} " =~ " $FRONTEND_PORT " ]]; then
+            local old_port=$FRONTEND_PORT
+            for fallback in 3003 3004 3005 3006 3007; do
+                if ! _port_in_use "$fallback"; then
+                    FRONTEND_PORT=$fallback
+                    log_warn "Port $old_port is held by a Docker container. Using fallback port $FRONTEND_PORT."
+                    still_busy=(${still_busy[@]/$old_port})
+                    break
+                fi
+            done
+        fi
+
+        for port in "${still_busy[@]}"; do
+            log_error "Port $port still in use after cleanup — cannot start."
+            log_info "Stop the service on port $port or update start.sh FRONTEND_PORT."
+        done
+        if [[ ${#still_busy[@]} -gt 0 ]]; then
+            return 1
+        fi
         log_success "All ports now available"
     fi
 }
@@ -355,8 +378,9 @@ kill_servers() {
 start_backend() {
     log_header "Starting Backend (FastAPI on port $BACKEND_PORT)"
 
+    mkdir -p "$PROJECT_ROOT/logs"
     cd "$BACKEND_DIR"
-    "$PYTHON" server.py &
+    "$PYTHON" server.py > "$PROJECT_ROOT/logs/backend.log" 2>&1 &
     BACKEND_PID=$!
     cd "$PROJECT_ROOT"
 
@@ -391,7 +415,7 @@ start_frontend() {
     [[ -s "$NVM_DIR/nvm.sh" ]] && source "$NVM_DIR/nvm.sh"
 
     cd "$FRONTEND_DIR"
-    node node_modules/.bin/next dev -p "$FRONTEND_PORT" &
+    node node_modules/.bin/next dev -p "$FRONTEND_PORT" > "$PROJECT_ROOT/logs/frontend.log" 2>&1 &
     FRONTEND_PID=$!
     cd "$PROJECT_ROOT"
 
@@ -432,7 +456,7 @@ run_smoke_test() {
     fi
 
     # Test 2: Frontend pages
-    for page in "/" "/biomarkers" "/eeg-source-localization"; do
+    for page in "/" "/analysis"; do
         local code
         code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$FRONTEND_PORT$page" 2>/dev/null)
         if [[ "$code" == "200" ]]; then

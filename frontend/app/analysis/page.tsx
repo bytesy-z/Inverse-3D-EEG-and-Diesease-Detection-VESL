@@ -1,10 +1,11 @@
 "use client"
 
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback } from "react"
 import { RotateCcw, Brain, Activity, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
+import { Card } from "@/components/ui/card"
 import { AppHeader, AppContainer, AppFooter } from "@/components/app-shell"
 import { StepIndicator, type StepId } from "@/components/step-indicator"
 import { FileUploadSection } from "@/components/file-upload-section"
@@ -16,9 +17,14 @@ import { ErrorAlert } from "@/components/error-alert"
 import { ErrorBoundary } from "@/components/error-boundary"
 import { AnalysisSkeleton } from "@/components/analysis-skeleton"
 import { XaiPanel } from "@/components/xai-panel"
-import { useWebSocket } from "@/hooks/use-websocket"
 import { ConcordanceBadge } from "@/components/concordance-badge"
 import type { PhysDeepSIFResult } from "@/lib/job-store"
+
+const DEFAULT_CHANNEL_NAMES = [
+  "Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4",
+  "O1", "O2", "F7", "F8", "T3", "T4", "T5", "T6",
+  "Fz", "Cz", "Pz",
+]
 
 /* ---- Result types for both modes ---- */
 interface EegWindowData {
@@ -33,6 +39,7 @@ interface EegWindowData {
 }
 
 interface ESIResult {
+  jobId: string
   fileName: string
   processingTime: number
   plotHtml: string
@@ -73,12 +80,6 @@ export default function AnalysisPage() {
   // EEG waveform window selection
   const [selectedWindow, setSelectedWindow] = useState<number>(0)
 
-  // XAI overlay toggle
-  const [showOverlay, setShowOverlay] = useState<boolean>(false)
-  const [jobId, setJobId] = useState<string | null>(null)
-  const [useWs, setUseWs] = useState(false)
-  const cmaesStatus = useWebSocket(useWs ? jobId : null)
-
   /* ---- File selected from upload ---- */
   const handleFileSelect = useCallback((file: File) => {
     setSelectedFile(file)
@@ -92,36 +93,47 @@ export default function AnalysisPage() {
     setError(null)
 
     try {
-      const fd = new FormData()
-      fd.append("file", selectedFile)
-      fd.append("mode", "biomarkers")
-      fd.append("include_eeg", "true")
-      fd.append("max_windows", String(maxWindows))
-      fd.append("cmaes_generations", String(cmaesGens))
-      fd.append("debug", debugMode ? "true" : "false")
+      // Parallel requests: source_localization + biomarkers
+      const fdSource = new FormData()
+      fdSource.append("file", selectedFile)
+      fdSource.append("include_eeg", "true")
+      fdSource.append("max_windows", String(maxWindows))
+      fdSource.append("cmaes_generations", String(cmaesGens))
+      fdSource.append("debug", debugMode ? "true" : "false")
+      fdSource.append("ws", "false")
+      fdSource.append("mode", "source_localization")
 
-      if (debugMode) {
-        fd.append("ws", "false")
-        const res = await fetch("/api/analyze", { method: "POST", body: fd })
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({ message: "Analysis failed" }))
-          throw new Error(errData.detail || errData.message || `Analysis failed (${res.status})`)
-        }
-        const data = await res.json()
-        setEsiResult({ ...data, plotHtml: data.sourcePlotHtml || data.plotHtml })
-        setBioResult(data)
-        setStep("results")
-      } else {
-        fd.append("ws", "true")
-        const res = await fetch("/api/analyze", { method: "POST", body: fd })
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({ message: "Analysis request failed" }))
-          throw new Error(errData.message || `Analysis failed (${res.status})`)
-        }
-        const data = await res.json()
-        setJobId(data.job_id)
-        setUseWs(true)
+      const fdBio = new FormData()
+      fdBio.append("file", selectedFile)
+      fdBio.append("include_eeg", "true")
+      fdBio.append("max_windows", String(maxWindows))
+      fdBio.append("cmaes_generations", String(cmaesGens))
+      fdBio.append("debug", debugMode ? "true" : "false")
+      fdBio.append("ws", "false")
+      fdBio.append("mode", "biomarkers")
+
+      const [sourceRes, bioRes] = await Promise.all([
+        fetch("/api/analyze", { method: "POST", body: fdSource }),
+        fetch("/api/analyze", { method: "POST", body: fdBio }),
+      ])
+
+      if (!sourceRes.ok) {
+        const errData = await sourceRes.json().catch(() => ({ message: "Source localization failed" }))
+        throw new Error(errData.detail || errData.message || `Source localization failed (${sourceRes.status})`)
       }
+      if (!bioRes.ok) {
+        const errData = await bioRes.json().catch(() => ({ message: "Biomarker analysis failed" }))
+        throw new Error(errData.detail || errData.message || `Biomarker analysis failed (${bioRes.status})`)
+      }
+
+      const [sourceData, bioData] = await Promise.all([
+        sourceRes.json(),
+        bioRes.json(),
+      ])
+
+      setEsiResult(sourceData)
+      setBioResult(bioData)
+      setStep("results")
     } catch (err) {
       setError(err instanceof Error ? err.message : "An error occurred during analysis")
       setStep("upload")
@@ -158,48 +170,6 @@ export default function AnalysisPage() {
     const normalizedIndex = ((frameIndex % total) + total) % total
     setClampedWindow(normalizedIndex)
   }, [esiResult?.eegData?.windows?.length, setClampedWindow])
-
-  /* ---- Handle WebSocket job status updates ---- */
-  useEffect(() => {
-    if (!cmaesStatus.result) return
-    const r = cmaesStatus.result
-
-    queueMicrotask(() => {
-      // Phase A: preliminary biomarker results
-      if (r.epileptogenicity && !bioResult) {
-        setBioResult({
-          jobId: r.jobId,
-          status: r.status,
-          processingTime: 0,
-          source: selectedFile?.name ?? "upload",
-          plotHtml: "",
-          fullHtmlPath: r.fullHtmlPath,
-          epileptogenicity: r.epileptogenicity,
-          concordance: r.concordance ?? null,
-          cmaes: r.cmaes ?? null,
-          xai: r.xai ?? null,
-          groundTruth: null,
-          eegData: null,
-        })
-      }
-
-      // Completed: update with concordance if present
-      if (r.status === "completed" && bioResult) {
-        setBioResult((prev) =>
-          prev
-            ? {
-                ...prev,
-                status: "completed",
-                concordance: r.concordance ?? null,
-                cmaes: r.cmaes ?? null,
-              }
-            : prev,
-        )
-        setStep("results")
-        setUseWs(false)
-      }
-    })
-  }, [cmaesStatus, bioResult, selectedFile])
 
   /* ---- Derive detected regions from biomarker result ---- */
   const detectedRegions: string[] =
@@ -312,26 +282,10 @@ export default function AnalysisPage() {
             <>
               <ProcessingWindow
                 elapsedTime={0}
-                progress={cmaesStatus.status?.progress ?? 0}
-                status={
-                  cmaesStatus.cmaesRunning
-                    ? `CMA-ES generation ${cmaesStatus.cmaesProgress.current}/${cmaesStatus.cmaesProgress.max}`
-                    : cmaesStatus.status?.message ?? "Starting analysis..."
-                }
+                progress={0}
+                status={"Running inference..."}
               />
               <AnalysisSkeleton />
-              {cmaesStatus.phaseAComplete && cmaesStatus.result?.fullHtmlPath && (
-                <div className="mt-4">
-                  <iframe
-                    src={cmaesStatus.result.fullHtmlPath}
-                    className="h-[400px] w-full rounded-lg opacity-60"
-                    title="Preliminary brain heatmap"
-                  />
-                  <p className="mt-2 text-center text-xs text-muted-foreground">
-                    Preliminary results — biophysical validation running in background
-                  </p>
-                </div>
-              )}
             </>
           )}
 
@@ -417,99 +371,143 @@ export default function AnalysisPage() {
               {viewMode === "source" && (esiResult || bioResult) && (
                 <div className="grid w-full grid-cols-1 gap-4 lg:grid-cols-2">
                   {/* EEG Waveform */}
-                  {(esiResult?.eegData || bioResult?.eegData) && (
-                    <EegWaveformPlot
-                      eegData={esiResult?.eegData || bioResult?.eegData}
-                      selectedWindow={selectedWindow}
-                      onSelectedWindowChange={setClampedWindow}
-                      className="w-full"
-                    />
-                  )}
+                  {(() => {
+                    const eeg = esiResult?.eegData ?? bioResult?.eegData
+                    if (!eeg) return null
+                    return (
+                      <EegWaveformPlot
+                        eegData={eeg}
+                        selectedWindow={selectedWindow}
+                        onSelectedWindowChange={setClampedWindow}
+                        className="w-full"
+                      />
+                    )
+                  })()}
 
                   {/* 3D Brain Visualization */}
-                  {(esiResult?.plotHtml || bioResult?.plotHtml) && (
-                    <BrainVisualization
-                      plotHtml={esiResult?.plotHtml || bioResult?.plotHtml}
-                      label="Source Activity"
-                      className="h-[640px] w-full"
-                      playbackSpeed={playbackSpeed}
-                      currentFrame={selectedWindow}
-                      onFrameChange={handleBrainFrameChange}
-                    />
-                  )}
+                  {(() => {
+                    const html = esiResult?.plotHtml ?? bioResult?.plotHtml
+                    if (!html) return null
+                    return (
+                      <BrainVisualization
+                        plotHtml={html}
+                        label="Source Activity"
+                        className="h-[640px] w-full"
+                        playbackSpeed={playbackSpeed}
+                        currentFrame={selectedWindow}
+                        onFrameChange={handleBrainFrameChange}
+                      />
+                    )
+                  })()}
                 </div>
               )}
 
               {/* ---- Biomarker Detection View ---- */}
               {viewMode === "biomarkers" && bioResult && (
-                <div className="space-y-4">
-                  {/* Window selector for biomarker view */}
-                  {(esiResult?.eegData?.windows && esiResult.eegData.windows.length > 1) && (
-                    <div className="flex items-center gap-3 text-sm">
-                      <span className="text-muted-foreground">Window:</span>
-                      <div className="flex gap-1">
-                        {esiResult.eegData.windows.map((_, idx) => (
-                          <button
-                            key={idx}
-                            onClick={() => setClampedWindow(idx)}
-                            className={`
-                              rounded-md px-3 py-1 text-xs font-medium transition-colors
-                              ${selectedWindow === idx
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-muted text-muted-foreground hover:text-foreground"
-                              }
-                            `}
-                          >
-                            {idx + 1}
-                          </button>
-                        ))}
+                <div className="grid w-full grid-cols-1 lg:grid-cols-[40%_60%] gap-4">
+                  {/* Left column: Brain heatmap — always visible, sticky */}
+                  <div className="lg:sticky lg:top-4 self-start">
+                    <BrainVisualization
+                      plotHtml={bioResult.plotHtml}
+                      label="Epileptogenicity Map"
+                      className="h-[500px] w-full"
+                      currentFrame={selectedWindow}
+                      onFrameChange={handleBrainFrameChange}
+                    />
+                  </div>
+
+                  {/* Right column: results stacked vertically */}
+                  <div className="space-y-4">
+                    {/* Window selector for biomarker view */}
+                    {(esiResult?.eegData?.windows && esiResult.eegData.windows.length > 1) && (
+                      <div className="flex items-center gap-3 text-sm">
+                        <span className="text-muted-foreground">Window:</span>
+                        <div className="flex gap-1">
+                          {esiResult.eegData.windows.map((_, idx) => (
+                            <button
+                              key={idx}
+                              onClick={() => setClampedWindow(idx)}
+                              className={`
+                                rounded-md px-3 py-1 text-xs font-medium transition-colors
+                                ${selectedWindow === idx
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-muted text-muted-foreground hover:text-foreground"
+                                }
+                              `}
+                            >
+                              {idx + 1}
+                            </button>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {/* EEG Waveform */}
-                  {esiResult?.eegData && (
-                    <EegWaveformPlot
-                      eegData={esiResult.eegData}
-                      selectedWindow={selectedWindow}
-                      onSelectedWindowChange={setClampedWindow}
-                      className="h-[500px]"
-                    />
-                  )}
+                    {/* Section 1: Detected Regions */}
+                    <Card>
+                      <div className="px-4 py-2 border-b">
+                        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Epileptogenic Regions</span>
+                      </div>
+                      <div className="p-4">
+                        <DetectedRegions regions={detectedRegions} variant="clinical" />
+                      </div>
+                    </Card>
 
-                  <BrainVisualization
-                    plotHtml={bioResult.plotHtml}
-                    label="Epileptogenicity Map"
-                    className="h-[640px]"
-                    currentFrame={selectedWindow}
-                    onFrameChange={handleBrainFrameChange}
-                  />
+                    {/* Section 2: CMA-ES Validation */}
+                    {bioResult?.concordance && (
+                      <Card>
+                        <div className="px-4 py-2 border-b">
+                          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Biophysical Validation</span>
+                        </div>
+                        <div className="p-4 space-y-3">
+                          <ConcordanceBadge
+                            tier={bioResult.concordance.tier}
+                            overlap={bioResult.concordance.overlap}
+                            description={bioResult.concordance.tier_description}
+                            sharedRegions={bioResult.concordance.shared_regions}
+                          />
+                        </div>
+                      </Card>
+                    )}
 
-                  {bioResult?.concordance && (
-                    <ConcordanceBadge
-                      tier={bioResult.concordance.tier}
-                      overlap={bioResult.concordance.overlap}
-                      description={bioResult.concordance.tier_description}
-                      sharedRegions={bioResult.concordance.shared_regions}
-                    />
-                  )}
-
-                  <DetectedRegions
-                    regions={detectedRegions}
-                    variant="clinical"
-                  />
-
-                  {bioResult && (
-                    <XaiPanel
-                      channelImportance={bioResult.xai?.channel_importance ?? []}
-                      timeImportance={bioResult.xai?.time_importance ?? []}
-                      channelNames={bioResult.epileptogenicity?.region_labels ?? []}
-                      onToggleOverlay={() => setShowOverlay((v) => !v)}
-                      showOverlay={showOverlay}
-                    />
-                  )}
+                    {/* Section 3: XAI Panel */}
+                    {bioResult?.xai && (
+                      <Card>
+                        <div className="px-4 py-2 border-b">
+                          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Explainability (XAI)</span>
+                        </div>
+                        <div className="p-4">
+                          <XaiPanel
+                            channelImportance={bioResult.xai.channel_importance ?? []}
+                            timeImportance={bioResult.xai.time_importance ?? []}
+                            channelNames={esiResult?.eegData?.channels ?? bioResult?.eegData?.channels ?? DEFAULT_CHANNEL_NAMES}
+                            topSegments={bioResult.xai.top_segments ?? []}
+                            eegData={esiResult?.eegData ?? bioResult?.eegData ?? undefined}
+                            selectedWindow={selectedWindow}
+                          />
+                        </div>
+                      </Card>
+                    )}
+                  </div>
                 </div>
               )}
+
+              {/* EEG Waveform — full width below the above grid, collapsible */}
+              {viewMode === "biomarkers" && bioResult?.eegData && (
+                <details className="mt-4 group">
+                  <summary className="text-xs font-medium uppercase tracking-wider text-muted-foreground cursor-pointer select-none hover:text-foreground">
+                    EEG Waveform {(() => { const n = esiResult?.eegData?.windows?.length; if (n && n > 1) return `(${n} windows)`; return null })()}
+                  </summary>
+                  <div className="mt-3">
+                    <EegWaveformPlot
+                      eegData={bioResult.eegData}
+                      selectedWindow={selectedWindow}
+                      onSelectedWindowChange={setClampedWindow}
+                      className="h-[400px]"
+                    />
+                  </div>
+                </details>
+              )}
+
             </div>
           )}
         </AppContainer>

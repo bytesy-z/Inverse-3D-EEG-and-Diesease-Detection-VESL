@@ -56,7 +56,7 @@ export function DetectedRegions({
       </h3>
       <Separator className="mb-4" />
       <div className="flex flex-wrap gap-2">
-        {regions.map((region) => (
+        {regions.slice(0, 3).map((region) => (
           <Badge
             key={region}
             variant={variant === "clinical" ? "destructive" : "secondary"}
@@ -73,8 +73,10 @@ export function DetectedRegions({
         ))}
       </div>
       <p className="mt-4 text-xs text-muted-foreground">
-        {regions.length} region{regions.length !== 1 ? "s" : ""} identified
-        (top-K = 5 threshold).
+        {regions.length > 3 
+          ? `Top 3 of ${regions.length} identified regions shown`
+          : `${regions.length} region${regions.length !== 1 ? "s" : ""} identified`}
+        .
       </p>
     </Card>
   )

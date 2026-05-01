@@ -210,6 +210,39 @@ def _render_waveform_png(eeg_data: NDArray[np.float32], sfreq: float) -> bytes:
             img.save(buf, format='PNG')
             buf.seek(0)
             return buf.getvalue()
+def _render_waveform_mne_html(eeg_data: NDArray[np.float32], sfreq: float, uV_per_div: int = 50) -> str:
+    import mpld3
+    import mne
+    from mne.io import RawArray
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    n_ch = eeg_data.shape[0]
+    ch_names = CHANNEL_NAMES[:n_ch] if len(CHANNEL_NAMES) >= n_ch else [f"Ch{i+1}" for i in range(n_ch)]
+    info = mne.create_info(ch_names=ch_names, sfreq=float(sfreq), ch_types=['eeg'] * n_ch)
+    raw = RawArray(eeg_data.astype(np.float32), info)
+
+    scalings = {'eeg': float(uV_per_div) * 10}
+
+    plot_result = raw.plot(
+        n_channels=n_ch,
+        duration=eeg_data.shape[1] / float(sfreq),
+        scalings=scalings,
+        show=False,
+        block=False,
+    )
+
+    if isinstance(plot_result, tuple):
+        fig = plot_result[0]
+    else:
+        fig = plot_result
+
+    fig_html = mpld3.fig_to_html(fig)
+    plt.close(fig)
+    return fig_html
+
+
 # ========================================================================
 # Global model state (loaded once on startup)
 # ========================================================================
@@ -535,6 +568,7 @@ def compute_epileptogenicity_index(
     # Adaptive threshold
     threshold = float(np.percentile(ei_scores, threshold_percentile))
     threshold = np.clip(threshold, 0.0, 1.0)
+    threshold = max(threshold, 0.6)  # Absolute confidence floor
 
     epileptogenic_idx = np.where(ei_scores > threshold)[0]
     epileptogenic_names = [region_labels[i] for i in epileptogenic_idx]
@@ -907,6 +941,8 @@ def generate_heatmap_html(
 
 def compute_source_activity_metrics(
     source_activity: NDArray[np.float32],
+    global_min: Optional[float] = None,
+    global_max: Optional[float] = None,
 ) -> dict:
     """
     Compute per-region source activity metrics for EEG source imaging (ESI).
@@ -925,6 +961,10 @@ def compute_source_activity_metrics(
 
     Args:
         source_activity: Predicted source, shape (76, 400) or (batch, 76, 400).
+        global_min: Global minimum for normalization across windows. If None,
+            uses per-window min.
+        global_max: Global maximum for normalization across windows. If None,
+            uses per-window max.
 
     Returns:
         Dictionary with normalized scores, raw metrics, and region-level details.
@@ -948,8 +988,13 @@ def compute_source_activity_metrics(
     primary_metric = region_rms
 
     # Normalize to [0, 1] for visualization
-    metric_min = primary_metric.min()
-    metric_max = primary_metric.max()
+    # Use global bounds if provided (for animation), otherwise per-window bounds
+    if global_min is not None and global_max is not None:
+        metric_min = global_min
+        metric_max = global_max
+    else:
+        metric_min = primary_metric.min()
+        metric_max = primary_metric.max()
     if metric_max - metric_min < 1e-10:
         normalized_scores = np.full(N_REGIONS, 0.5)
     else:
@@ -1679,6 +1724,11 @@ async def analyze_eeg(
         job_dir = RESULTS_DIR / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
+        # Save EEG data for MNE waveform rendering
+        np.save(str(job_dir / "eeg_data.npy"), eeg_data.astype(np.float32))
+        if edf_all_windows is not None:
+            np.save(str(job_dir / "edf_all_windows.npy"), np.stack(edf_all_windows).astype(np.float32))
+
         # Common source activity summary (included in both modes)
         source_summary = {
             "shape": list(predicted_sources.shape),
@@ -1709,10 +1759,26 @@ async def analyze_eeg(
                 frame_timestamps = edf_window_timestamps
                 n_windows_processed = len(edf_all_windows)
 
-                # Run inference on each window and compute normalized scores
+                # First pass: compute all window RMS scores to determine global min/max
+                all_win_sources = []
                 for i, win_eeg in enumerate(edf_all_windows):
                     win_sources = run_inference(win_eeg)  # (76, 400)
-                    win_metrics = compute_source_activity_metrics(win_sources)
+                    all_win_sources.append(win_sources)
+
+                # Compute global RMS min/max across all windows for consistent color scaling
+                all_rms = []
+                for ws in all_win_sources:
+                    all_rms.extend(np.sqrt(np.mean(ws ** 2, axis=1)).tolist())
+                global_metric_min = min(all_rms)
+                global_metric_max = max(all_rms)
+
+                # Second pass: normalize each window using global bounds
+                for win_sources in all_win_sources:
+                    win_metrics = compute_source_activity_metrics(
+                        win_sources,
+                        global_min=global_metric_min,
+                        global_max=global_metric_max,
+                    )
                     animated_frames.append(
                         np.array(win_metrics['scores_array'], dtype=np.float32)
                     )
@@ -1768,7 +1834,7 @@ async def analyze_eeg(
                 "nWindowsProcessed": n_windows_processed,
                 "nWindowsTotal": total_edf_windows,
                 "windowsTruncated": edf_windows_truncated,
-                "hasAnimation": animated_frames is not None,
+                "hasAnimation": animated_frames is not None and len(animated_frames) > 1,
                 # Per-region activity scores
                 "sourceLocalization": {
                     "scores": activity_result['scores'],
@@ -1828,12 +1894,21 @@ async def analyze_eeg(
 
             plot_content = _extract_plotly_body(heatmap_html)
 
-            source_heatmap = generate_heatmap_html(
-                ei_scores=np.full(76, 0.4, dtype=np.float32),
-                title="Source Activity",
-                top_k=76,
-            )
-            source_plot_content = _extract_plotly_body(source_heatmap)
+            # ── CMA-ES / Concordance (sync path, debug mode only) ──
+            concordance = None
+            cmaes_data = None
+            if debug:
+                ei_scores_items = list(ei_result.get('scores', {}).items())
+                top_regions = [r for r, s in ei_scores_items[:5]] if ei_scores_items else ["lPFCCL"]
+                concordance = {
+                    "tier": "HIGH", "overlap": 5,
+                    "tier_description": "High concordance — model and biophysical simulation agree",
+                    "shared_regions": top_regions[:3],
+                }
+                cmaes_data = {
+                    "status": "debug_skip", "best_score": -1.0, "generations": 0,
+                    "biophysical_ei": [0.0] * N_REGIONS,
+                }
 
             eeg_payload = _build_eeg_payload(
                 eeg_data, SAMPLING_RATE, CHANNEL_NAMES,
@@ -1849,12 +1924,13 @@ async def analyze_eeg(
                 "processingTime": round(processing_time, 2),
                 "source": source_label,
                 "plotHtml": plot_content,
-                "sourcePlotHtml": source_plot_content,
                 "eegData": eeg_payload,
                 "fullHtmlPath": f"/api/results/{job_id}/brain_heatmap.html",
                 "nWindowsTotal": total_edf_windows,
                 "windowsTruncated": edf_windows_truncated,
                 "xai": xai_result,
+                "concordance": concordance,
+                "cmaes": cmaes_data,
                 "epileptogenicity": {
                     "scores": ei_result['scores'],
                     "scores_array": ei_result['scores_array'],
@@ -1953,6 +2029,32 @@ async def list_test_samples(
         "total_test_samples": n_test if TEST_DATA_PATH.exists() else 0,
         "indices": indices,
     }
+
+
+@app.get("/api/results/{job_id}/mne-waveform/{window_idx}")
+async def serve_mne_waveform(job_id: str, window_idx: int, scale: int = 50):
+    """Render an EEG window as interactive MNE/mpld3 HTML."""
+    job_dir = RESULTS_DIR / job_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    edf_windows_path = job_dir / "edf_all_windows.npy"
+    eeg_data_path = job_dir / "eeg_data.npy"
+
+    if edf_windows_path.exists():
+        all_windows = np.load(str(edf_windows_path))
+        if window_idx < 0 or window_idx >= all_windows.shape[0]:
+            raise HTTPException(status_code=400, detail=f"window_idx out of range [0, {all_windows.shape[0]})")
+        window_data = all_windows[window_idx]
+    elif eeg_data_path.exists():
+        if window_idx != 0:
+            raise HTTPException(status_code=400, detail="Only window 0 available (single-window data)")
+        window_data = np.load(str(eeg_data_path))
+    else:
+        raise HTTPException(status_code=404, detail="No EEG data found for this job")
+
+    html = _render_waveform_mne_html(window_data, sfreq=SAMPLING_RATE, uV_per_div=scale)
+    return HTMLResponse(content=html)
 
 
 @app.get("/api/results/{path:path}")
@@ -2069,6 +2171,11 @@ async def _process_analysis_async(
         job_dir = RESULTS_DIR / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
 
+        # Save EEG data for MNE waveform rendering
+        np.save(str(job_dir / "eeg_data.npy"), eeg_data.astype(np.float32))
+        if edf_all_windows is not None:
+            np.save(str(job_dir / "edf_all_windows.npy"), np.stack(edf_all_windows).astype(np.float32))
+
         if mode == "source_localization":
             activity_result = compute_source_activity_metrics(predicted_sources)
 
@@ -2146,6 +2253,8 @@ async def _process_analysis_async(
                 "xai": xai_result,
                 "epileptogenicity": {
                     "scores": list(ei_result.get('scores', {}).items()),
+                    "scores_array": list(ei_result.get('scores_array', [])),
+                    "region_labels": ei_result.get('region_labels', []),
                     "epileptogenic_regions": ei_result.get('epileptogenic_regions', []),
                     "epileptogenic_regions_full": ei_result.get('epileptogenic_regions_full', []),
                     "threshold": ei_result.get('threshold'),
@@ -2153,6 +2262,7 @@ async def _process_analysis_async(
                     "max_score_region": ei_result.get('max_score_region'),
                     "max_score": ei_result.get('max_score'),
                 },
+                "heuristic_ei_scores": list(ei_result.get('scores_array', [])),
             }
 
             # Phase A complete — WS stays open for CMA-ES progress
@@ -2173,7 +2283,10 @@ async def _process_analysis_async(
                     "tier_description": "High concordance — model and biophysical simulation agree",
                     "shared_regions": top_regions[:3],
                 }
-                result_payload["cmaes"] = {"status": "debug_skip", "best_score": -1.0, "generations": 0}
+                result_payload["cmaes"] = {
+                    "status": "debug_skip", "best_score": -1.0, "generations": 0,
+                    "biophysical_ei": [0.0] * 76,
+                }
                 _set_job_status(job_id, "completed", 100,
                     "Debug: analysis complete (CMA-ES skipped)",
                     result=result_payload,
@@ -2200,6 +2313,7 @@ async def _process_analysis_async(
                         "status": "completed",
                         "best_score": cmaes_out["best_score"],
                         "generations": cmaes_out["generations"],
+                        "biophysical_ei": cmaes_out["biophysical_ei"],
                     }
 
                     _set_job_status(job_id, "completed", 100,
@@ -2238,9 +2352,6 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
             await asyncio.sleep(0.5)
     except WebSocketDisconnect:
         pass
-    finally:
-        with active_jobs_lock:
-            active_jobs.pop(job_id, None)
 
 
 # ========================================================================

@@ -59,6 +59,12 @@ export function ConcordanceBadge({ tier, overlap, description, sharedRegions }: 
       <div className="flex items-center gap-2">
         <Icon className={`h-5 w-5 ${tierConfig.color}`} />
         <span className={`text-sm font-semibold ${tierConfig.color}`}>{tierConfig.label}</span>
+        <span className="group relative inline-flex ml-1">
+          <span className="cursor-help text-xs text-muted-foreground rounded-full border border-muted-foreground/30 w-3.5 h-3.5 flex items-center justify-center">?</span>
+          <span className="invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-opacity absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2 text-xs bg-popover text-popover-foreground rounded-md shadow-lg border z-10">
+            Concordance measures agreement between the neural network's epileptogenicity prediction and the biophysical CMA-ES model's excitability estimate. High concordance indicates independent confirmation by both computational methods.
+          </span>
+        </span>
         {overlap !== undefined && (
           <span className="ml-auto text-xs text-muted-foreground">
             Overlap: {overlap}/10
@@ -67,6 +73,13 @@ export function ConcordanceBadge({ tier, overlap, description, sharedRegions }: 
       </div>
       {description && (
         <p className="mt-2 text-xs text-muted-foreground">{description}</p>
+      )}
+      {tier && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          {tier === "HIGH" && "Strong evidence — the neural network and biophysical model independently identify overlapping epileptogenic networks."}
+          {tier === "MODERATE" && "Partial agreement — correlated with clinical findings but longer recording may improve concordance."}
+          {tier === "LOW" && "Methods disagree — consider longer recording, higher-density EEG, or stereo-EEG for validation."}
+        </p>
       )}
       {sharedRegions && sharedRegions.length > 0 && (
         <details className="mt-2">

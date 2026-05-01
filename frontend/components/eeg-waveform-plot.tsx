@@ -1,7 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
-import type { Data, Layout, Config } from "plotly.js-dist-min"
+import { useRef, useState, useEffect, useCallback } from "react"
 import { Maximize2, Minimize2 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -18,11 +17,49 @@ interface EegData {
   }>
 }
 
+interface HighlightSegment {
+  channel_idx: number
+  start_time_sec: number
+  end_time_sec: number
+  importance: number
+}
+
 interface EegWaveformPlotProps {
   eegData: EegData
   selectedWindow?: number
-  onSelectedWindowChange?: (windowIndex: number) => void
+  onSelectedWindowChange?: (index: number) => void
   className?: string
+  highlightSegments?: HighlightSegment[]
+}
+
+const PLOTLY_CDN = "https://cdn.plot.ly/plotly-2.35.3.min.js"
+
+const CHANNEL_COLORS = [
+  "#7ec8e3", "#a8d8ea", "#aa96da", "#fcbad3", "#a8e6cf",
+  "#dcedc1", "#ffd3b6", "#ffaaa5", "#ff8b94", "#b8a9c9",
+  "#c9c9ff", "#b5e7a0", "#e3eaa7", "#f7cac9", "#92a8d1",
+  "#f0e68c", "#d5a6bd", "#c3e0e5", "#9b59b6",
+]
+
+function channelColor(idx: number): string {
+  return CHANNEL_COLORS[idx % CHANNEL_COLORS.length]
+}
+
+function ensurePlotly(): Promise<void> {
+  return new Promise((resolve, _reject) => {
+    if ((window as any).Plotly) {
+      resolve()
+      return
+    }
+    const script = document.createElement("script")
+    script.src = PLOTLY_CDN
+    script.onload = () => resolve()
+    script.onerror = () => {
+      console.error("Failed to load Plotly from CDN")
+      resolve()
+    }
+    document.head.appendChild(script)
+  })
 }
 
 export function EegWaveformPlot({
@@ -30,163 +67,235 @@ export function EegWaveformPlot({
   selectedWindow = 0,
   onSelectedWindowChange,
   className = "",
+  highlightSegments,
 }: EegWaveformPlotProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const [plotlyReady, setPlotlyReady] = useState(false)
   const [loading, setLoading] = useState(true)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [uVPerDiv, setUVPerDiv] = useState<number>(50)
 
   const windowCount = eegData.windows?.length ?? 0
   const effectiveWindowIndex = Math.min(Math.max(selectedWindow ?? 0, 0), Math.max(windowCount - 1, 0))
-  const currentWindow = eegData.windows?.[effectiveWindowIndex]
-  const channels = useMemo(() => eegData.channels ?? [], [eegData.channels])
-  const samplingRate = eegData.samplingRate ?? 200
-  const windowLength = eegData.windowLength ?? 400
-
-  const setWindowIndex = (nextIndex: number) => {
-    if (windowCount <= 0) return
-    const clamped = Math.min(Math.max(nextIndex, 0), windowCount - 1)
-    onSelectedWindowChange?.(clamped)
-  }
+  const channels = eegData.channels ?? []
+  const nChannels = channels.length
 
   const uVPerDivOptions = [5, 10, 15, 20, 25, 50, 100]
 
-  /* ---- Render Plotly waveform ---- */
+  const setWindowIndex = useCallback(
+    (nextIndex: number) => {
+      if (windowCount <= 0) return
+      const clamped = Math.min(Math.max(nextIndex, 0), windowCount - 1)
+      onSelectedWindowChange?.(clamped)
+    },
+    [windowCount, onSelectedWindowChange],
+  )
+
+  /* ---- Load Plotly ---- */
   useEffect(() => {
+    let cancelled = false
+    ensurePlotly().then(() => {
+      if (!cancelled) setPlotlyReady(true)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  /* ---- Render Plotly figure ---- */
+  useEffect(() => {
+    if (!plotlyReady || windowCount === 0) return
+
     const container = containerRef.current
-    if (!container || !currentWindow) return
+    if (!container) return
 
     let cancelled = false
-    setLoading(true)
+    const Plotly = (window as any).Plotly
+    if (!Plotly?.newPlot) return
 
-    const run = async () => {
-      if (cancelled) return
+    const win = eegData.windows[effectiveWindowIndex]
+    if (!win?.data?.length) return
 
-      let Plotly: any;
-      try {
-        Plotly = await import("plotly.js-dist-min").then(m => m.default)
-      } catch (err) {
-        console.warn("Failed to load plotly.js module, falling back to window.Plotly", err)
-        Plotly = (window as any).Plotly
-      }
-      if (cancelled || !Plotly) return
+    const sr = eegData.samplingRate
+    const nSamples = eegData.windowLength
 
-      const { data: eegValues, startTime, endTime } = currentWindow
-      const numChannels = channels.length
-      const numSamples = eegValues[0]?.length ?? 0
-      const timeAxis = Array.from({ length: numSamples }, (_, i) => startTime + i / samplingRate)
-
-      const spacing = 100 // vertical spacing per channel
-      const gain = spacing / uVPerDiv // compute multiplier from selected scale
-      const traceColor = "#4ade80"
-      const textColor = "#e5e5e5"
-      const gridColor = "#333333"
-      const zeroLineColor = "#444444"
-
-      const traces: Data[] = channels.map((channel, chIdx) => {
-        const values = eegValues[chIdx] ?? []
-        const offset = (numChannels - 1 - chIdx) * spacing
-        const yCoords = values.map((v) => v * gain + offset)
-        return {
-          x: timeAxis,
-          y: yCoords,
-          mode: "lines" as const,
-          name: channel,
-          line: {
-            color: traceColor,
-            width: 1,
-          },
-          hovertemplate: `<b>${channel}</b><br>Time: %{x}s<br>Value: %{customdata} µV<extra></extra>`,
-          customdata: values,
-          yaxis: "y",
-        }
-      })
-
-      const layout: Partial<Layout> & Record<string, unknown> = {
-        paper_bgcolor: "transparent",
-        plot_bgcolor: "transparent",
-        font: {
-          color: textColor,
-          size: 10,
-        },
-        margin: { l: 50, r: 20, t: 30, b: 40 },
-        xaxis: {
-          title: "Time (s)",
-          titlefont: { color: textColor, size: 11 },
-          tickfont: { color: textColor, size: 9 },
-          gridcolor: gridColor,
-          zerolinecolor: zeroLineColor,
-          zerolinewidth: 1,
-          dtick: 0.5,
-          range: [startTime, endTime],
-        },
-        yaxis: {
-          title: "",
-          tickfont: { color: textColor, size: 9 },
-          gridcolor: gridColor,
-          zerolinecolor: zeroLineColor,
-          zerolinewidth: 1,
-          showticklabels: true,
-          tickvals: channels.map((_, i) => (numChannels - 1 - i) * spacing),
-          ticktext: channels,
-          dtick: spacing,
-          range: [-spacing, (numChannels - 1) * spacing + spacing],
-        },
-        showlegend: false,
-        hovermode: "x unified" as const,
-        dragmode: "pan" as const,
-        annotations: [
-          {
-            xref: 'paper', yref: 'paper', x: 0.02, y: 0.95,
-            text: `Scale: ${uVPerDiv} µV / div`, showarrow: false,
-            font: { color: textColor, size: 12 }
-          }
-        ],
-        height: Math.max(400, numChannels * 28),
-      }
-
-      const config: Partial<Config> = {
-        responsive: true,
-        displayModeBar: false,
-        scrollZoom: true,
-      }
-      // UI: simple gain control
-      // Insert a small gain control UI in header (handled in JSX below)
-      // Use react-like update if already initialized, otherwise create
-      if ((container as any)._plotlyInitialized) {
-        Plotly.react(container, traces, layout, config)
-      } else {
-        Plotly.newPlot(container, traces, layout, config)
-        ;(container as any)._plotlyInitialized = true
-      }
-      setLoading(false)
+    const timeArray: number[] = []
+    for (let i = 0; i < nSamples; i++) {
+      timeArray.push(win.startTime + i / sr)
     }
 
-    run().catch(console.error)
+    let globalMax = 0
+    for (let ch = 0; ch < nChannels; ch++) {
+      const d = win.data[ch]
+      if (!d) continue
+      for (let s = 0; s < d.length; s++) {
+        const abs = Math.abs(d[s])
+        if (abs > globalMax) globalMax = abs
+      }
+    }
+    if (globalMax === 0) globalMax = 1
+    const channelOffset = globalMax * 3 * (50 / uVPerDiv)
+
+    /* ---- Build traces ---- */
+    const traces: Record<string, unknown>[] = []
+    for (let ch = 0; ch < nChannels; ch++) {
+      const yOffset = (nChannels - 1 - ch) * channelOffset
+      const raw = win.data[ch]
+      if (!raw) continue
+      const yValues = raw.map((v) => v + yOffset)
+      traces.push({
+        x: timeArray,
+        y: yValues,
+        type: "scatter",
+        mode: "lines",
+        name: channels[ch],
+        line: {
+          color: channelColor(ch),
+          width: 1,
+          shape: "linear",
+        },
+        hoverinfo: "name",
+        showlegend: false,
+        hovertemplate: `${channels[ch]}<extra></extra>`,
+      })
+    }
+
+    /* ---- Highlight shapes ---- */
+    const shapes: Record<string, unknown>[] = []
+    if (highlightSegments?.length) {
+      for (const seg of highlightSegments) {
+        if (seg.channel_idx < 0 || seg.channel_idx >= nChannels) continue
+        const yCenter = (nChannels - 1 - seg.channel_idx) * channelOffset
+        const halfBand = channelOffset * 0.48
+        shapes.push({
+          type: "rect",
+          x0: seg.start_time_sec,
+          x1: seg.end_time_sec,
+          y0: yCenter - halfBand,
+          y1: yCenter + halfBand,
+          fillcolor: `rgba(239, 68, 68, ${Math.max(0.08, Math.min(0.35, seg.importance * 0.4))})`,
+          line: { width: 0 },
+          layer: "below",
+        })
+      }
+    }
+
+    /* ---- Layout ---- */
+    const tickvals: number[] = []
+    const ticktext: string[] = []
+    for (let i = 0; i < nChannels; i++) {
+      tickvals.push((nChannels - 1 - i) * channelOffset)
+      ticktext.push(channels[i])
+    }
+
+    const layout: Record<string, unknown> = {
+      paper_bgcolor: "rgba(0,0,0,0)",
+      plot_bgcolor: "rgba(0,0,0,0)",
+      font: { color: "#a1a1aa", size: 10 },
+      margin: { l: 58, r: 16, t: 5, b: 36 },
+      showlegend: false,
+      hovermode: "closest",
+      dragmode: "pan",
+      xaxis: {
+        title: { text: "Time (s)", font: { color: "#a1a1aa", size: 10 } },
+        tickfont: { color: "#a1a1aa", size: 9 },
+        gridcolor: "rgba(255,255,255,0.06)",
+        zeroline: false,
+        showgrid: true,
+        range: [win.startTime, win.endTime],
+      },
+      yaxis: {
+        tickvals,
+        ticktext,
+        tickfont: { color: "#a1a1aa", size: 8 },
+        gridcolor: "rgba(255,255,255,0.06)",
+        zeroline: false,
+        showgrid: true,
+        range: [-channelOffset * 0.7, (nChannels - 0.3) * channelOffset],
+        fixedrange: false,
+      },
+      shapes,
+    }
+
+    const config: Record<string, unknown> = {
+      responsive: true,
+      displayModeBar: true,
+      modeBarButtonsToRemove: ["lasso2d", "select2d", "autoScale2d"],
+      displaylogo: false,
+      scrollZoom: true,
+    }
+
+    Plotly.purge(container)
+    Plotly.newPlot(container, traces, layout, config)
+      .then(() => {
+        if (!cancelled) setLoading(false)
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false)
+      })
 
     return () => {
       cancelled = true
-      // Purge Plotly instance to free memory and avoid canvas leaks
-      import("plotly.js-dist-min").then(m => {
-        const Plotly = m.default as any
-        if (container) Plotly.purge(container)
-      }).catch(() => {/* ignore — container may already be gone */})
+      if (containerRef.current) {
+        const P = (window as any).Plotly
+        if (P?.purge) P.purge(containerRef.current)
+      }
     }
-  }, [eegData, effectiveWindowIndex, currentWindow, channels, samplingRate, uVPerDiv])
+  }, [plotlyReady, eegData, effectiveWindowIndex, uVPerDiv, highlightSegments, channels, nChannels, windowCount])
+
+  /* ---- Resize on window resize ---- */
+  useEffect(() => {
+    if (!plotlyReady) return
+    const container = containerRef.current
+    if (!container) return
+
+    const handleResize = () => {
+      const P = (window as any).Plotly
+      if (P?.Plots?.resize && containerRef.current) {
+        P.Plots.resize(containerRef.current)
+      }
+    }
+    window.addEventListener("resize", handleResize)
+    return () => window.removeEventListener("resize", handleResize)
+  }, [plotlyReady])
 
   /* ---- Fullscreen toggle ---- */
-  const toggleFullscreen = () => {
+  const toggleFullscreen = useCallback(() => {
     const el = containerRef.current?.parentElement
     if (!el) return
     if (!document.fullscreenElement) {
-      el.requestFullscreen?.().then(() => setIsFullscreen(true))
+      el.requestFullscreen?.().then(() => {
+        setIsFullscreen(true)
+        setTimeout(() => {
+          if (containerRef.current) {
+            const P = (window as any).Plotly
+            P?.Plots?.resize?.(containerRef.current)
+          }
+        }, 200)
+      })
     } else {
-      document.exitFullscreen?.().then(() => setIsFullscreen(false))
+      document.exitFullscreen?.().then(() => {
+        setIsFullscreen(false)
+        setTimeout(() => {
+          if (containerRef.current) {
+            const P = (window as any).Plotly
+            P?.Plots?.resize?.(containerRef.current)
+          }
+        }, 200)
+      })
     }
-  }
+  }, [])
 
   useEffect(() => {
-    const handleFs = () => setIsFullscreen(!!document.fullscreenElement)
+    const handleFs = () => {
+      setIsFullscreen(!!document.fullscreenElement)
+      setTimeout(() => {
+        if (containerRef.current) {
+          const P = (window as any).Plotly
+          P?.Plots?.resize?.(containerRef.current)
+        }
+      }, 200)
+    }
     document.addEventListener("fullscreenchange", handleFs)
     return () => document.removeEventListener("fullscreenchange", handleFs)
   }, [])
@@ -195,10 +304,11 @@ export function EegWaveformPlot({
     <Card
       className={`relative overflow-hidden ${isFullscreen ? "!rounded-none !border-none" : ""} ${className}`}
     >
+      {/* Header bar */}
       <div className="border-b border-border px-4 py-2">
         <div className="flex items-center justify-between w-full">
           <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-            EEG Waveform {windowCount > 1 ? `(Window ${effectiveWindowIndex + 1}/${windowCount})` : ""}
+            EEG Waveform{windowCount > 1 ? ` (Window ${effectiveWindowIndex + 1}/${windowCount})` : ""}
           </span>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <span>Scale</span>
@@ -207,7 +317,7 @@ export function EegWaveformPlot({
               value={uVPerDiv}
               onChange={(e) => setUVPerDiv(Number(e.target.value))}
             >
-              {uVPerDivOptions.map(opt => (
+              {uVPerDivOptions.map((opt) => (
                 <option key={opt} value={opt} className="bg-background text-foreground">
                   {opt} µV/div
                 </option>
@@ -257,23 +367,24 @@ export function EegWaveformPlot({
         onClick={toggleFullscreen}
         aria-label={isFullscreen ? "Exit full screen" : "Full screen"}
       >
-        {isFullscreen ? (
-          <Minimize2 className="h-4 w-4" />
-        ) : (
-          <Maximize2 className="h-4 w-4" />
-        )}
+        {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
       </Button>
 
+      {/* Loading skeleton */}
       {loading && (
         <div className="absolute inset-0 z-[5] flex items-center justify-center bg-card">
           <Skeleton className="h-full w-full rounded-none" />
         </div>
       )}
 
+      {/* Plotly container */}
       <div
         ref={containerRef}
         className="w-full"
-        style={{ minHeight: Math.max(400, channels.length * 28) }}
+        style={{
+          minHeight: Math.max(400, nChannels * 28),
+          height: isFullscreen ? "calc(100vh - 40px)" : undefined,
+        }}
       />
     </Card>
   )

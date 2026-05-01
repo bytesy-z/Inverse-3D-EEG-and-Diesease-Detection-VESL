@@ -74,6 +74,7 @@ export interface PhysDeepSIFResult {
     mean: number
     std: number
   }
+  heuristic_ei_scores?: number[]
   concordance?: {
     tier: string
     overlap: number
@@ -84,6 +85,7 @@ export interface PhysDeepSIFResult {
     status: string
     best_score?: number
     generations?: number
+    biophysical_ei?: number[]
     error?: string
   } | null
   xai?: {
