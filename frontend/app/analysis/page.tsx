@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from "react"
-import { RotateCcw, Brain, Activity, Zap } from "lucide-react"
+import { RotateCcw, Brain, Activity, Zap, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -143,6 +143,10 @@ export default function AnalysisPage() {
       console.log("[AnalysisPage] Bio result:", {
         hasEegData: !!bioData?.eegData,
         eegWindowsLen: bioData?.eegData?.windows?.length,
+        cmaesStatus: bioData?.cmaes?.status,
+        cmaesGens: bioData?.cmaes?.generations,
+        hasConcordance: !!bioData?.concordance,
+        jobId: bioData?.jobId,
       })
 
       setEsiResult(sourceData)
@@ -483,76 +487,92 @@ export default function AnalysisPage() {
                     />
                   </div>
 
-                  {/* Right column: results stacked vertically */}
+                  {/* Right column: results OR CMA-ES loading */}
                   <div className="space-y-4">
-                    {/* Window selector for biomarker view */}
-                    {(esiResult?.eegData?.windows && esiResult.eegData.windows.length > 1) && (
-                      <div className="flex items-center gap-3 text-sm">
-                        <span className="text-muted-foreground">Window:</span>
-                        <div className="flex gap-1">
-                          {esiResult.eegData.windows.map((_, idx) => (
-                            <button
-                              key={idx}
-                              onClick={() => setClampedWindow(idx)}
-                              className={`
-                                rounded-md px-3 py-1 text-xs font-medium transition-colors
-                                ${selectedWindow === idx
-                                  ? "bg-primary text-primary-foreground"
-                                  : "bg-muted text-muted-foreground hover:text-foreground"
-                                }
-                              `}
-                            >
-                              {idx + 1}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Section 1: Detected Regions */}
-                    <Card>
-                      <div className="px-4 py-2 border-b">
-                        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Epileptogenic Regions</span>
-                      </div>
-                      <div className="p-4">
-                        <DetectedRegions regions={detectedRegions} variant="clinical" />
-                      </div>
-                    </Card>
-
-                    {/* Section 2: CMA-ES Validation */}
-                    {bioResult?.concordance && (
+                    {bioResult?.cmaes?.status === "running" ? (
                       <Card>
-                        <div className="px-4 py-2 border-b">
-                          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Biophysical Validation</span>
-                        </div>
-                        <div className="p-4 space-y-3">
-                          <ConcordanceBadge
-                            tier={bioResult.concordance.tier}
-                            overlap={bioResult.concordance.overlap}
-                            description={bioResult.concordance.tier_description}
-                            sharedRegions={bioResult.concordance.shared_regions}
-                          />
+                        <div className="p-10 flex flex-col items-center justify-center gap-4 text-center">
+                          <Loader2 className="h-10 w-10 animate-spin text-primary" />
+                          <div>
+                            <p className="text-base font-semibold">Running CMA-ES Biophysical Inversion</p>
+                            <p className="text-sm text-muted-foreground mt-1.5 max-w-xs">
+                              Validating concordance between heuristic and biophysical epileptogenicity markers
+                            </p>
+                          </div>
                         </div>
                       </Card>
-                    )}
+                    ) : (
+                      <>
+                        {/* Window selector for biomarker view */}
+                        {(esiResult?.eegData?.windows && esiResult.eegData.windows.length > 1) && (
+                          <div className="flex items-center gap-3 text-sm">
+                            <span className="text-muted-foreground">Window:</span>
+                            <div className="flex gap-1">
+                              {esiResult.eegData.windows.map((_, idx) => (
+                                <button
+                                  key={idx}
+                                  onClick={() => setClampedWindow(idx)}
+                                  className={`
+                                    rounded-md px-3 py-1 text-xs font-medium transition-colors
+                                    ${selectedWindow === idx
+                                      ? "bg-primary text-primary-foreground"
+                                      : "bg-muted text-muted-foreground hover:text-foreground"
+                                    }
+                                  `}
+                                >
+                                  {idx + 1}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
 
-                    {/* Section 3: XAI Panel */}
-                    {bioResult?.xai && (
-                      <Card>
-                        <div className="px-4 py-2 border-b">
-                          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Explainability (XAI)</span>
-                        </div>
-                        <div className="p-4">
-                          <XaiPanel
-                            channelImportance={bioResult.xai.channel_importance ?? []}
-                            timeImportance={bioResult.xai.time_importance ?? []}
-                            channelNames={esiResult?.eegData?.channels ?? bioResult?.eegData?.channels ?? DEFAULT_CHANNEL_NAMES}
-                            topSegments={bioResult.xai.top_segments ?? []}
-                            eegData={esiResult?.eegData ?? bioResult?.eegData ?? undefined}
-                            selectedWindow={selectedWindow}
-                          />
-                        </div>
-                      </Card>
+                        {/* Section 1: Detected Regions */}
+                        <Card>
+                          <div className="px-4 py-2 border-b">
+                            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Epileptogenic Regions</span>
+                          </div>
+                          <div className="p-4">
+                            <DetectedRegions regions={detectedRegions} variant="clinical" />
+                          </div>
+                        </Card>
+
+                        {/* Section 2: CMA-ES Validation */}
+                        {bioResult?.concordance && (
+                          <Card>
+                            <div className="px-4 py-2 border-b">
+                              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Biophysical Validation</span>
+                            </div>
+                            <div className="p-4 space-y-3">
+                              <ConcordanceBadge
+                                tier={bioResult.concordance.tier}
+                                overlap={bioResult.concordance.overlap}
+                                description={bioResult.concordance.tier_description}
+                                sharedRegions={bioResult.concordance.shared_regions}
+                              />
+                            </div>
+                          </Card>
+                        )}
+
+                        {/* Section 3: XAI Panel */}
+                        {bioResult?.xai && (
+                          <Card>
+                            <div className="px-4 py-2 border-b">
+                              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Explainability (XAI)</span>
+                            </div>
+                            <div className="p-4">
+                              <XaiPanel
+                                channelImportance={bioResult.xai.channel_importance ?? []}
+                                timeImportance={bioResult.xai.time_importance ?? []}
+                                channelNames={esiResult?.eegData?.channels ?? bioResult?.eegData?.channels ?? DEFAULT_CHANNEL_NAMES}
+                                topSegments={bioResult.xai.top_segments ?? []}
+                                eegData={esiResult?.eegData ?? bioResult?.eegData ?? undefined}
+                                selectedWindow={selectedWindow}
+                              />
+                            </div>
+                          </Card>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>

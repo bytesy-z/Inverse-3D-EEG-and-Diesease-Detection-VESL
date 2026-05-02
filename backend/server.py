@@ -146,7 +146,7 @@ MIN_FREE_BYTES = 100 * 1024 * 1024
 TRACT_LENGTHS_PATH = PROJECT_ROOT / "data" / "tract_lengths_76.npy"
 
 # CMA-ES configuration (matches config.yaml)
-CMAES_POPULATION_SIZE = 14
+CMAES_POPULATION_SIZE = 2  # reduced for debugging (was 14)
 CMAES_MAX_GENERATIONS = 30
 CMAES_INITIAL_X0 = -2.1
 CMAES_INITIAL_SIGMA = 0.3
@@ -1048,6 +1048,8 @@ def generate_source_activity_heatmap_html(
     title: str = "EEG Source Imaging — Estimated Brain Activity",
     animated_frames: Optional[List[NDArray[np.float32]]] = None,
     frame_timestamps: Optional[List[float]] = None,
+    global_cmin: Optional[float] = None,
+    global_cmax: Optional[float] = None,
 ) -> str:
     """
     Generate a standalone Plotly 3D brain heatmap for source activity (ESI).
@@ -1059,11 +1061,17 @@ def generate_source_activity_heatmap_html(
     If animated_frames is provided, creates a Plotly animation with play/pause
     and a frame slider for sliding-window playback of longer recordings.
 
+    When global_cmin and global_cmax are provided, scales the colorscale to the
+    actual data range rather than [0,1]. This preserves visibility of subtle
+    inter-window magnitude differences in animations.
+
     Args:
         activity_scores: Array of shape (76,) with values in [0, 1] — best/single window.
         title: Title displayed above the 3D plot.
         animated_frames: Optional list of (76,) score arrays, one per time window.
         frame_timestamps: Optional list of timestamps (seconds) for each frame.
+        global_cmin: Optional global minimum for colorscale range.
+        global_cmax: Optional global maximum for colorscale range.
 
     Returns:
         The complete HTML document string containing the Plotly 3D mesh.
@@ -1131,6 +1139,22 @@ def generate_source_activity_heatmap_html(
         [1.00, '#fcffa4'],   # Bright yellow-white (highest activity)
     ]
 
+    use_global_range = global_cmin is not None and global_cmax is not None
+    intensity_cmin = global_cmin if use_global_range else 0.0
+    intensity_cmax = global_cmax if use_global_range else 1.0
+
+    if use_global_range:
+        mid = (intensity_cmin + intensity_cmax) / 2.0
+        colorbar_tickvals = [intensity_cmin, mid, intensity_cmax]
+        colorbar_ticktext = [
+            f'{intensity_cmin:.3f}',
+            f'{mid:.3f}',
+            f'{intensity_cmax:.3f}',
+        ]
+    else:
+        colorbar_tickvals = [0, 0.5, 1.0]
+        colorbar_ticktext = ['Low', 'Medium', 'High']
+
     fig.add_trace(go.Mesh3d(
         x=all_coords[:, 0],
         y=all_coords[:, 1],
@@ -1140,15 +1164,15 @@ def generate_source_activity_heatmap_html(
         k=all_faces[:, 2],
         intensity=vertex_colors,
         colorscale=inferno_colorscale,
-        cmin=0.0,
-        cmax=1.0,
+        cmin=intensity_cmin,
+        cmax=intensity_cmax,
         opacity=1.0,
         hovertext=vertex_hover,
         hoverinfo='text',
         colorbar=dict(
-            title=dict(text='Source<br>Activity', side='right'),
-            tickvals=[0, 0.5, 1.0],
-            ticktext=['Low', 'Medium', 'High'],
+            title=dict(text='Source<br>Activity<br>(RMS)', side='right'),
+            tickvals=colorbar_tickvals,
+            ticktext=colorbar_ticktext,
             len=0.5,
         ),
         lighting=dict(ambient=0.6, diffuse=0.6, specular=0.15, roughness=0.5),
@@ -1185,8 +1209,12 @@ def generate_source_activity_heatmap_html(
             v_colors_frame, _ = _scores_to_vertex_colors(
                 frame_scores, _debug_tag=f"frame{i}"
             )
+            frame_mesh_kw: dict = dict(intensity=v_colors_frame)
+            if use_global_range:
+                frame_mesh_kw["cmin"] = intensity_cmin
+                frame_mesh_kw["cmax"] = intensity_cmax
             frames.append(go.Frame(
-                data=[go.Mesh3d(intensity=v_colors_frame)],
+                data=[go.Mesh3d(**frame_mesh_kw)],
                 name=str(i),
                 traces=[0],
             ))
@@ -1781,6 +1809,9 @@ async def analyze_eeg(
             animated_frames = None
             frame_timestamps = None
             n_windows_processed = 1
+            all_win_sources: list = []
+            global_metric_min = None
+            global_metric_max = None
 
             if edf_all_windows is not None and edf_window_timestamps is not None:
                 n_win = len(edf_all_windows)
@@ -1803,7 +1834,6 @@ async def analyze_eeg(
                 n_windows_processed = n_win
 
                 # First pass: compute all window RMS scores to determine global min/max
-                all_win_sources = []
                 for i, win_eeg in enumerate(edf_all_windows):
                     win_eeg_range = f"[{win_eeg.min():.2f}, {win_eeg.max():.2f}]"
                     logger.info(f"[ANIM] Window {i}/{n_win}: EEG range={win_eeg_range}", extra={"job_id": job_id})
@@ -1813,12 +1843,11 @@ async def analyze_eeg(
                     all_win_sources.append(win_sources)
 
                 # Compute global RMS min/max across all windows.
-                # Use global normalization (not per-window) because the model
-                # outputs nearly identical spatial patterns for all windows.
-                # Per-window normalization maps identical patterns to identical
-                # [0,1] ranges, making all frames visually indistinguishable.
-                # Global normalization preserves absolute magnitude differences
-                # between windows, revealing subtle temporal activity shifts.
+                # Compute raw per-region RMS for each window (no [0,1] normalization).
+                # Raw RMS preserves absolute magnitude differences between windows.
+                # Pass global min/max to Plotly as explicit cmin/cmax so the full
+                # colorscale maps to the actual data range, making inter-window
+                # intensity shifts visible even when they are subtle.
                 all_rms = []
                 for i, ws in enumerate(all_win_sources):
                     win_rms = np.sqrt(np.mean(ws ** 2, axis=1))
@@ -1832,19 +1861,13 @@ async def analyze_eeg(
                 )
 
                 for i, win_sources in enumerate(all_win_sources):
-                    win_metrics = compute_source_activity_metrics(
-                        win_sources,
-                        global_min=global_metric_min,
-                        global_max=global_metric_max,
-                        _debug_label=f"_win{i}",
-                    )
-                    frame_scores = np.array(win_metrics['scores_array'], dtype=np.float32)
+                    win_rms = np.sqrt(np.mean(win_sources ** 2, axis=1))
+                    animated_frames.append(win_rms.astype(np.float32))
                     logger.info(
-                        f"[ANIM] Window {i}/{n_win}: scores range=[{frame_scores.min():.4f}, {frame_scores.max():.4f}], "
-                        f"non-zero={int((frame_scores > 0.01).sum())}/{N_REGIONS}",
+                        f"[ANIM] Window {i}/{n_win}: RMS range=[{win_rms.min():.6f}, {win_rms.max():.6f}], "
+                        f"non-zero={(win_rms > 1e-10).sum()}/{N_REGIONS}",
                         extra={"job_id": job_id}
                     )
-                    animated_frames.append(frame_scores)
 
                 logger.info(
                     f"[ANIM] Complete: {len(animated_frames)} frames generated",
@@ -1857,11 +1880,18 @@ async def analyze_eeg(
                 f"n_windows_processed={n_windows_processed}",
                 extra={"job_id": job_id}
             )
+            static_rms = (
+                np.sqrt(np.mean(all_win_sources[0] ** 2, axis=1)).astype(np.float32)
+                if all_win_sources else
+                np.sqrt(np.mean(predicted_sources ** 2, axis=1)).astype(np.float32)
+            )
             heatmap_html = generate_source_activity_heatmap_html(
-                activity_scores=np.array(activity_result['scores_array']),
+                activity_scores=static_rms,
                 title="EEG Source Imaging — Estimated Brain Activity",
                 animated_frames=animated_frames,
                 frame_timestamps=frame_timestamps,
+                global_cmin=global_metric_min if animated_frames else None,
+                global_cmax=global_metric_max if animated_frames else None,
             )
 
             if shutil.disk_usage(RESULTS_DIR).free < MIN_FREE_BYTES:
@@ -2366,9 +2396,11 @@ async def _process_analysis_async(
         if mode == "source_localization":
             activity_result = compute_source_activity_metrics(predicted_sources)
 
-            # Sliding window animation for EDF uploads with >1 window
             animated_frames = None
             frame_timestamps = None
+            global_metric_min_ws = None
+            global_metric_max_ws = None
+            all_win_sources_ws: list = []
             if edf_all_windows is not None and edf_window_timestamps is not None:
                 animated_frames = []
                 frame_timestamps = edf_window_timestamps
@@ -2377,14 +2409,26 @@ async def _process_analysis_async(
                         asyncio.get_event_loop().run_in_executor(None, run_inference, win_eeg),
                         timeout=60.0,
                     )
-                    win_metrics = compute_source_activity_metrics(win_sources)
-                    animated_frames.append(np.array(win_metrics['scores_array'], dtype=np.float32))
+                    win_rms = np.sqrt(np.mean(win_sources ** 2, axis=1))
+                    all_win_sources_ws.append(win_sources)
+                    animated_frames.append(win_rms.astype(np.float32))
+                # Compute global RMS range across all windows
+                all_rms_vals = np.concatenate([af for af in animated_frames])
+                global_metric_min_ws = float(all_rms_vals.min())
+                global_metric_max_ws = float(all_rms_vals.max())
 
+            static_rms_ws = (
+                np.sqrt(np.mean(all_win_sources_ws[0] ** 2, axis=1)).astype(np.float32)
+                if all_win_sources_ws else
+                np.sqrt(np.mean(predicted_sources ** 2, axis=1)).astype(np.float32)
+            )
             heatmap_html = generate_source_activity_heatmap_html(
-                activity_scores=np.array(activity_result['scores_array']),
+                activity_scores=static_rms_ws,
                 title="EEG Source Imaging — Estimated Brain Activity",
                 animated_frames=animated_frames,
                 frame_timestamps=frame_timestamps,
+                global_cmin=global_metric_min_ws,
+                global_cmax=global_metric_max_ws,
             )
 
             if shutil.disk_usage(RESULTS_DIR).free < MIN_FREE_BYTES:
