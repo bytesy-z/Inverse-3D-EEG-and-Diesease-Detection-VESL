@@ -28,6 +28,7 @@ import time
 import traceback
 import uuid
 import warnings
+from concurrent.futures import ThreadPoolExecutor, Future
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -257,6 +258,9 @@ tract_lengths: Optional[NDArray[np.float32]] = None
 
 # Thread lock for concurrent access to active_jobs dict
 active_jobs_lock = threading.Lock()
+
+# Background executor for CMA-ES (avoids blocking HTTP responses)
+_cmaes_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cmaes")
 
 
 # ========================================================================
@@ -943,6 +947,7 @@ def compute_source_activity_metrics(
     source_activity: NDArray[np.float32],
     global_min: Optional[float] = None,
     global_max: Optional[float] = None,
+    _debug_label: str = "",
 ) -> dict:
     """
     Compute per-region source activity metrics for EEG source imaging (ESI).
@@ -974,21 +979,14 @@ def compute_source_activity_metrics(
         source_activity = source_activity.mean(axis=0)  # (76, 400)
 
     # ---- Per-region activity metrics ----
-    # After de-meaning in training, source activity is zero-centered.
-    # Variance IS the meaningful signal (see Tech Specs §4.4.7).
     region_variance = np.var(source_activity, axis=1)    # (76,)
     region_rms = np.sqrt(np.mean(source_activity ** 2, axis=1))  # (76,)
     region_peak = np.max(np.abs(source_activity), axis=1)  # (76,)
     region_ptp = np.ptp(source_activity, axis=1)  # (76,) peak-to-peak range
 
-    # Use RMS as the primary activity metric for the heatmap.
-    # After per-channel de-meaning (applied during inference), DC residual
-    # is zero by construction, so RMS = sqrt(variance).  RMS is chosen over
-    # variance for interpretability (same units as source activity, μV).
     primary_metric = region_rms
 
     # Normalize to [0, 1] for visualization
-    # Use global bounds if provided (for animation), otherwise per-window bounds
     if global_min is not None and global_max is not None:
         metric_min = global_min
         metric_max = global_max
@@ -1000,37 +998,41 @@ def compute_source_activity_metrics(
     else:
         normalized_scores = (primary_metric - metric_min) / (metric_max - metric_min)
 
-    # Identify top active regions
     top_indices = np.argsort(normalized_scores)[::-1]
     top_regions = [region_labels[i] for i in top_indices[:10]]
-    # Include full anatomical names for top regions
     top_regions_full = [
         format_region_for_display(region_labels[i])
         for i in top_indices[:10]
     ]
 
-    # Build per-region scores dict
     scores_dict = {
         region_labels[i]: float(normalized_scores[i])
         for i in range(N_REGIONS)
     }
 
+    _log_prefix = f"[compute_metrics{_debug_label}]"
+    logger.info(
+        f"{_log_prefix} RMS range=[{primary_metric.min():.6f}, {primary_metric.max():.6f}] "
+        f"mean={primary_metric.mean():.6f} std={primary_metric.std():.6f} | "
+        f"norm_bounds=[{metric_min:.6f}, {metric_max}:.6f] range={metric_max-metric_min:.6f} | "
+        f"norm_scores range=[{normalized_scores.min():.4f}, {normalized_scores.max():.4f}] | "
+        f"top3={top_regions[:3]}"
+    )
+
     return {
         'scores': scores_dict,
         'scores_array': normalized_scores.tolist(),
         'top_active_regions': top_regions,
-        'top_active_regions_full': top_regions_full,  # With full anatomical names
+        'top_active_regions_full': top_regions_full,
         'max_activity_region': region_labels[int(np.argmax(normalized_scores))],
         'max_activity_score': float(np.max(normalized_scores)),
         'region_labels': region_labels,
-        # Raw metric arrays for the frontend details panel
         'metrics_raw': {
             'variance': region_variance.tolist(),
             'rms': region_rms.tolist(),
             'peak_amplitude': region_peak.tolist(),
             'ptp_range': region_ptp.tolist(),
         },
-        # Summary statistics
         'summary': {
             'mean_rms': float(region_rms.mean()),
             'max_rms': float(region_rms.max()),
@@ -1075,14 +1077,18 @@ def generate_source_activity_heatmap_html(
         all_coords, n_verts_lh, lh_coords, rh_coords
     )
 
-    def _scores_to_vertex_colors(scores, with_hover=False):
-        """Map 76 region scores to per-vertex colors and optional hover text."""
+    def _scores_to_vertex_colors(scores, with_hover=False, _debug_tag=""):
         v_colors = np.full(n_verts, 0.0, dtype=np.float32)
         v_hover = [''] * n_verts if with_hover else None
+        score_min = float('inf')
+        score_max = float('-inf')
         for v_idx in range(n_verts):
             r_idx = vertex_region[v_idx]
             if r_idx >= 0:
-                v_colors[v_idx] = scores[r_idx]
+                s_val = float(scores[r_idx])
+                v_colors[v_idx] = s_val
+                if s_val < score_min: score_min = s_val
+                if s_val > score_max: score_max = s_val
                 if with_hover:
                     v_hover[v_idx] = (
                         f"{region_labels[r_idx]}: "
@@ -1091,11 +1097,21 @@ def generate_source_activity_heatmap_html(
             else:
                 if with_hover:
                     v_hover[v_idx] = "unassigned"
+        logger.info(
+            f"[{_debug_tag}] vertex_colors: {n_verts} verts, "
+            f"score range=[{score_min:.4f}, {score_max:.4f}], "
+            f"non-zero={int((v_colors > 0.01).sum())}/{n_verts}"
+        )
         return v_colors, v_hover
 
-    # Build first (or only) frame's vertex data
+    logger.info(
+        f"[generate_heatmap] Building first frame: activity_scores "
+        f"range=[{float(activity_scores.min()):.4f}, {float(activity_scores.max()):.4f}], "
+        f"shape={activity_scores.shape}"
+    )
+
     vertex_colors, vertex_hover = _scores_to_vertex_colors(
-        activity_scores, with_hover=True
+        activity_scores, with_hover=True, _debug_tag="first_frame"
     )
 
     # ---- Build Plotly 3D mesh figure ----
@@ -1147,19 +1163,33 @@ def generate_source_activity_heatmap_html(
         and len(animated_frames) > 1
     )
 
+    logger.info(
+        f"[generate_heatmap] has_animation={has_animation}, "
+        f"animated_frames={len(animated_frames) if animated_frames is not None else 'None'}, "
+        f"frame_timestamps={len(frame_timestamps) if frame_timestamps is not None else 'None'}"
+    )
+
     if has_animation:
         frames = []
         slider_steps = []
+        n_frames_total = len(animated_frames)
         for i, (frame_scores, ts) in enumerate(
             zip(animated_frames, frame_timestamps)
         ):
-            v_colors_frame, _ = _scores_to_vertex_colors(frame_scores)
+            if i == 0 or i == n_frames_total - 1 or (i < 5) or (i % 10 == 0):
+                logger.info(
+                    f"[generate_heatmap] Frame {i}/{n_frames_total}: scores "
+                    f"range=[{frame_scores.min():.4f}, {frame_scores.max():.4f}], "
+                    f"ts={ts:.2f}s"
+                )
+            v_colors_frame, _ = _scores_to_vertex_colors(
+                frame_scores, _debug_tag=f"frame{i}"
+            )
             frames.append(go.Frame(
                 data=[go.Mesh3d(intensity=v_colors_frame)],
                 name=str(i),
                 traces=[0],
             ))
-            # Format timestamp as m:ss for cleaner display
             minutes = int(ts) // 60
             seconds = ts - (minutes * 60)
             ts_label = f"{minutes}:{seconds:04.1f}" if minutes > 0 else f"0:{seconds:04.1f}"
@@ -1174,9 +1204,11 @@ def generate_source_activity_heatmap_html(
             ))
 
         fig.frames = frames
+        logger.info(
+            f"[generate_heatmap] Created {len(fig.frames)} frames and {len(slider_steps)} slider steps"
+        )
 
-        # Add play/pause buttons and slider — no camera view buttons
-        # (users rotate the brain directly with mouse drag)
+        # Add play/pause buttons and slider
         fig.update_layout(
             updatemenus=[
                 dict(
@@ -1751,41 +1783,80 @@ async def analyze_eeg(
             n_windows_processed = 1
 
             if edf_all_windows is not None and edf_window_timestamps is not None:
+                n_win = len(edf_all_windows)
                 logger.info(
-                    f"Processing {len(edf_all_windows)} sliding windows...",
+                    f"[ANIM] Processing {n_win} sliding windows for animation...",
                     extra={"job_id": job_id}
                 )
+
+                # Log timestamp range
+                ts_start = edf_window_timestamps[0] if edf_window_timestamps else 0
+                ts_end = edf_window_timestamps[-1] if edf_window_timestamps else 0
+                logger.info(
+                    f"[ANIM] Timestamp range: {ts_start:.1f}s to {ts_end:.1f}s, "
+                    f"step approx {(edf_window_timestamps[1] - edf_window_timestamps[0]) if n_win > 1 else 0:.2f}s",
+                    extra={"job_id": job_id}
+                )
+
                 animated_frames = []
                 frame_timestamps = edf_window_timestamps
-                n_windows_processed = len(edf_all_windows)
+                n_windows_processed = n_win
 
                 # First pass: compute all window RMS scores to determine global min/max
                 all_win_sources = []
                 for i, win_eeg in enumerate(edf_all_windows):
-                    win_sources = run_inference(win_eeg)  # (76, 400)
+                    win_eeg_range = f"[{win_eeg.min():.2f}, {win_eeg.max():.2f}]"
+                    logger.info(f"[ANIM] Window {i}/{n_win}: EEG range={win_eeg_range}", extra={"job_id": job_id})
+                    win_sources = run_inference(win_eeg)
+                    src_range = f"[{win_sources.min():.4f}, {win_sources.max():.4f}]"
+                    logger.info(f"[ANIM] Window {i}/{n_win}: source range={src_range}, shape={win_sources.shape}", extra={"job_id": job_id})
                     all_win_sources.append(win_sources)
 
-                # Compute global RMS min/max across all windows for consistent color scaling
+                # Compute global RMS min/max across all windows.
+                # Use global normalization (not per-window) because the model
+                # outputs nearly identical spatial patterns for all windows.
+                # Per-window normalization maps identical patterns to identical
+                # [0,1] ranges, making all frames visually indistinguishable.
+                # Global normalization preserves absolute magnitude differences
+                # between windows, revealing subtle temporal activity shifts.
                 all_rms = []
-                for ws in all_win_sources:
-                    all_rms.extend(np.sqrt(np.mean(ws ** 2, axis=1)).tolist())
+                for i, ws in enumerate(all_win_sources):
+                    win_rms = np.sqrt(np.mean(ws ** 2, axis=1))
+                    logger.info(f"[ANIM] Window {i}/{n_win}: RMS range=[{win_rms.min():.6f}, {win_rms.max():.6f}], mean={win_rms.mean():.6f}", extra={"job_id": job_id})
+                    all_rms.extend(win_rms.tolist())
                 global_metric_min = min(all_rms)
                 global_metric_max = max(all_rms)
+                logger.info(
+                    f"[ANIM] Global RMS bounds: min={global_metric_min:.6f}, max={global_metric_max:.6f}, range={global_metric_max-global_metric_min:.6f}",
+                    extra={"job_id": job_id}
+                )
 
-                # Second pass: normalize each window using global bounds
-                for win_sources in all_win_sources:
+                for i, win_sources in enumerate(all_win_sources):
                     win_metrics = compute_source_activity_metrics(
                         win_sources,
                         global_min=global_metric_min,
                         global_max=global_metric_max,
+                        _debug_label=f"_win{i}",
                     )
-                    animated_frames.append(
-                        np.array(win_metrics['scores_array'], dtype=np.float32)
+                    frame_scores = np.array(win_metrics['scores_array'], dtype=np.float32)
+                    logger.info(
+                        f"[ANIM] Window {i}/{n_win}: scores range=[{frame_scores.min():.4f}, {frame_scores.max():.4f}], "
+                        f"non-zero={int((frame_scores > 0.01).sum())}/{N_REGIONS}",
+                        extra={"job_id": job_id}
                     )
+                    animated_frames.append(frame_scores)
 
-                logger.info(f"Sliding window processing complete.", extra={"job_id": job_id})
+                logger.info(
+                    f"[ANIM] Complete: {len(animated_frames)} frames generated",
+                    extra={"job_id": job_id}
+                )
 
-            logger.info(f"Generating source activity 3D heatmap...", extra={"job_id": job_id})
+            logger.info(
+                f"[ANIM] Generating heatmap: animated_frames={len(animated_frames) if animated_frames else 'None'}, "
+                f"frame_timestamps={len(frame_timestamps) if frame_timestamps else 'None'}, "
+                f"n_windows_processed={n_windows_processed}",
+                extra={"job_id": job_id}
+            )
             heatmap_html = generate_source_activity_heatmap_html(
                 activity_scores=np.array(activity_result['scores_array']),
                 title="EEG Source Imaging — Estimated Brain Activity",
@@ -1814,11 +1885,32 @@ async def analyze_eeg(
             logger.info(f"Complete in {processing_time:.1f}s", extra={"job_id": job_id})
 
             plot_content = _extract_plotly_body(heatmap_html)
+            logger.info(
+                f"[ANIM] Plotly body extracted: {len(plot_content)} chars, "
+                f"starts with script={plot_content[:30] if plot_content else 'EMPTY!'}",
+                extra={"job_id": job_id}
+            )
             eeg_payload = _build_eeg_payload(
                 eeg_data, SAMPLING_RATE, CHANNEL_NAMES,
                 edf_all_windows=edf_all_windows,
                 edf_window_timestamps=edf_window_timestamps,
                 include_eeg=include_eeg, job_id=job_id,
+            )
+            eeg_windows_count = len(eeg_payload['windows']) if eeg_payload and eeg_payload.get('windows') else 0
+            logger.info(
+                f"[ANIM] EEG payload: {eeg_windows_count} windows, "
+                f"hasAnimation={animated_frames is not None and len(animated_frames) > 1}",
+                extra={"job_id": job_id}
+            )
+
+            has_animation_final = animated_frames is not None and len(animated_frames) > 1
+            logger.info(
+                f"[ANIM] Returning response: nWindowsProcessed={n_windows_processed}, "
+                f"nWindowsTotal={total_edf_windows}, "
+                f"hasAnimation={has_animation_final}, "
+                f"plotHtml_len={len(plot_content)}, "
+                f"eegData_windows={eeg_windows_count}",
+                extra={"job_id": job_id}
             )
 
             return JSONResponse({
@@ -1834,7 +1926,7 @@ async def analyze_eeg(
                 "nWindowsProcessed": n_windows_processed,
                 "nWindowsTotal": total_edf_windows,
                 "windowsTruncated": edf_windows_truncated,
-                "hasAnimation": animated_frames is not None and len(animated_frames) > 1,
+                "hasAnimation": has_animation_final,
                 # Per-region activity scores
                 "sourceLocalization": {
                     "scores": activity_result['scores'],
@@ -1894,9 +1986,14 @@ async def analyze_eeg(
 
             plot_content = _extract_plotly_body(heatmap_html)
 
-            # ── CMA-ES / Concordance (sync path, debug mode only) ──
+            # ── CMA-ES / Concordance ──
             concordance = None
             cmaes_data = None
+            _wants_cmaes = (
+                cmaes_generations is not None
+                and cmaes_generations > 0
+                and not debug
+            )
             if debug:
                 ei_scores_items = list(ei_result.get('scores', {}).items())
                 top_regions = [r for r, s in ei_scores_items[:5]] if ei_scores_items else ["lPFCCL"]
@@ -1908,6 +2005,37 @@ async def analyze_eeg(
                 cmaes_data = {
                     "status": "debug_skip", "best_score": -1.0, "generations": 0,
                     "biophysical_ei": [0.0] * N_REGIONS,
+                }
+            elif _wants_cmaes:
+                logger.info(
+                    f"Launching background CMA-ES ({cmaes_generations} gens)...",
+                    extra={"job_id": job_id}
+                )
+                heuristic_scores = np.array(ei_result.get('scores_array', []), dtype=np.float32)
+                _cmaes_future = _cmaes_executor.submit(
+                    _run_cmaes_inversion,
+                    job_id,
+                    eeg_data.copy().astype(np.float32),
+                    leadfield_matrix.copy(),
+                    connectivity_weights.copy(),
+                    region_centers.copy(),
+                    tract_lengths.copy(),
+                    list(region_labels),
+                    heuristic_scores.copy(),
+                    cmaes_generations,
+                )
+                # Store future so polling endpoint can retrieve results
+                with active_jobs_lock:
+                    if job_id not in active_jobs:
+                        active_jobs[job_id] = {}
+                    active_jobs[job_id]["_cmaes_future"] = _cmaes_future
+                    active_jobs[job_id]["_cmaes_result"] = None
+                    active_jobs[job_id]["_ts"] = time.time()
+                cmaes_data = {
+                    "status": "running",
+                    "generations": cmaes_generations,
+                    "best_score": None,
+                    "biophysical_ei": None,
                 }
 
             eeg_payload = _build_eeg_payload(
@@ -2078,6 +2206,65 @@ async def serve_result_file(path: str):
         str(file_path),
         media_type=content_types.get(suffix, 'application/octet-stream'),
     )
+
+
+@app.get("/api/job/{job_id}/cmaes")
+async def poll_cmaes_results(job_id: str):
+    """Poll CMA-ES concordance results for a running job.
+
+    Returns:
+        {status: "running"|"completed"|"failed"|"not_found",
+         ...concordance/cmaes fields if completed...}
+    """
+    with active_jobs_lock:
+        entry = active_jobs.get(job_id)
+    if entry is None:
+        return JSONResponse({"status": "not_found", "error": "Job not found"})
+
+    future: Optional[Future] = entry.get("_cmaes_future")
+    if future is None:
+        # Check if we already have a cached result
+        cached = entry.get("_cmaes_result")
+        if cached is not None:
+            return JSONResponse(cached)
+        return JSONResponse({"status": "not_found", "error": "No CMA-ES running for this job"})
+
+    if not future.done():
+        # Still running — return progress from active_jobs
+        return JSONResponse({
+            "status": "running",
+            "generation": entry.get("cmaes_generation", 0),
+            "max_generations": entry.get("cmaes_max_generations", 30),
+            "best_score": entry.get("cmaes_best_score"),
+        })
+
+    # Future is done — collect result
+    try:
+        result = future.result()
+        response_data = {
+            "status": "completed",
+            "concordance": result["concordance"],
+            "cmaes": {
+                "status": "completed",
+                "best_score": result["best_score"],
+                "generations": result["generations"],
+                "biophysical_ei": result["biophysical_ei"],
+            },
+        }
+    except Exception as exc:
+        logger.warning(f"CMA-ES failed for job {job_id}: {exc}")
+        response_data = {
+            "status": "failed",
+            "concordance": None,
+            "cmaes": {"status": "failed", "error": str(exc)},
+        }
+
+    # Cache result so repeated polls don't re-raise
+    with active_jobs_lock:
+        if job_id in active_jobs:
+            active_jobs[job_id]["_cmaes_result"] = response_data
+
+    return JSONResponse(response_data)
 
 
 # ========================================================================

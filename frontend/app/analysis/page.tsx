@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect, useRef } from "react"
 import { RotateCcw, Brain, Activity, Zap } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -67,8 +67,8 @@ export default function AnalysisPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [viewMode, setViewMode] = useState<ViewMode>("source")
   const [maxWindows, setMaxWindows] = useState<number>(5)
-  const [cmaesGens, setCmaesGens] = useState<number>(2)
-  const [debugMode, setDebugMode] = useState<boolean>(true)
+  const [cmaesGens, setCmaesGens] = useState<number>(20)
+  const [debugMode, setDebugMode] = useState<boolean>(false)
 
   // Results for both modes
   const [esiResult, setEsiResult] = useState<ESIResult | null>(null)
@@ -131,6 +131,20 @@ export default function AnalysisPage() {
         bioRes.json(),
       ])
 
+      console.log("[AnalysisPage] Source result:", {
+        hasAnimation: sourceData?.hasAnimation,
+        nWindowsProcessed: sourceData?.nWindowsProcessed,
+        nWindowsTotal: sourceData?.nWindowsTotal,
+        plotHtmlLen: sourceData?.plotHtml?.length,
+        hasEegData: !!sourceData?.eegData,
+        eegWindowsLen: sourceData?.eegData?.windows?.length,
+        windowsTruncated: sourceData?.windowsTruncated,
+      })
+      console.log("[AnalysisPage] Bio result:", {
+        hasEegData: !!bioData?.eegData,
+        eegWindowsLen: bioData?.eegData?.windows?.length,
+      })
+
       setEsiResult(sourceData)
       setBioResult(bioData)
       setStep("results")
@@ -151,6 +165,54 @@ export default function AnalysisPage() {
     setSelectedWindow(0)
   }, [])
 
+  /* ---- CMA-ES polling — when backend launches background CMA-ES, poll for results ---- */
+  const cmaesPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  useEffect(() => {
+    if (!bioResult?.cmaes || bioResult.cmaes.status !== "running" || !bioResult.jobId) {
+      return
+    }
+
+    const jobId = bioResult.jobId
+    const backendUrl = process.env.NEXT_PUBLIC_PHYSDEEPSIF_BACKEND || "http://localhost:8000"
+    const poll = async () => {
+      try {
+        const res = await fetch(`${backendUrl}/api/job/${jobId}/cmaes`)
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.status === "completed") {
+          setBioResult((prev) => {
+            if (!prev) return prev
+            return {
+              ...prev,
+              concordance: data.concordance ?? prev.concordance,
+              cmaes: data.cmaes ?? prev.cmaes,
+            }
+          })
+        } else if (data.status === "failed") {
+          setBioResult((prev) => {
+            if (!prev) return prev
+            return {
+              ...prev,
+              cmaes: { status: "failed", error: data.cmaes?.error ?? "Unknown error" },
+            }
+          })
+        }
+      } catch {
+        // Ignore transient network errors during polling
+      }
+    }
+
+    poll() // immediate first poll
+    cmaesPollRef.current = setInterval(poll, 2000)
+
+    return () => {
+      if (cmaesPollRef.current) {
+        clearInterval(cmaesPollRef.current)
+        cmaesPollRef.current = null
+      }
+    }
+  }, [bioResult?.cmaes?.status, bioResult?.jobId])
+
   // Keep selectedWindow valid when result data changes.
   const setClampedWindow = useCallback(
     (value: number | ((prev: number) => number)) => {
@@ -166,8 +228,13 @@ export default function AnalysisPage() {
 
   const handleBrainFrameChange = useCallback((frameIndex: number) => {
     const total = esiResult?.eegData?.windows?.length ?? 0
-    if (total <= 0) return
+    console.log(`[AnalysisPage] handleBrainFrameChange: frameIndex=${frameIndex}, total=${total}, esiResult?.nWindowsProcessed=${esiResult?.nWindowsProcessed}, esiResult?.hasAnimation=${esiResult?.hasAnimation}`)
+    if (total <= 0) {
+      console.log(`[AnalysisPage] handleBrainFrameChange: total=${total} <= 0, ignoring`)
+      return
+    }
     const normalizedIndex = ((frameIndex % total) + total) % total
+    console.log(`[AnalysisPage] handleBrainFrameChange: normalized ${frameIndex} -> ${normalizedIndex}`)
     setClampedWindow(normalizedIndex)
   }, [esiResult?.eegData?.windows?.length, setClampedWindow])
 
