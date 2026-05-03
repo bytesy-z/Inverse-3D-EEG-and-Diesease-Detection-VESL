@@ -146,7 +146,7 @@ MIN_FREE_BYTES = 100 * 1024 * 1024
 TRACT_LENGTHS_PATH = PROJECT_ROOT / "data" / "tract_lengths_76.npy"
 
 # CMA-ES configuration (matches config.yaml)
-CMAES_POPULATION_SIZE = 2  # reduced for debugging (was 14)
+CMAES_POPULATION_SIZE = 14
 CMAES_MAX_GENERATIONS = 30
 CMAES_INITIAL_X0 = -2.1
 CMAES_INITIAL_SIGMA = 0.3
@@ -1194,15 +1194,15 @@ def generate_source_activity_heatmap_html(
         k=all_faces[:, 2],
         intensity=vertex_colors,
         colorscale=inferno_colorscale,
-        cmin=intensity_cmin,
-        cmax=intensity_cmax,
+        cmin=0.0,
+        cmax=1.0,
         opacity=1.0,
         hovertext=vertex_hover,
         hoverinfo='text',
         colorbar=dict(
-            title=dict(text='Source<br>Activity<br>(RMS)', side='right'),
-            tickvals=colorbar_tickvals,
-            ticktext=colorbar_ticktext,
+            title=dict(text='Source<br>Activity', side='right'),
+            tickvals=[0, 0.5, 1.0],
+            ticktext=['Low', 'Medium', 'High'],
             len=0.5,
         ),
         lighting=dict(ambient=0.6, diffuse=0.6, specular=0.15, roughness=0.5),
@@ -1749,7 +1749,7 @@ async def analyze_eeg(
                 )
 
             heatmap_html = generate_source_activity_heatmap_html(
-                activity_scores=static_rms,
+                activity_scores=np.array(activity_result['scores_array']),
                 title="EEG Source Imaging — Estimated Brain Activity",
             )
 
@@ -2365,7 +2365,7 @@ async def _process_analysis_async(
                 )
 
             heatmap_html = generate_source_activity_heatmap_html(
-                activity_scores=static_rms_ws,
+                activity_scores=np.array(activity_result['scores_array']),
                 title="EEG Source Imaging — Estimated Brain Activity",
             )
 
