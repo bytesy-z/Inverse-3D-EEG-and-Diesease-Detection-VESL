@@ -124,7 +124,17 @@ export function EegWaveformPlot({
       timeArray.push(win.startTime + i / sr)
     }
 
-    const channelSpacing = 100
+    let globalMax = 0
+    for (let ch = 0; ch < nChannels; ch++) {
+      const d = win.data[ch]
+      if (!d) continue
+      for (let s = 0; s < d.length; s++) {
+        const abs = Math.abs(d[s])
+        if (abs > globalMax) globalMax = abs
+      }
+    }
+    if (globalMax === 0) globalMax = 1
+    const channelSpacing = globalMax * 3
     const gain = 50 / uVPerDiv
 
     /* ---- Build traces ---- */

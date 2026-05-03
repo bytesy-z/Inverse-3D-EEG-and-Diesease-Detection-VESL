@@ -545,7 +545,6 @@ export default function AnalysisPage() {
                                 <div className="space-y-1">
                                   <div className="flex justify-between text-xs text-muted-foreground">
                                     <span>Generation {bioResult.cmaes.generations} / {bioResult.cmaes.max_generations}</span>
-                                    <span>~{bioResult.cmaes.max_generations * 8}s estimated</span>
                                   </div>
                                   <div className="h-2 bg-muted rounded overflow-hidden">
                                     <div

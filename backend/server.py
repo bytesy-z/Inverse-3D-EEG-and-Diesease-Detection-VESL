@@ -605,6 +605,7 @@ def compute_epileptogenicity_index(
         'regions_of_interest': roi_names,
         'regions_of_interest_full': roi_names_full,
         'regions_of_interest_count': n_roi,
+        'roi_indices': roi_idx.tolist(),
         'statistical_threshold': float(stat_thresh),
         'statistical_z': stat_z,
         'roi_detected': n_roi > 0,
@@ -877,8 +878,8 @@ def generate_heatmap_html(
     vertex_region = mesh['vertex_region']
     n_verts = all_coords.shape[0]
 
-    if highlight_indices is not None and len(highlight_indices) > 0:
-        highlight_set = set(highlight_indices)
+    if highlight_indices is not None:
+        highlight_set = set(highlight_indices) if len(highlight_indices) > 0 else set()
     else:
         highlight_set = set(np.argsort(ei_scores)[::-1][:top_k].tolist())
 
@@ -1838,8 +1839,7 @@ async def analyze_eeg(
                 logger.info(f"XAI complete", extra={"job_id": job_id})
 
             logger.info(f"Generating brain heatmap...", extra={"job_id": job_id})
-            hl_roi = ei_result.get('regions_of_interest', [])
-            hl_indices = [region_labels.index(r) for r in hl_roi] if hl_roi else None
+            hl_indices = ei_result.get('roi_indices') or None
             heatmap_html = generate_heatmap_html(
                 ei_scores=np.array(ei_result['scores_array']),
                 title="Regions of Interest — Source Activity",
@@ -1947,6 +1947,7 @@ async def analyze_eeg(
                     "regions_of_interest": ei_result.get('regions_of_interest', []),
                     "regions_of_interest_full": ei_result.get('regions_of_interest_full', []),
                     "regions_of_interest_count": ei_result.get('regions_of_interest_count', 0),
+                    "roi_indices": ei_result.get('roi_indices', []),
                     "roi_detected": ei_result.get('roi_detected', False),
                     "statistical_z": ei_result.get('statistical_z', 2.0),
                     "epileptogenic_regions": ei_result['epileptogenic_regions'],
