@@ -29,6 +29,11 @@ export interface PhysDeepSIFResult {
   epileptogenicity?: {
     scores: Record<string, number>
     scores_array: number[]
+    regions_of_interest?: string[]
+    regions_of_interest_full?: string[]
+    regions_of_interest_count?: number
+    roi_detected?: boolean
+    statistical_z?: number
     epileptogenic_regions: string[]
     epileptogenic_regions_full?: string[]  // Full anatomical names
     threshold: number
@@ -85,6 +90,7 @@ export interface PhysDeepSIFResult {
     status: string
     best_score?: number
     generations?: number
+    max_generations?: number
     biophysical_ei?: number[]
     error?: string
   } | null
@@ -99,7 +105,10 @@ export interface PhysDeepSIFResult {
       start_time_sec: number
       end_time_sec: number
       importance: number
+      window_idx?: number
     }>
+    analyzed_windows?: number[]
+    total_windows_screened?: number
     target_region_idx?: number
     baseline_score?: number
   } | null

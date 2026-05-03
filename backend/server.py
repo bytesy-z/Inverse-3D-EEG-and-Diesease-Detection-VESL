@@ -569,20 +569,29 @@ def compute_epileptogenicity_index(
     else:
         ei_scores = (ei_raw - score_min) / (score_max - score_min)
 
-    # Adaptive threshold
-    threshold = float(np.percentile(ei_scores, threshold_percentile))
-    threshold = np.clip(threshold, 0.0, 1.0)
-    threshold = max(threshold, 0.6)  # Absolute confidence floor
+    # Statistical thresholding on ei_raw (pre-minmax) to avoid always flagging regions
+    # ei_raw > 0.88 ≈ z > 2.0 on per-region power (p < 0.05)
+    # ei_raw > 0.92 ≈ z > 2.5; ei_raw > 0.95 ≈ z > 3.0
+    # Escalate threshold if too many regions flagged, to suppress noise in uniform samples
+    stat_z = 2.0
+    if np.sum(ei_raw > 0.95) > 10:
+        stat_z = 3.0
+    elif np.sum(ei_raw > 0.92) > 8:
+        stat_z = 2.5
+    stat_thresh = 1.0 / (1.0 + np.exp(-stat_z))  # Convert back to sigmoid
 
-    epileptogenic_idx = np.where(ei_scores > threshold)[0]
-    epileptogenic_names = [region_labels[i] for i in epileptogenic_idx]
-    # Include full anatomical names for each detected region
-    epileptogenic_names_full = [
-        format_region_for_display(region_labels[i])
-        for i in epileptogenic_idx
-    ]
+    roi_idx = np.where(ei_raw > stat_thresh)[0]
+    roi_names = [region_labels[i] for i in roi_idx]
+    roi_names_full = [format_region_for_display(region_labels[i]) for i in roi_idx]
+    n_roi = len(roi_idx)
 
-    # Build per-region scores dict for JSON serialization
+    # Legacy percentile threshold (kept for backward compat)
+    legacy_threshold = float(np.percentile(ei_scores, threshold_percentile))
+    legacy_threshold = max(legacy_threshold, 0.6)
+    legacy_idx = np.where(ei_scores > legacy_threshold)[0]
+    legacy_names = [region_labels[i] for i in legacy_idx]
+    legacy_names_full = [format_region_for_display(region_labels[i]) for i in legacy_idx]
+
     scores_dict = {
         region_labels[i]: float(ei_scores[i])
         for i in range(N_REGIONS)
@@ -590,11 +599,20 @@ def compute_epileptogenicity_index(
 
     result = {
         'scores': scores_dict,
-        'scores_array': ei_scores.tolist(),  # JSON-safe list, min-max rescaled to [0,1]
-        'scores_array_raw': ei_raw.tolist(), # Pre-rescale sigmoid scores for XAI occlusion
-        'epileptogenic_regions': epileptogenic_names,
-        'epileptogenic_regions_full': epileptogenic_names_full,  # With full anatomical names
-        'threshold': float(threshold),
+        'scores_array': ei_scores.tolist(),
+        'scores_array_raw': ei_raw.tolist(),
+        # New statistically-thresholded regions (preferred)
+        'regions_of_interest': roi_names,
+        'regions_of_interest_full': roi_names_full,
+        'regions_of_interest_count': n_roi,
+        'roi_indices': roi_idx.tolist(),
+        'statistical_threshold': float(stat_thresh),
+        'statistical_z': stat_z,
+        'roi_detected': n_roi > 0,
+        # Legacy percentile-thresholded regions
+        'epileptogenic_regions': legacy_names,
+        'epileptogenic_regions_full': legacy_names_full,
+        'threshold': float(legacy_threshold),
         'threshold_percentile': threshold_percentile,
         'max_score_region': region_labels[int(np.argmax(ei_scores))],
         'max_score': float(np.max(ei_scores)),
@@ -608,13 +626,17 @@ def compute_epileptogenicity_index(
         result['ground_truth_regions'] = true_epi_names
         result['n_true_epileptogenic'] = len(true_epi_names)
 
-        pred_set = set(epileptogenic_idx.tolist())
+        pred_set = set(legacy_idx.tolist())
         true_set = set(true_epi_idx.tolist())
         if len(true_set) > 0:
             intersection = pred_set & true_set
             result['recall'] = len(intersection) / len(true_set)
         if len(pred_set) > 0 and len(true_set) > 0:
             result['precision'] = len(pred_set & true_set) / len(pred_set)
+
+        roi_set = set(roi_idx.tolist())
+        result['roi_recall'] = len(roi_set & true_set) / max(len(true_set), 1)
+        result['roi_precision'] = len(roi_set & true_set) / max(len(roi_set), 1)
 
         # Top-K recall metrics
         for k in [5, 10]:
@@ -706,9 +728,11 @@ def _process_edf_raw(raw, max_windows=None) -> dict:
 # ========================================================================
 
 def _set_job_status(job_id: str, status: str, progress: int, message: str, **extra) -> None:
-    """Set job status with timestamp for automatic cleanup."""
+    """Set job status with timestamp for automatic cleanup. Preserves existing keys (e.g. _cmaes_future)."""
     with active_jobs_lock:
-        active_jobs[job_id] = {"status": status, "progress": progress, "message": message, "_ts": time.time(), **extra}
+        if job_id not in active_jobs:
+            active_jobs[job_id] = {}
+        active_jobs[job_id].update({"status": status, "progress": progress, "message": message, "_ts": time.time(), **extra})
 
 
 async def _cleanup_stale_jobs():
@@ -771,6 +795,21 @@ def _load_fsaverage5_mesh():
     return _mesh_cache
 
 
+def _get_cached_mesh_data():
+    if not hasattr(_get_cached_mesh_data, 'cache'):
+        all_coords, all_faces, n_verts_lh, lh_coords, rh_coords = _load_fsaverage5_mesh()
+        vertex_region = _assign_vertices_to_regions(all_coords, n_verts_lh, lh_coords, rh_coords)
+        _get_cached_mesh_data.cache = {
+            'all_coords': all_coords,
+            'all_faces': all_faces,
+            'vertex_region': vertex_region,
+            'n_verts_lh': n_verts_lh,
+            'lh_coords': lh_coords,
+            'rh_coords': rh_coords,
+        }
+    return _get_cached_mesh_data.cache
+
+
 def _assign_vertices_to_regions(
     all_coords, n_verts_lh, lh_coords, rh_coords
 ):
@@ -814,64 +853,66 @@ def generate_heatmap_html(
     ei_scores: NDArray[np.float32],
     title: str = "Epileptogenic Zone Detection",
     top_k: int = 5,
+    highlight_indices: Optional[List[int]] = None,
 ) -> str:
     """
-    Generate a standalone Plotly 3D brain heatmap for epileptogenicity.
+    Generate a static Plotly 3D brain heatmap for epileptogenicity.
 
-    Uses a HARD THRESHOLD approach: only the top-K highest-scoring regions
-    are colored (red shading by intensity). All other regions are rendered
-    in a neutral brain gray, creating a clear clinical-style visualization
-    where highlighted regions stand out unambiguously.
+    Only the specified highlight_indices (or top-K by score if not provided)
+    are colored. All other regions render in neutral gray.
 
     Args:
         ei_scores: Array of shape (76,) with values in [0, 1].
         title: Title displayed above the 3D plot.
-        top_k: Number of top epileptogenic regions to highlight (default: 5).
+        top_k: Fallback — number of top regions to highlight if highlight_indices not given.
+        highlight_indices: Explicit list of region indices to highlight (overrides top_k).
 
     Returns:
-        The complete HTML document string containing the Plotly 3D mesh.
+        HTML fragment string containing the Plotly 3D mesh (without CDN script tag).
     """
     import plotly.graph_objects as go
 
-    # ---- Load cortical mesh and build vertex→region mapping ----
-    all_coords, all_faces, n_verts_lh, lh_coords, rh_coords = _load_fsaverage5_mesh()
+    mesh = _get_cached_mesh_data()
+    all_coords = mesh['all_coords']
+    all_faces = mesh['all_faces']
+    vertex_region = mesh['vertex_region']
     n_verts = all_coords.shape[0]
-    vertex_region = _assign_vertices_to_regions(
-        all_coords, n_verts_lh, lh_coords, rh_coords
-    )
 
-    # ---- Hard threshold: only top-K regions are colored ----
-    top_k_indices = set(np.argsort(ei_scores)[::-1][:top_k].tolist())
-    top_k_names = [region_labels[i] for i in sorted(top_k_indices)]
+    if highlight_indices is not None:
+        highlight_set = set(highlight_indices) if len(highlight_indices) > 0 else set()
+    else:
+        highlight_set = set(np.argsort(ei_scores)[::-1][:top_k].tolist())
 
     # Build vertex colors:
-    #   - Non-highlighted regions → 0.0 (will map to neutral gray)
-    #   - Highlighted regions → score rescaled within highlighted range for contrast
-    highlighted_scores = ei_scores[list(top_k_indices)]
-    hl_min = highlighted_scores.min()
-    hl_max = highlighted_scores.max()
-    hl_range = hl_max - hl_min if hl_max - hl_min > 1e-10 else 1.0
+    #   - Non-highlighted regions → 0.0 (neutral gray)
+    #   - Highlighted regions → score rescaled to 0.3–1.0 for red gradient
+    if len(highlight_set) > 0:
+        highlighted_scores = ei_scores[list(highlight_set)]
+        hl_min = highlighted_scores.min()
+        hl_max = highlighted_scores.max()
+        hl_range = hl_max - hl_min if hl_max - hl_min > 1e-10 else 1.0
 
-    # Use a two-tier intensity scheme:
-    #   0.0 = neutral brain, 0.3-1.0 = epileptogenic gradient
-    vertex_colors = np.full(n_verts, 0.0, dtype=np.float32)
-    vertex_hover = [''] * n_verts
+        vertex_colors = np.full(n_verts, 0.0, dtype=np.float32)
+        vertex_hover = [''] * n_verts
 
-    for v_idx in range(n_verts):
-        r_idx = vertex_region[v_idx]
-        if r_idx < 0:
-            vertex_hover[v_idx] = "unassigned"
-            continue
+        for v_idx in range(n_verts):
+            r_idx = vertex_region[v_idx]
+            if r_idx < 0:
+                vertex_hover[v_idx] = "unassigned"
+                continue
 
-        rname = region_labels[r_idx]
-        if r_idx in top_k_indices:
-            # Map score to 0.3–1.0 range for the epileptogenic gradient
-            normalized = (ei_scores[r_idx] - hl_min) / hl_range
-            vertex_colors[v_idx] = 0.3 + 0.7 * normalized
-            vertex_hover[v_idx] = f"⚠ {rname} (EI: {ei_scores[r_idx]:.3f})"
-        else:
-            vertex_colors[v_idx] = 0.0
-            vertex_hover[v_idx] = rname
+            rname = region_labels[r_idx]
+            if r_idx in highlight_set:
+                normalized = (ei_scores[r_idx] - hl_min) / hl_range
+                vertex_colors[v_idx] = 0.3 + 0.7 * normalized
+                vertex_hover[v_idx] = f"{rname} (EI: {ei_scores[r_idx]:.3f})"
+            else:
+                vertex_colors[v_idx] = 0.0
+                vertex_hover[v_idx] = rname
+    else:
+        # All gray — no regions highlighted
+        vertex_colors = np.zeros(n_verts, dtype=np.float32)
+        vertex_hover = [region_labels[r_idx] if r_idx >= 0 else "unassigned" for r_idx in vertex_region]
 
     # ---- Build Plotly 3D mesh figure ----
     fig = go.Figure()
@@ -938,7 +979,7 @@ def generate_heatmap_html(
     )
 
     return fig.to_html(
-        include_plotlyjs='cdn', full_html=True, auto_play=False,
+        include_plotlyjs=False, full_html=False,
         config=dict(responsive=True),
     )
 
@@ -1043,117 +1084,106 @@ def compute_source_activity_metrics(
     }
 
 
+def _compute_animated_frames(all_win_sources, timestamps, job_id=None):
+    n_win = len(all_win_sources)
+    rms_matrix = np.zeros((n_win, N_REGIONS), dtype=np.float64)
+    for i, ws in enumerate(all_win_sources):
+        rms_matrix[i] = np.sqrt(np.mean(ws.astype(np.float64) ** 2, axis=1))
+    region_mean = rms_matrix.mean(axis=0)       # (76,)
+    region_std = rms_matrix.std(axis=0)          # (76,)
+    region_std = np.maximum(region_std, 1e-10)
+    animated_frames = []
+    for i in range(n_win):
+        z = (rms_matrix[i] - region_mean) / region_std
+        z_clipped = np.clip(z, -3.0, 3.0)
+        scores = (z_clipped + 3.0) / 6.0
+        animated_frames.append(np.array(scores, dtype=np.float32))
+        logger.info(
+            f"[ANIM_Z] Window {i}/{n_win}: z-range=[{z.min():.2f}, {z.max():.2f}], "
+            f"score-range=[{scores.min():.4f}, {scores.max():.4f}], "
+            f"non-zero={int((scores > 0.01).sum())}/{N_REGIONS}",
+            extra={"job_id": job_id} if job_id else {}
+        )
+    mesh_data = _get_cached_mesh_data()
+    vertex_region_list = mesh_data['vertex_region'].tolist()
+    animation_data = [
+        {"scoresArray": scores.tolist(), "timestamp": ts}
+        for scores, ts in zip(animated_frames, timestamps)
+    ]
+    logger.info(
+        f"[ANIM_Z] Built {len(animation_data)} frames, vertex_region={len(vertex_region_list)} verts",
+        extra={"job_id": job_id} if job_id else {}
+    )
+    return animation_data, vertex_region_list
+
+
 def generate_source_activity_heatmap_html(
     activity_scores: NDArray[np.float32],
     title: str = "EEG Source Imaging — Estimated Brain Activity",
-    animated_frames: Optional[List[NDArray[np.float32]]] = None,
-    frame_timestamps: Optional[List[float]] = None,
-    global_cmin: Optional[float] = None,
-    global_cmax: Optional[float] = None,
 ) -> str:
     """
-    Generate a standalone Plotly 3D brain heatmap for source activity (ESI).
+    Generate a static Plotly 3D brain heatmap for source activity (ESI).
 
     Uses an inferno-style colorscale (matching standard neuroimaging conventions):
-    dark purple (low) → orange → bright yellow (high). Clean professional look
-    with no debug annotations or technical overlays.
+    dark purple (low) → orange → bright yellow (high). Clean professional look.
 
-    If animated_frames is provided, creates a Plotly animation with play/pause
-    and a frame slider for sliding-window playback of longer recordings.
-
-    When global_cmin and global_cmax are provided, scales the colorscale to the
-    actual data range rather than [0,1]. This preserves visibility of subtle
-    inter-window magnitude differences in animations.
+    Animation is handled by the frontend using per-frame scores_array data
+    and the vertex→region mapping via Plotly.restyle calls — no go.Frame
+    objects, sliders, or updatemenus are embedded in the HTML.
 
     Args:
-        activity_scores: Array of shape (76,) with values in [0, 1] — best/single window.
+        activity_scores: Array of shape (76,) with values in [0, 1] for initial frame.
         title: Title displayed above the 3D plot.
-        animated_frames: Optional list of (76,) score arrays, one per time window.
-        frame_timestamps: Optional list of timestamps (seconds) for each frame.
-        global_cmin: Optional global minimum for colorscale range.
-        global_cmax: Optional global maximum for colorscale range.
 
     Returns:
-        The complete HTML document string containing the Plotly 3D mesh.
+        HTML fragment string containing the Plotly 3D mesh (without CDN script tag).
     """
     import plotly.graph_objects as go
 
-    # ---- Load cortical mesh and build vertex→region mapping ----
-    all_coords, all_faces, n_verts_lh, lh_coords, rh_coords = _load_fsaverage5_mesh()
+    mesh = _get_cached_mesh_data()
+    all_coords = mesh['all_coords']
+    all_faces = mesh['all_faces']
+    vertex_region = mesh['vertex_region']
     n_verts = all_coords.shape[0]
-    vertex_region = _assign_vertices_to_regions(
-        all_coords, n_verts_lh, lh_coords, rh_coords
-    )
 
-    def _scores_to_vertex_colors(scores, with_hover=False, _debug_tag=""):
+    def _scores_to_vertex_colors(scores):
         v_colors = np.full(n_verts, 0.0, dtype=np.float32)
-        v_hover = [''] * n_verts if with_hover else None
-        score_min = float('inf')
-        score_max = float('-inf')
         for v_idx in range(n_verts):
             r_idx = vertex_region[v_idx]
             if r_idx >= 0:
-                s_val = float(scores[r_idx])
-                v_colors[v_idx] = s_val
-                if s_val < score_min: score_min = s_val
-                if s_val > score_max: score_max = s_val
-                if with_hover:
-                    v_hover[v_idx] = (
-                        f"{region_labels[r_idx]}: "
-                        f"Activity {scores[r_idx]:.3f}"
-                    )
-            else:
-                if with_hover:
-                    v_hover[v_idx] = "unassigned"
-        logger.info(
-            f"[{_debug_tag}] vertex_colors: {n_verts} verts, "
-            f"score range=[{score_min:.4f}, {score_max:.4f}], "
-            f"non-zero={int((v_colors > 0.01).sum())}/{n_verts}"
-        )
-        return v_colors, v_hover
+                v_colors[v_idx] = float(scores[r_idx])
+        return v_colors
+
+    # Build hover text (region names only — scores omitted since they change per frame)
+    vertex_hover = []
+    for v_idx in range(n_verts):
+        r_idx = vertex_region[v_idx]
+        if r_idx >= 0:
+            vertex_hover.append(region_labels[r_idx])
+        else:
+            vertex_hover.append("unassigned")
 
     logger.info(
-        f"[generate_heatmap] Building first frame: activity_scores "
-        f"range=[{float(activity_scores.min()):.4f}, {float(activity_scores.max()):.4f}], "
-        f"shape={activity_scores.shape}"
+        f"[generate_source_activity_heatmap_html] Building static mesh: "
+        f"scores range=[{float(activity_scores.min()):.4f}, {float(activity_scores.max()):.4f}]"
     )
 
-    vertex_colors, vertex_hover = _scores_to_vertex_colors(
-        activity_scores, with_hover=True, _debug_tag="first_frame"
-    )
+    vertex_colors = _scores_to_vertex_colors(activity_scores)
 
-    # ---- Build Plotly 3D mesh figure ----
     fig = go.Figure()
 
-    # Inferno-inspired colorscale (standard in neuroimaging)
     inferno_colorscale = [
-        [0.00, '#000004'],   # Near-black (lowest activity)
-        [0.15, '#1b0c41'],   # Dark indigo
-        [0.30, '#4a0c6b'],   # Purple
-        [0.45, '#781c6d'],   # Red-purple
-        [0.55, '#a52c60'],   # Warm magenta
-        [0.65, '#cf4446'],   # Orange-red
-        [0.75, '#ed6925'],   # Orange
-        [0.85, '#fb9b06'],   # Yellow-orange
-        [0.95, '#f7d13d'],   # Yellow
-        [1.00, '#fcffa4'],   # Bright yellow-white (highest activity)
+        [0.00, '#000004'],
+        [0.15, '#1b0c41'],
+        [0.30, '#4a0c6b'],
+        [0.45, '#781c6d'],
+        [0.55, '#a52c60'],
+        [0.65, '#cf4446'],
+        [0.75, '#ed6925'],
+        [0.85, '#fb9b06'],
+        [0.95, '#f7d13d'],
+        [1.00, '#fcffa4'],
     ]
-
-    use_global_range = global_cmin is not None and global_cmax is not None
-    intensity_cmin = global_cmin if use_global_range else 0.0
-    intensity_cmax = global_cmax if use_global_range else 1.0
-
-    if use_global_range:
-        mid = (intensity_cmin + intensity_cmax) / 2.0
-        colorbar_tickvals = [intensity_cmin, mid, intensity_cmax]
-        colorbar_ticktext = [
-            f'{intensity_cmin:.3f}',
-            f'{mid:.3f}',
-            f'{intensity_cmax:.3f}',
-        ]
-    else:
-        colorbar_tickvals = [0, 0.5, 1.0]
-        colorbar_ticktext = ['Low', 'Medium', 'High']
 
     fig.add_trace(go.Mesh3d(
         x=all_coords[:, 0],
@@ -1180,116 +1210,6 @@ def generate_source_activity_heatmap_html(
         name='Brain Surface',
     ))
 
-    # ---- Add animation frames if sliding-window data is provided ----
-    has_animation = (
-        animated_frames is not None
-        and frame_timestamps is not None
-        and len(animated_frames) > 1
-    )
-
-    logger.info(
-        f"[generate_heatmap] has_animation={has_animation}, "
-        f"animated_frames={len(animated_frames) if animated_frames is not None else 'None'}, "
-        f"frame_timestamps={len(frame_timestamps) if frame_timestamps is not None else 'None'}"
-    )
-
-    if has_animation:
-        frames = []
-        slider_steps = []
-        n_frames_total = len(animated_frames)
-        for i, (frame_scores, ts) in enumerate(
-            zip(animated_frames, frame_timestamps)
-        ):
-            if i == 0 or i == n_frames_total - 1 or (i < 5) or (i % 10 == 0):
-                logger.info(
-                    f"[generate_heatmap] Frame {i}/{n_frames_total}: scores "
-                    f"range=[{frame_scores.min():.4f}, {frame_scores.max():.4f}], "
-                    f"ts={ts:.2f}s"
-                )
-            v_colors_frame, _ = _scores_to_vertex_colors(
-                frame_scores, _debug_tag=f"frame{i}"
-            )
-            frame_mesh_kw: dict = dict(intensity=v_colors_frame)
-            if use_global_range:
-                frame_mesh_kw["cmin"] = intensity_cmin
-                frame_mesh_kw["cmax"] = intensity_cmax
-            frames.append(go.Frame(
-                data=[go.Mesh3d(**frame_mesh_kw)],
-                name=str(i),
-                traces=[0],
-            ))
-            minutes = int(ts) // 60
-            seconds = ts - (minutes * 60)
-            ts_label = f"{minutes}:{seconds:04.1f}" if minutes > 0 else f"0:{seconds:04.1f}"
-            slider_steps.append(dict(
-                args=[[str(i)], dict(
-                    frame=dict(duration=200, redraw=True),
-                    mode='immediate',
-                    transition=dict(duration=0),
-                )],
-                label=ts_label,
-                method='animate',
-            ))
-
-        fig.frames = frames
-        logger.info(
-            f"[generate_heatmap] Created {len(fig.frames)} frames and {len(slider_steps)} slider steps"
-        )
-
-        # Add play/pause buttons and slider
-        fig.update_layout(
-            updatemenus=[
-                dict(
-                    type='buttons',
-                    showactive=False,
-                    x=0.05, y=0.02,
-                    xanchor='left', yanchor='bottom',
-                    pad=dict(r=10, t=65),
-                    font=dict(size=12),
-                    bgcolor='rgba(40,40,60,0.85)',
-                    bordercolor='rgba(120,120,150,0.5)',
-                    borderwidth=1,
-                    buttons=[
-                        dict(
-                            label='▶ Play',
-                            method='animate',
-                            args=[None, dict(
-                                frame=dict(duration=200, redraw=True),
-                                fromcurrent=True,
-                                transition=dict(duration=0),
-                            )],
-                        ),
-                        dict(
-                            label='⏸ Pause',
-                            method='animate',
-                            args=[[None], dict(
-                                frame=dict(duration=0, redraw=False),
-                                mode='immediate',
-                                transition=dict(duration=0),
-                            )],
-                        ),
-                    ],
-                ),
-            ],
-            sliders=[dict(
-                active=0,
-                currentvalue=dict(
-                    prefix='Time: ',
-                    visible=True,
-                    xanchor='center',
-                ),
-                pad=dict(b=10, t=40),
-                len=0.9,
-                x=0.05,
-                xanchor='left',
-                steps=slider_steps,
-                transition=dict(duration=0),
-            )],
-        )
-    else:
-        # Static view — no buttons needed (mouse interaction for rotation)
-        pass
-
     fig.update_layout(
         title=dict(
             text=title,
@@ -1309,26 +1229,15 @@ def generate_source_activity_heatmap_html(
         ),
         paper_bgcolor='#1a1a2e',
         plot_bgcolor='#1a1a2e',
-        margin=dict(l=0, r=0, t=50, b=60),
+        margin=dict(l=0, r=0, t=50, b=10),
         font=dict(color='#e0e0e0'),
         autosize=True,
     )
 
-    # Debug: log frame count before HTML generation
-    n_frames_before = len(fig.frames) if fig.frames else 0
-    logger.info(f"[generate_source_activity_heatmap_html] Frames in figure: {n_frames_before}, has_animation={has_animation}")
-    
-    html_output = fig.to_html(
-        include_plotlyjs='cdn', full_html=True, auto_play=False,
+    return fig.to_html(
+        include_plotlyjs=False, full_html=False,
         config=dict(responsive=True),
     )
-    
-    # Debug: count frames in generated HTML
-    import re
-    frame_names = re.findall(r'"name":"\d+"', html_output)
-    logger.info(f"[generate_source_activity_heatmap_html] Frame definitions in HTML: {len(frame_names)}")
-    
-    return html_output
 
 
 # ========================================================================
@@ -1435,46 +1344,40 @@ def _build_eeg_payload(eeg_data, fs, channel_names, edf_all_windows=None, edf_wi
     return eeg_payload
 
 
-def _extract_plotly_body(html_content):
-    import re
-    script_match = re.search(
-        r'<script[^>]*src="https://cdn\.plot\.ly/plotly[^"]*"[^>]*></script>',
-        html_content, re.I
-    )
-    plotly_script = script_match.group(0) if script_match else ''
-    body_match = re.search(
-        r'<body[^>]*>([\s\S]*?)</body>', html_content, re.I
-    )
-    body_content = body_match.group(1) if body_match else html_content
-    return plotly_script + body_content
-
-
 def _run_xai(eeg_data, ei_result, region_labels):
     xai_result = None
     try:
-        from src.xai.eeg_occlusion import explain_biomarker
         scores_array = np.array(ei_result['scores_array'])
         top_region_idx = int(np.argmax(scores_array))
         top_region_code = region_labels[top_region_idx]
-
-        def _ei_pipeline(win):
-            sources = run_inference(win)
-            ei = compute_epileptogenicity_index(sources)
-            return {"scores": np.array(ei["scores_array_raw"])}
-
-        xai_result = explain_biomarker(
-            eeg_window=eeg_data.astype(np.float32),
-            target_region_idx=top_region_idx,
-            run_pipeline_fn=_ei_pipeline,
-            occlusion_width=40,
-            stride=20,
-        )
-        xai_result["target_region"] = top_region_code
-        xai_result["target_region_full"] = format_region_for_display(top_region_code)
+        xai_result = _run_xai_single(eeg_data, top_region_idx, top_region_code)
+        if xai_result:
+            xai_result["target_region"] = top_region_code
+            xai_result["target_region_full"] = format_region_for_display(top_region_code)
     except Exception as e:
         logger.warning(f"XAI skipped: {e}")
         xai_result = None
     return xai_result
+
+
+def _run_xai_single(eeg_window, target_region_idx, target_region_code):
+    from src.xai.eeg_occlusion import explain_biomarker
+
+    def _ei_pipeline(win):
+        sources = run_inference(win)
+        ei = compute_epileptogenicity_index(sources)
+        return {"scores": np.array(ei["scores_array_raw"])}
+
+    result = explain_biomarker(
+        eeg_window=eeg_window.astype(np.float32),
+        target_region_idx=target_region_idx,
+        run_pipeline_fn=_ei_pipeline,
+        occlusion_width=40,
+        stride=20,
+    )
+    result["target_region"] = target_region_code
+    result["target_region_full"] = format_region_for_display(target_region_code)
+    return result
 
 
 def _make_cmaes_callback(job_id: str, max_generations: int):
@@ -1562,6 +1465,7 @@ async def analyze_eeg(
     ws: bool = Form(False),
     max_windows: Optional[int] = Form(None),
     cmaes_generations: Optional[int] = Form(None),
+    xai_window_idx: Optional[int] = Form(None),
     debug: bool = Form(False),
 ):
     """
@@ -1806,12 +1710,11 @@ async def analyze_eeg(
             activity_result = compute_source_activity_metrics(predicted_sources)
 
             # ---- Sliding window animation (EDF files with > 1 window) ----
-            animated_frames = None
+            animation_data = None
+            vertex_region_list = None
             frame_timestamps = None
             n_windows_processed = 1
-            all_win_sources: list = []
-            global_metric_min = None
-            global_metric_max = None
+            all_win_sources = None
 
             if edf_all_windows is not None and edf_window_timestamps is not None:
                 n_win = len(edf_all_windows)
@@ -1820,7 +1723,6 @@ async def analyze_eeg(
                     extra={"job_id": job_id}
                 )
 
-                # Log timestamp range
                 ts_start = edf_window_timestamps[0] if edf_window_timestamps else 0
                 ts_end = edf_window_timestamps[-1] if edf_window_timestamps else 0
                 logger.info(
@@ -1829,69 +1731,26 @@ async def analyze_eeg(
                     extra={"job_id": job_id}
                 )
 
-                animated_frames = []
                 frame_timestamps = edf_window_timestamps
                 n_windows_processed = n_win
 
-                # First pass: compute all window RMS scores to determine global min/max
+                # Run inference on all windows
+                all_win_sources = []
                 for i, win_eeg in enumerate(edf_all_windows):
-                    win_eeg_range = f"[{win_eeg.min():.2f}, {win_eeg.max():.2f}]"
-                    logger.info(f"[ANIM] Window {i}/{n_win}: EEG range={win_eeg_range}", extra={"job_id": job_id})
+                    logger.info(f"[ANIM] Window {i}/{n_win}: running inference...", extra={"job_id": job_id})
                     win_sources = run_inference(win_eeg)
-                    src_range = f"[{win_sources.min():.4f}, {win_sources.max():.4f}]"
-                    logger.info(f"[ANIM] Window {i}/{n_win}: source range={src_range}, shape={win_sources.shape}", extra={"job_id": job_id})
+                    logger.info(f"[ANIM] Window {i}/{n_win}: source shape={win_sources.shape}", extra={"job_id": job_id})
                     all_win_sources.append(win_sources)
 
-                # Compute global RMS min/max across all windows.
-                # Compute raw per-region RMS for each window (no [0,1] normalization).
-                # Raw RMS preserves absolute magnitude differences between windows.
-                # Pass global min/max to Plotly as explicit cmin/cmax so the full
-                # colorscale maps to the actual data range, making inter-window
-                # intensity shifts visible even when they are subtle.
-                all_rms = []
-                for i, ws in enumerate(all_win_sources):
-                    win_rms = np.sqrt(np.mean(ws ** 2, axis=1))
-                    logger.info(f"[ANIM] Window {i}/{n_win}: RMS range=[{win_rms.min():.6f}, {win_rms.max():.6f}], mean={win_rms.mean():.6f}", extra={"job_id": job_id})
-                    all_rms.extend(win_rms.tolist())
-                global_metric_min = min(all_rms)
-                global_metric_max = max(all_rms)
-                logger.info(
-                    f"[ANIM] Global RMS bounds: min={global_metric_min:.6f}, max={global_metric_max:.6f}, range={global_metric_max-global_metric_min:.6f}",
-                    extra={"job_id": job_id}
+            # Build animation data for frontend using per-region temporal z-scoring
+            if all_win_sources is not None and len(all_win_sources) > 1:
+                animation_data, vertex_region_list = _compute_animated_frames(
+                    all_win_sources, frame_timestamps, job_id=job_id
                 )
 
-                for i, win_sources in enumerate(all_win_sources):
-                    win_rms = np.sqrt(np.mean(win_sources ** 2, axis=1))
-                    animated_frames.append(win_rms.astype(np.float32))
-                    logger.info(
-                        f"[ANIM] Window {i}/{n_win}: RMS range=[{win_rms.min():.6f}, {win_rms.max():.6f}], "
-                        f"non-zero={(win_rms > 1e-10).sum()}/{N_REGIONS}",
-                        extra={"job_id": job_id}
-                    )
-
-                logger.info(
-                    f"[ANIM] Complete: {len(animated_frames)} frames generated",
-                    extra={"job_id": job_id}
-                )
-
-            logger.info(
-                f"[ANIM] Generating heatmap: animated_frames={len(animated_frames) if animated_frames else 'None'}, "
-                f"frame_timestamps={len(frame_timestamps) if frame_timestamps else 'None'}, "
-                f"n_windows_processed={n_windows_processed}",
-                extra={"job_id": job_id}
-            )
-            static_rms = (
-                np.sqrt(np.mean(all_win_sources[0] ** 2, axis=1)).astype(np.float32)
-                if all_win_sources else
-                np.sqrt(np.mean(predicted_sources ** 2, axis=1)).astype(np.float32)
-            )
             heatmap_html = generate_source_activity_heatmap_html(
                 activity_scores=static_rms,
                 title="EEG Source Imaging — Estimated Brain Activity",
-                animated_frames=animated_frames,
-                frame_timestamps=frame_timestamps,
-                global_cmin=global_metric_min if animated_frames else None,
-                global_cmax=global_metric_max if animated_frames else None,
             )
 
             if shutil.disk_usage(RESULTS_DIR).free < MIN_FREE_BYTES:
@@ -1914,10 +1773,10 @@ async def analyze_eeg(
             processing_time = time.time() - start_time
             logger.info(f"Complete in {processing_time:.1f}s", extra={"job_id": job_id})
 
-            plot_content = _extract_plotly_body(heatmap_html)
+            plot_content = heatmap_html  # Already a fragment — no extraction needed
             logger.info(
-                f"[ANIM] Plotly body extracted: {len(plot_content)} chars, "
-                f"starts with script={plot_content[:30] if plot_content else 'EMPTY!'}",
+                f"[ANIM] Plotly HTML fragment: {len(plot_content)} chars, "
+                f"starts with={plot_content[:40] if plot_content else 'EMPTY!'}",
                 extra={"job_id": job_id}
             )
             eeg_payload = _build_eeg_payload(
@@ -1929,17 +1788,18 @@ async def analyze_eeg(
             eeg_windows_count = len(eeg_payload['windows']) if eeg_payload and eeg_payload.get('windows') else 0
             logger.info(
                 f"[ANIM] EEG payload: {eeg_windows_count} windows, "
-                f"hasAnimation={animated_frames is not None and len(animated_frames) > 1}",
+                f"hasAnimation={animation_data is not None}",
                 extra={"job_id": job_id}
             )
 
-            has_animation_final = animated_frames is not None and len(animated_frames) > 1
+            has_animation_final = animation_data is not None
             logger.info(
                 f"[ANIM] Returning response: nWindowsProcessed={n_windows_processed}, "
                 f"nWindowsTotal={total_edf_windows}, "
                 f"hasAnimation={has_animation_final}, "
                 f"plotHtml_len={len(plot_content)}, "
-                f"eegData_windows={eeg_windows_count}",
+                f"eegData_windows={eeg_windows_count}, "
+                f"animationData_frames={len(animation_data) if animation_data else 0}",
                 extra={"job_id": job_id}
             )
 
@@ -1950,14 +1810,14 @@ async def analyze_eeg(
                 "processingTime": round(processing_time, 2),
                 "source": source_label,
                 "plotHtml": plot_content,
-                # Include raw EEG windows so frontend can render waveform comparisons
                 "eegData": eeg_payload,
                 "fullHtmlPath": f"/api/results/{job_id}/source_activity_heatmap.html",
                 "nWindowsProcessed": n_windows_processed,
                 "nWindowsTotal": total_edf_windows,
                 "windowsTruncated": edf_windows_truncated,
                 "hasAnimation": has_animation_final,
-                # Per-region activity scores
+                "animationData": animation_data,
+                "vertexRegion": vertex_region_list,
                 "sourceLocalization": {
                     "scores": activity_result['scores'],
                     "scores_array": activity_result['scores_array'],
@@ -1968,7 +1828,6 @@ async def analyze_eeg(
                     "region_labels": region_labels,
                     "summary": activity_result['summary'],
                 },
-                # Raw source activity summary
                 "sourceActivity": source_summary,
             })
 
@@ -1983,16 +1842,62 @@ async def analyze_eeg(
                 threshold_percentile=threshold_percentile,
             )
 
-            # ── XAI: Explain top detected region via occlusion ──
-            xai_result = _run_xai(eeg_data, ei_result, region_labels)
+            # ── XAI: Occlusion across top windows (or single window) ──
+            if edf_all_windows is not None and len(edf_all_windows) > 1:
+                n_screen = min(len(edf_all_windows), 10)
+                logger.info(f"Pre-screening {n_screen} windows for XAI...", extra={"job_id": job_id})
+
+                # Pre-screen: compute EI for each window to find top-3
+                window_scores = []
+                for i in range(n_screen):
+                    win_src = run_inference(edf_all_windows[i])
+                    win_ei = compute_epileptogenicity_index(win_src)
+                    window_scores.append((i, float(win_ei.get('max_score', 0.0))))
+
+                top_3 = sorted(window_scores, key=lambda x: x[1], reverse=True)[:3]
+                logger.info(f"Top windows for XAI: {top_3}", extra={"job_id": job_id})
+
+                # Run occlusion on top-3 windows, targeting the same top region
+                top_region_idx = int(np.argmax(np.array(ei_result['scores_array'])))
+                top_region_code = region_labels[top_region_idx]
+                combined_segments = []
+                for win_idx, ei_max in top_3:
+                    win_eeg = edf_all_windows[win_idx]
+                    win_xai = _run_xai_single(win_eeg, top_region_idx, top_region_code)
+                    if win_xai and win_xai.get('top_segments'):
+                        win_start = edf_window_timestamps[win_idx] - WINDOW_LENGTH / (2 * SAMPLING_RATE) if edf_window_timestamps else 0.0
+                        for seg in win_xai['top_segments']:
+                            seg['start_time_sec'] = round(win_start + seg['start_time_sec'], 3)
+                            seg['end_time_sec'] = round(win_start + seg['end_time_sec'], 3)
+                            seg['window_idx'] = win_idx
+                            combined_segments.append(seg)
+
+                combined_segments.sort(key=lambda s: s.get('importance', 0), reverse=True)
+                combined_segments = combined_segments[:5]
+
+                xai_result = {
+                    'channel_importance': win_xai.get('channel_importance', []) if win_xai else [],
+                    'time_importance': win_xai.get('time_importance', []) if win_xai else [],
+                    'top_segments': combined_segments,
+                    'target_region': top_region_code,
+                    'target_region_full': format_region_for_display(top_region_code),
+                    'target_region_idx': top_region_idx,
+                    'analyzed_windows': [w[0] for w in top_3],
+                    'total_windows_screened': n_screen,
+                }
+                logger.info(f"XAI complete: {len(combined_segments)} segments from {len(top_3)} windows", extra={"job_id": job_id})
+            else:
+                xai_result = _run_xai(eeg_data, ei_result, region_labels)
             if xai_result:
                 logger.info(f"XAI complete", extra={"job_id": job_id})
 
-            logger.info(f"Generating epileptogenicity 3D heatmap...", extra={"job_id": job_id})
+            logger.info(f"Generating brain heatmap...", extra={"job_id": job_id})
+            hl_indices = ei_result.get('roi_indices')
             heatmap_html = generate_heatmap_html(
                 ei_scores=np.array(ei_result['scores_array']),
-                title="Epileptogenic Zone Detection",
+                title="Regions of Interest — Source Activity",
                 top_k=5,
+                highlight_indices=hl_indices,
             )
 
             # Save HTML to disk
@@ -2014,7 +1919,7 @@ async def analyze_eeg(
             processing_time = time.time() - start_time
             logger.info(f"Complete in {processing_time:.1f}s", extra={"job_id": job_id})
 
-            plot_content = _extract_plotly_body(heatmap_html)
+            plot_content = heatmap_html
 
             # ── CMA-ES / Concordance ──
             concordance = None
@@ -2092,6 +1997,12 @@ async def analyze_eeg(
                 "epileptogenicity": {
                     "scores": ei_result['scores'],
                     "scores_array": ei_result['scores_array'],
+                    "regions_of_interest": ei_result.get('regions_of_interest', []),
+                    "regions_of_interest_full": ei_result.get('regions_of_interest_full', []),
+                    "regions_of_interest_count": ei_result.get('regions_of_interest_count', 0),
+                    "roi_indices": ei_result.get('roi_indices', []),
+                    "roi_detected": ei_result.get('roi_detected', False),
+                    "statistical_z": ei_result.get('statistical_z', 2.0),
                     "epileptogenic_regions": ei_result['epileptogenic_regions'],
                     "epileptogenic_regions_full": ei_result['epileptogenic_regions_full'],
                     "threshold": ei_result['threshold'],
@@ -2297,6 +2208,37 @@ async def poll_cmaes_results(job_id: str):
     return JSONResponse(response_data)
 
 
+@app.get("/api/xai/{job_id}/{window_idx}")
+async def reanalyze_xai(job_id: str, window_idx: int):
+    """Re-run occlusion XAI on a specific window of a completed biomarker job."""
+    job_dir = RESULTS_DIR / job_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    scores_path = job_dir / "epileptogenicity_scores.json"
+    if not scores_path.exists():
+        raise HTTPException(status_code=404, detail="Biomarker result not found for this job")
+    with open(scores_path, 'r') as f:
+        ei_result = json.load(f)
+
+    all_win_path = job_dir / "edf_all_windows.npy"
+    if not all_win_path.exists():
+        raise HTTPException(status_code=404, detail="No multi-window data for this job")
+    all_windows = np.load(str(all_win_path))
+    n_windows = all_windows.shape[0]
+    if window_idx < 0 or window_idx >= n_windows:
+        raise HTTPException(status_code=400, detail=f"Window {window_idx} out of range [0, {n_windows})")
+
+    scores_array = np.array(ei_result.get('scores_array', []))
+    top_region_idx = int(np.argmax(scores_array))
+    top_region_code = region_labels[top_region_idx] if top_region_idx < len(region_labels) else "unknown"
+    xai_eeg = all_windows[window_idx].astype(np.float32)
+    xai_result = _run_xai_single(xai_eeg, top_region_idx, top_region_code)
+    if xai_result is None:
+        raise HTTPException(status_code=500, detail="XAI occlusion failed")
+    return JSONResponse({"status": "ok", "window_idx": window_idx, "xai": xai_result})
+
+
 # ========================================================================
 # WebSocket for real-time job status
 # ========================================================================
@@ -2396,39 +2338,35 @@ async def _process_analysis_async(
         if mode == "source_localization":
             activity_result = compute_source_activity_metrics(predicted_sources)
 
-            animated_frames = None
-            frame_timestamps = None
-            global_metric_min_ws = None
-            global_metric_max_ws = None
-            all_win_sources_ws: list = []
+            # Sliding window animation for EDF uploads with >1 window
+            animation_data = None
+            vertex_region_ws = None
             if edf_all_windows is not None and edf_window_timestamps is not None:
-                animated_frames = []
-                frame_timestamps = edf_window_timestamps
+                n_win = len(edf_all_windows)
+                logger.info(
+                    f"[ANIM_WS] Processing {n_win} sliding windows (z-score norm)...",
+                    extra={"job_id": job_id}
+                )
+                # Compute all sources (async/inference), then delegate to shared helper
+                all_win_sources = []
                 for win_eeg in edf_all_windows:
                     win_sources = await asyncio.wait_for(
                         asyncio.get_event_loop().run_in_executor(None, run_inference, win_eeg),
                         timeout=60.0,
                     )
-                    win_rms = np.sqrt(np.mean(win_sources ** 2, axis=1))
-                    all_win_sources_ws.append(win_sources)
-                    animated_frames.append(win_rms.astype(np.float32))
-                # Compute global RMS range across all windows
-                all_rms_vals = np.concatenate([af for af in animated_frames])
-                global_metric_min_ws = float(all_rms_vals.min())
-                global_metric_max_ws = float(all_rms_vals.max())
+                    all_win_sources.append(win_sources)
+                animation_data, vertex_region_ws = _compute_animated_frames(
+                    all_win_sources, edf_window_timestamps, job_id=job_id
+                )
+                logger.info(
+                    f"[ANIM_WS] Built {len(animation_data)} frames, "
+                    f"vertex_region length={len(vertex_region_ws) if vertex_region_ws else 0}",
+                    extra={"job_id": job_id}
+                )
 
-            static_rms_ws = (
-                np.sqrt(np.mean(all_win_sources_ws[0] ** 2, axis=1)).astype(np.float32)
-                if all_win_sources_ws else
-                np.sqrt(np.mean(predicted_sources ** 2, axis=1)).astype(np.float32)
-            )
             heatmap_html = generate_source_activity_heatmap_html(
                 activity_scores=static_rms_ws,
                 title="EEG Source Imaging — Estimated Brain Activity",
-                animated_frames=animated_frames,
-                frame_timestamps=frame_timestamps,
-                global_cmin=global_metric_min_ws,
-                global_cmax=global_metric_max_ws,
             )
 
             if shutil.disk_usage(RESULTS_DIR).free < MIN_FREE_BYTES:
@@ -2443,6 +2381,9 @@ async def _process_analysis_async(
                     "status": "completed",
                     "mode": "source_localization",
                     "fullHtmlPath": f"/api/results/{job_id}/source_activity_heatmap.html",
+                    "hasAnimation": animation_data is not None,
+                    "animationData": animation_data,
+                    "vertexRegion": vertex_region_ws,
                 }
             )
         else:
@@ -2486,6 +2427,10 @@ async def _process_analysis_async(
                     "scores": list(ei_result.get('scores', {}).items()),
                     "scores_array": list(ei_result.get('scores_array', [])),
                     "region_labels": ei_result.get('region_labels', []),
+                    "regions_of_interest": ei_result.get('regions_of_interest', []),
+                    "regions_of_interest_full": ei_result.get('regions_of_interest_full', []),
+                    "regions_of_interest_count": ei_result.get('regions_of_interest_count', 0),
+                    "roi_detected": ei_result.get('roi_detected', False),
                     "epileptogenic_regions": ei_result.get('epileptogenic_regions', []),
                     "epileptogenic_regions_full": ei_result.get('epileptogenic_regions_full', []),
                     "threshold": ei_result.get('threshold'),

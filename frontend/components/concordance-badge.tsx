@@ -62,7 +62,7 @@ export function ConcordanceBadge({ tier, overlap, description, sharedRegions }: 
         <span className="group relative inline-flex ml-1">
           <span className="cursor-help text-xs text-muted-foreground rounded-full border border-muted-foreground/30 w-3.5 h-3.5 flex items-center justify-center">?</span>
           <span className="invisible group-hover:visible opacity-0 group-hover:opacity-100 transition-opacity absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2 text-xs bg-popover text-popover-foreground rounded-md shadow-lg border z-10">
-            Concordance measures agreement between the neural network's epileptogenicity prediction and the biophysical CMA-ES model's excitability estimate. High concordance indicates independent confirmation by both computational methods.
+            Concordance measures agreement between the neural network&rsquo;s epileptogenicity prediction and the biophysical CMA-ES model&rsquo;s excitability estimate. High concordance indicates independent confirmation by both computational methods.
           </span>
         </span>
         {overlap !== undefined && (
@@ -84,7 +84,7 @@ export function ConcordanceBadge({ tier, overlap, description, sharedRegions }: 
       {sharedRegions && sharedRegions.length > 0 && (
         <details className="mt-2">
           <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
-            Shared regions ({sharedRegions.length})
+            Simulation Anomaly Regions ({sharedRegions.length})
           </summary>
           <ul className="mt-1 space-y-0.5">
             {sharedRegions.map((r) => (

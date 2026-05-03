@@ -134,15 +134,16 @@ export function EegWaveformPlot({
       }
     }
     if (globalMax === 0) globalMax = 1
-    const channelOffset = globalMax * 3 * (50 / uVPerDiv)
+    const channelSpacing = globalMax * 3
+    const gain = 50 / uVPerDiv
 
     /* ---- Build traces ---- */
     const traces: Record<string, unknown>[] = []
     for (let ch = 0; ch < nChannels; ch++) {
-      const yOffset = (nChannels - 1 - ch) * channelOffset
+      const yOffset = (nChannels - 1 - ch) * channelSpacing
       const raw = win.data[ch]
       if (!raw) continue
-      const yValues = raw.map((v) => v + yOffset)
+      const yValues = raw.map((v) => v * gain + yOffset)
       traces.push({
         x: timeArray,
         y: yValues,
@@ -165,8 +166,8 @@ export function EegWaveformPlot({
     if (highlightSegments?.length) {
       for (const seg of highlightSegments) {
         if (seg.channel_idx < 0 || seg.channel_idx >= nChannels) continue
-        const yCenter = (nChannels - 1 - seg.channel_idx) * channelOffset
-        const halfBand = channelOffset * 0.48
+        const yCenter = (nChannels - 1 - seg.channel_idx) * channelSpacing
+        const halfBand = channelSpacing * 0.48
         shapes.push({
           type: "rect",
           x0: seg.start_time_sec,
@@ -184,7 +185,7 @@ export function EegWaveformPlot({
     const tickvals: number[] = []
     const ticktext: string[] = []
     for (let i = 0; i < nChannels; i++) {
-      tickvals.push((nChannels - 1 - i) * channelOffset)
+      tickvals.push((nChannels - 1 - i) * channelSpacing)
       ticktext.push(channels[i])
     }
 
@@ -211,7 +212,7 @@ export function EegWaveformPlot({
         gridcolor: "rgba(255,255,255,0.06)",
         zeroline: false,
         showgrid: true,
-        range: [-channelOffset * 0.7, (nChannels - 0.3) * channelOffset],
+        range: [-channelSpacing * 0.7, (nChannels - 0.3) * channelSpacing],
         fixedrange: false,
       },
       shapes,

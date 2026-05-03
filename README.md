@@ -2,7 +2,7 @@
 
 Physics-constrained deep learning for EEG source localization and patient-specific epileptogenicity mapping. Uses a 76-region brain parcellation (Desikan-Killiany atlas) and the Epileptor neural mass model in The Virtual Brain (TVB) to produce biophysically grounded epileptogenicity heatmaps from 19-channel scalp EEG (10-20 montage, linked-ear reference).
 
-**Final year project.** Tag: `v2.0-submission` — 149 tests pass, DLE=31mm, AUC=0.923.
+**Final year project.** 149 test functions pass, DLE=31mm, AUC=0.923.
 
 ---
 
@@ -24,13 +24,12 @@ Physics-constrained deep learning for EEG source localization and patient-specif
 8. [Config Reference](#config-reference)
 9. [Deployment](#deployment)
 10. [Troubleshooting](#troubleshooting)
-11. [Documentation Index](#documentation-index)
 
 ---
 
 ## Quick Start (pre-built)
 
-If the pre-built model and data files are already present (they ship with the repo), you can start the web app immediately:
+If the pre-built model and data files are present (they ship with the repo), you can start the web app immediately:
 
 ```bash
 # One command — checks deps, starts backend (port 8000) + frontend (port 3000)
@@ -89,7 +88,6 @@ conda create -n deepsif python=3.10
 conda activate deepsif
 
 # Install PyTorch with CUDA support (adjust cuda version to match your GPU)
-# For CUDA 11.8:
 conda install pytorch==2.1.0 torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
 # Or let pip handle it:
 # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
@@ -147,13 +145,13 @@ Expected output:
 | `data/region_labels_76.json` | 2 KB | Step 1 or shipped | 76 region name strings |
 | `data/tract_lengths_76.npy` | 47 KB | Step 1 or shipped | 76×76 tract length matrix |
 | `data/leadfield_19x76.npy` | 11 KB | Step 1 or shipped | 19×76 BEM leadfield matrix |
-| `data/synthetic3/train_dataset.h5` | ~10 GB | Step 2 or shipped | Training dataset (23k sims × 5 windows) |
-| `data/synthetic3/val_dataset.h5` | ~1.3 GB | Step 2 or shipped | Validation dataset (2.9k sims × 5 windows) |
-| `data/synthetic3/test_dataset.h5` | ~1.3 GB | Step 2 or shipped | Test dataset (2.9k sims × 5 windows) |
+| `data/synthetic3/train_dataset.h5` | ~10 GB | Step 2 | Training dataset (23k sims × 5 windows) |
+| `data/synthetic3/val_dataset.h5` | ~1.3 GB | Step 2 | Validation dataset (2.9k sims × 5 windows) |
+| `data/synthetic3/test_dataset.h5` | ~6.3 MB | Step 2 or shipped | Test dataset (2.9k sims × 5 windows) |
 | `outputs/models/checkpoint_best.pt` | 4.8 MB | Step 3 or shipped | Trained model weights |
 | `outputs/models/normalization_stats.json` | 297 B | Step 3 or shipped | Z-score normalization statistics |
 
-**Total storage**: ~13 GB for synthetic data, ~5 MB for model.
+**Total storage**: ~13 GB for full synthetic data, ~10 MB for model + source space files.
 
 ---
 
@@ -195,9 +193,9 @@ Expected output:
 
 **Network**: PhysDeepSIF = Spatial Module (MLP 19→128→256→256→128→76, ReLU, BatchNorm, skip connections) + Temporal Module (2-layer BiLSTM, hidden=76, dropout=0.1).
 
-**Loss**: Composite = α·L_source (MSE) + β·L_forward (β=0.0 in final config) + γ·L_physics (amplitude + temporal constraints) + δ·L_epi (BCE classification).
+**Loss**: Composite = α·L_source (MSE) + β·L_forward (β=0.0) + γ·L_physics (amplitude + temporal constraints) + δ·L_epi (BCE classification).
 
-**Config**: β=0.0, λ_L=0.0, λ_T=0.3, λ_A=0.2 — see `docs/30thaprplan.md` §0 for rationale.
+**Config**: β=0.0, λ_L=0.0, λ_T=0.3, λ_A=0.2 — forward loss disabled, spatial smoothness disabled.
 
 ---
 
@@ -314,10 +312,12 @@ python scripts/03_train_network.py --config my_config.yaml
 | Physics weights | λ_A=0.2, λ_L=0.0, λ_T=0.3 | No spatial smoothness penalty |
 
 **Output**:
-- `outputs/models/checkpoint_best.pt` — best validation-loss checkpoint
+- `outputs/models/checkpoint_best.pt` — best validation-loss checkpoint (4.8 MB)
 - `outputs/models/checkpoint_latest.pt` — final epoch checkpoint
 - `outputs/models/normalization_stats.json` — EEG/source z-score stats
 - `outputs/models/training.log` — full training log (loss per epoch)
+
+Additional normalization snapshots (`_beta_0`, `_lambdaL_01`, `_orig`, `_v1`) capture intermediate config variants.
 
 **Skip if**: `outputs/models/checkpoint_best.pt` and `outputs/models/normalization_stats.json` already exist.
 
@@ -359,6 +359,9 @@ python scripts/09_validate_enhanced_data.py
 
 # Generate + plot 3 fresh samples through full pipeline
 python scripts/11_plot_fresh_samples.py
+
+# Diagnostic gradient audit
+python scripts/diag_gradient_audit.py
 ```
 
 **Skip if**: All 6 figures already exist in `outputs/figures/`.
@@ -378,10 +381,14 @@ python scripts/11_plot_fresh_samples.py
 ./start.sh --frontend   # http://localhost:3000
 ```
 
-**Frontend features**:
-- Upload EDF/MAT/NPY files or select test samples
-- Phase A: instantaneous biomarker detection with 3D brain heatmap
-- Phase B: CMA-ES biophysical fitting with real-time progress
+**Frontend features** (7 pages + 6 API routes):
+- `/` — Landing page with file upload and test sample selector
+- `/analysis` — Main analysis page: upload EDF, select mode, view results
+- `/biomarkers` — Instantaneous biomarker detection with 3D brain heatmap
+- `/disease-detection` — Disease detection mode
+- `/eeg-sliding-window` — Sliding-window EEG analysis
+- `/eeg-source-localization` — Source localization results view
+- `/optimized-localization` — CMA-ES optimized localization results
 - Concordance badge (HIGH/MODERATE/LOW) with overlapping region names
 - XAI occlusion analysis (channel importance bars + time heatmap)
 - EEG waveform viewer with interactive Plotly charts
@@ -450,6 +457,7 @@ python scripts/demo_biomarker_detection.py --sample-idx 10
 ```
 fyp-2.0/
 ├── src/
+│   ├── region_names.py             # Region name helper
 │   ├── phase1_forward/            # TVB Epileptor simulation + synthetic dataset
 │   │   ├── epileptor_simulator.py     # One TVB simulation (dt=0.1ms, Raw monitor, FIR decimation)
 │   │   ├── synthetic_dataset.py       # Orchestrator: sims → EEG → noise → HDF5
@@ -461,7 +469,6 @@ fyp-2.0/
 │   │   ├── loss_functions.py          # PhysicsInformedLoss (4-component composite)
 │   │   ├── trainer.py                 # Training loop, early stopping, logging
 │   │   └── metrics.py                 # DLE, AUC, spatial dispersion, temporal correlation
-│   ├── phase3_inference/          # Inference pipeline
 │   ├── phase4_inversion/          # CMA-ES patient-specific parameter fitting
 │   │   ├── cmaes_optimizer.py         # fit_patient() — CMA-ES wrapper
 │   │   ├── objective_function.py      # EEG PSD-based objective + L2 regularisation
@@ -469,49 +476,82 @@ fyp-2.0/
 │   │   └── concordance.py             # Top-10 overlap → HIGH/MODERATE/LOW
 │   ├── phase5_validation/         # Validation metrics + figure generation
 │   │   └── generate_figures.py        # 6 publication-ready figures
-│   └── xai/                       # XAI occlusion analysis
+│   └── xai/                        # XAI occlusion analysis
 │       └── eeg_occlusion.py           # Channel + time occlusion importance
 │
-├── backend/                       # FastAPI web server (port 8000)
-│   ├── server.py                     # 2210 lines: all endpoints, inference, WebSocket
-│   └── requirements.txt             # Server dependencies
+├── backend/                        # FastAPI web server (port 8000)
+│   ├── server.py                     # 2545 lines: all endpoints, inference, WebSocket
+│   └── requirements.txt             # Server dependencies (20 packages)
 │
-├── frontend/                      # Next.js web dashboard (port 3000)
-│   ├── app/analysis/page.tsx         # Main analysis page
+├── frontend/                       # Next.js web dashboard (port 3000)
+│   ├── app/
+│   │   ├── page.tsx                   # Landing page
+│   │   ├── mainpage.tsx               # Main page layout
+│   │   ├── analysis/page.tsx          # Core analysis page
+│   │   ├── biomarkers/page.tsx        # Biomarker detection view
+│   │   ├── disease-detection/page.tsx  # Disease detection mode
+│   │   ├── eeg-sliding-window/page.tsx # Sliding-window analysis
+│   │   ├── eeg-source-localization/page.tsx # Source localization results
+│   │   ├── optimized-localization/page.tsx  # CMA-ES optimized view
+│   │   └── api/
+│   │       ├── analyze-eeg/route.ts   # EEG analysis proxy
+│   │       ├── analyze-mat/route.ts   # MAT file analysis proxy
+│   │       ├── job-status/route.ts    # Async job status polling
+│   │       ├── physdeepsif/route.ts   # Direct PhysDeepSIF inference
+│   │       ├── serve-result/route.ts  # Result file serving
+│   │       └── test-samples/route.ts  # Test sample listing
 │   ├── components/
-│   │   ├── concordance-badge.tsx      # HIGH/MODERATE/LOW tier display
-│   │   ├── xai-panel.tsx              # Channel + time occlusion overlay
+│   │   ├── app-shell.tsx              # Application shell wrapper
+│   │   ├── analysis-skeleton.tsx      # Loading skeleton for analysis
 │   │   ├── brain-visualization.tsx    # Plotly brain heatmap
+│   │   ├── concordance-badge.tsx      # HIGH/MODERATE/LOW tier display
+│   │   ├── eeg-waveform-plot.tsx      # Interactive EEG waveform viewer
+│   │   ├── error-alert.tsx            # Error alert component
+│   │   ├── error-boundary.tsx         # React error boundary
+│   │   ├── file-upload-section.tsx    # File upload UI
 │   │   ├── processing-window.tsx      # Pipeline step checklist + progress bar
-│   │   └── error-boundary.tsx         # React error boundary
-│   └── hooks/
-│       └── use-websocket.ts           # WebSocket hook for live progress
+│   │   ├── results-summary.tsx        # Results summary panel
+│   │   ├── step-indicator.tsx         # Processing step indicator
+│   │   ├── theme-provider.tsx         # Theme context provider
+│   │   ├── xai-panel.tsx              # Channel + time occlusion overlay
+│   │   └── ui/                        # shadcn/ui components (~55 files)
+│   ├── hooks/
+│   │   └── use-websocket.ts           # WebSocket hook for live progress
+│   ├── lib/
+│   │   ├── colormaps.ts               # Colormap utilities
+│   │   ├── job-store.ts               # Job state management
+│   │   ├── npz-parser.ts              # NPZ file parser
+│   │   └── utils.ts                   # General utilities
+│   ├── package.json
+│   ├── next.config.mjs
+│   ├── tsconfig.json
+│   ├── start-dev.sh                   # Frontend dev server launcher
+│   └── public/                        # Static assets
 │
-├── scripts/                       # CLI entry points
+├── scripts/                        # CLI entry points
 │   ├── 01_build_leadfield.py         # Build source space + leadfield
 │   ├── 02_generate_synthetic_data.py # Generate HDF5 datasets
 │   ├── 03_train_network.py           # Train PhysDeepSIF
+│   ├── 06_run_validation.py          # Run validation pipeline
+│   ├── 08_apply_spatial_gradients.py # Apply spatial gradients to data
 │   ├── 08_run_cmaes.py               # CMA-ES parameter inversion
+│   ├── 09_validate_enhanced_data.py  # Validate spectral/spatial properties
 │   ├── 10_final_validation.py        # Full validation suite
 │   ├── 11_plot_fresh_samples.py      # Visual inspection of samples
 │   ├── 12_generate_validation_figures.py # Alternative figure generator
 │   ├── demo_biomarker_detection.py   # End-to-end single-sample demo
+│   ├── diag_gradient_audit.py        # Gradient diagnostic audit
+│   ├── overfit_test.py               # Overfit/sanity test
+│   ├── test_analyze_eeg.py           # EEG analysis test
+│   ├── test_spectral_shaping.py      # Spectral shaping test
 │   ├── test_e2e.sh                   # E2E integration test
 │   └── smoke_test.sh                 # Quick smoke test
 │
-├── deploy/                        # Docker deployment
+├── deploy/                         # Docker deployment
 │   ├── docker-compose.yml            # 2-service orchestration
 │   ├── Dockerfile.backend            # Backend container
 │   ├── Dockerfile.frontend           # Frontend container
 │   └── .dockerignore
-│
-├── docs/                          # Full documentation
-│   ├── 01_PLAIN_LANGUAGE_DESCRIPTION.md  # Plain-language project overview
-│   ├── 02_TECHNICAL_SPECIFICATIONS.md    # Full technical spec (14 sections)
-│   ├── 03_EXPERIMENTATION_LOGS.md        # 12-section experiment log
-│   ├── 30thaprplan.md                    # Final model config + execution plan
-│   ├── SYSTEM_ARCHITECTURE.md            # Codebase map with file-level detail
-│   └── FINAL_WORK_PLAN_v2.md             # Wave 4 completion tracker
 │
 ├── data/
 │   ├── leadfield_19x76.npy          # 19×76 BEM leadfield
@@ -519,35 +559,47 @@ fyp-2.0/
 │   ├── region_labels_76.json        # Region names
 │   ├── region_centers_76.npy        # Region XYZ coordinates
 │   ├── tract_lengths_76.npy         # 76×76 tract lengths
-│   ├── synthetic3/                   # HDF5 train/val/test datasets (~13 GB)
+│   ├── synthetic3/
+│   │   ├── test_dataset.h5           # Test dataset (~6.3 MB)
+│   │   └── test_batch_check.h5       # Batch validation check (~4 MB)
 │   ├── test_demo.edf                # Small demo EDF (43 KB)
-│   └── samples/                     # Additional demo EEG files
+│   └── samples/
+│       ├── 0001082.edf               # Patient EDF sample
+│       └── 1082.csv                  # Patient channel labels
 │
 ├── outputs/
-│   ├── models/                       # Trained checkpoints + normalization stats
-│   │   ├── checkpoint_best.pt
-│   │   └── normalization_stats.json
-│   ├── figures/                      # 6 validation figures + diagnostic plots
-│   └── frontend_results/             # Per-job runtime artifacts
+│   ├── models/
+│   │   ├── checkpoint_best.pt        # Best-validation-loss checkpoint (4.8 MB)
+│   │   ├── checkpoint_latest.pt      # Final-epoch checkpoint (4.8 MB)
+│   │   ├── normalization_stats.json  # Current normalization stats
+│   │   ├── normalization_stats_beta_0.json     # β=0 config snapshot
+│   │   ├── normalization_stats_lambdaL_01.json # λ_L=0.1 config snapshot
+│   │   ├── normalization_stats_orig.json       # Original config snapshot
+│   │   └── normalization_stats_v1.json         # v1 config snapshot
+│   ├── figures/                     # 6 validation figures + diagnostic plots
+│   ├── frontend_results/            # Per-job runtime artifacts (~170 jobs)
+│   ├── patient_heatmaps/            # Patient heatmap output directory
+│   └── results/                     # Result output directory
 │
-├── tests/                          # 149 tests (13 suites)
+├── tests/                          # 149 test functions (43 files, 6 suites)
+│   ├── conftest.py                   # Shared fixtures
+│   ├── test_api.py                   # API endpoint integration tests
+│   ├── test_api_errors.py            # Error handling (NaN, oversized, traversal)
+│   ├── test_inference.py             # EI computation, source activity tests
+│   ├── test_model.py                 # Model loading/shape/finiteness tests
+│   ├── test_xai.py                   # XAI occlusion tests
+│   ├── mock_data/                    # Test fixtures (5 .npy files)
 │   ├── unit/                         # 18 files: model components, metrics, losses
 │   ├── functional/                   # 4 files: pipeline stages, data flow
 │   ├── integration/                  # 3 files: API endpoints, model loading
 │   ├── regression/                   # 3 files: output stability, format compat
-│   ├── system/                       # 4 files: determinism, memory, throughput
-│   ├── test_api.py                   # API endpoint integration tests
-│   ├── test_model.py                 # Model loading/shape/finiteness tests
-│   ├── test_inference.py             # EI computation, source activity tests
-│   ├── test_xai.py                   # XAI occlusion tests
-│   └── test_api_errors.py            # Error handling (NaN, oversized, traversal)
+│   └── system/                       # 4 files: determinism, memory, throughput
 │
-├── config.yaml                     # Master configuration (164 lines)
-├── requirements.txt                # Pipeline Python dependencies
-├── start.sh                        # Orchestrator script
-├── pytest.ini                      # Test configuration + markers
-├── README.md                       # This file
-└── AGENTS.md                       # Agent/developer runbook
+├── config.yaml                      # Master configuration (164 lines)
+├── requirements.txt                 # Pipeline Python dependencies (39 lines)
+├── start.sh                         # Orchestrator script (598 lines)
+├── pytest.ini                       # Test configuration + markers
+└── README.md                        # This file
 ```
 
 ---
@@ -613,6 +665,7 @@ pytest tests/ -v 2>&1 | tee test_results.txt
 | File | Size | Role |
 |------|------|------|
 | `outputs/models/checkpoint_best.pt` | 4.8 MB | Best-validation-loss model weights |
+| `outputs/models/checkpoint_latest.pt` | 4.8 MB | Final epoch model weights |
 | `outputs/models/normalization_stats.json` | 297 B | `eeg_mean`, `eeg_std`, `src_mean`, `src_std` |
 
 ### Scripts
@@ -622,8 +675,15 @@ pytest tests/ -v 2>&1 | tee test_results.txt
 | `01_build_leadfield.py` | 1 | TVB default connectivity | 5 data/ files |
 | `02_generate_synthetic_data.py` | 1 | leadfield, connectivity | 3 HDF5 files |
 | `03_train_network.py` | 2 | HDF5 files, leadfield | checkpoint + norm stats |
-| `demobio_marker_detection.py` | Demo | checkpoint, test data | 3D brain heatmap |
+| `06_run_validation.py` | 5 | checkpoint, test data | Validation metrics |
 | `08_run_cmaes.py` | 4 | checkpoint, connectivity | Fitted x₀ vector + EI |
+| `08_apply_spatial_gradients.py` | Util | HDF5 data | Gradient-augmented data |
+| `09_validate_enhanced_data.py` | Util | HDF5 data | Spectral/spatial validation |
+| `10_final_validation.py` | 5 | checkpoint, test data | Comprehensive validation |
+| `11_plot_fresh_samples.py` | 5 | checkpoint, data | Sample visualizations |
+| `12_generate_validation_figures.py` | 5 | checkpoint, test data | 4-6 validation figures |
+| `demo_biomarker_detection.py` | Demo | checkpoint, test data | 3D brain heatmap |
+| `diag_gradient_audit.py` | Util | HDF5 data | Gradient diagnostics |
 
 ### Config file (`config.yaml`)
 
@@ -659,9 +719,6 @@ Physics sub-weights:
   λ_laplacian = 0.0    # Spatial smoothness (DISABLED — DC offset is the spatial prior)
   λ_temporal = 0.3     # Temporal smoothness
 ```
-
-See `docs/30thaprplan.md` §0 for the full rationale behind these values.
-See `docs/03_EXPERIMENTATION_LOGS.md` for the empirical evidence (23 experiment rounds, SVD analysis).
 
 ---
 
@@ -715,7 +772,7 @@ cd frontend && npm run build && npm start
 
 Each missing file has a specific fix:
 - **Source space files**: Run `python scripts/01_build_leadfield.py`
-- **Synthetic data**: Run `python scripts/02_generate_synthetic_data.py` (or check `archive/` for pre-built copies)
+- **Synthetic data**: Run `python scripts/02_generate_synthetic_data.py`
 - **Model checkpoint**: Run `python scripts/03_train_network.py`
 - **Node modules**: Run `npm install --legacy-peer-deps` in `frontend/`
 
@@ -779,17 +836,9 @@ The backend limits uploads to 100 MB. Reduce window count or use a smaller file.
 
 ---
 
-## Documentation Index
+## Documentation
 
-| Document | Description |
-|----------|-------------|
-| `docs/01_PLAIN_LANGUAGE_DESCRIPTION.md` | Plain-language project overview for evaluators |
-| `docs/02_TECHNICAL_SPECIFICATIONS.md` | Full technical specification (14 sections: data formats, model arch, API, deployment) |
-| `docs/03_EXPERIMENTATION_LOGS.md` | Training experiment log — 23 rounds, SVD math appendix, hyperparameter search |
-| `docs/30thaprplan.md` | Final model configuration (β=0.0 rationale), execution plan, audit checklist |
-| `docs/SYSTEM_ARCHITECTURE.md` | Codebase map — every file, function, and data flow documented |
-| `docs/FINAL_WORK_PLAN_v2.md` | Wave 4 completion tracker (all tasks done) |
-| `AGENTS.md` | Developer/agent runbook — startup, ports, edge cases, conventions |
+Full documentation is available in the `docs/` directory (rebuild from source if empty). Project overview and technical specifications are generated from the codebase's docstrings and configuration files.
 
 **Key scientific references**: Sun et al. (2022, PNAS) — DeepSIF architecture. Jirsa et al. (2014) — Epileptor model. Desikan et al. (2006) — DK parcellation atlas.
 

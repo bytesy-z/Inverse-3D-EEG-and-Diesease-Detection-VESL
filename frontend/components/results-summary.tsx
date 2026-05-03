@@ -44,7 +44,7 @@ export function DetectedRegions({
   if (regions.length === 0) {
     return (
       <Card className="p-6 text-center text-sm text-muted-foreground">
-        No regions above threshold.
+        No regions of interest — activity profile within normal variation.
       </Card>
     )
   }
@@ -52,11 +52,11 @@ export function DetectedRegions({
   return (
     <Card className="p-6">
       <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
-        Detected Epileptogenic Regions
+        Regions of Interest
       </h3>
       <Separator className="mb-4" />
       <div className="flex flex-wrap gap-2">
-        {regions.slice(0, 3).map((region) => (
+        {regions.map((region) => (
           <Badge
             key={region}
             variant={variant === "clinical" ? "destructive" : "secondary"}
@@ -73,10 +73,8 @@ export function DetectedRegions({
         ))}
       </div>
       <p className="mt-4 text-xs text-muted-foreground">
-        {regions.length > 3 
-          ? `Top 3 of ${regions.length} identified regions shown`
-          : `${regions.length} region${regions.length !== 1 ? "s" : ""} identified`}
-        .
+        Regions with source power significantly above the sample mean (z &gt; 2.0).
+        NOT a clinical diagnosis — for investigational use only.
       </p>
     </Card>
   )

@@ -1,10 +1,9 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from "react"
-import { RotateCcw, Brain, Activity, Zap, Loader2 } from "lucide-react"
+import { RotateCcw, Brain, Activity } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Card } from "@/components/ui/card"
 import { AppHeader, AppContainer, AppFooter } from "@/components/app-shell"
 import { StepIndicator, type StepId } from "@/components/step-indicator"
@@ -38,6 +37,11 @@ interface EegWindowData {
   }>
 }
 
+interface AnimationFrameData {
+  scoresArray: number[]
+  timestamp: number
+}
+
 interface ESIResult {
   jobId: string
   fileName: string
@@ -48,6 +52,8 @@ interface ESIResult {
   windowsTruncated?: boolean
   hasAnimation?: boolean
   eegData?: EegWindowData | null
+  animationData?: AnimationFrameData[] | null
+  vertexRegion?: number[] | null
 }
 
 type ViewMode = "source" | "biomarkers"
@@ -68,7 +74,6 @@ export default function AnalysisPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("source")
   const [maxWindows, setMaxWindows] = useState<number>(5)
   const [cmaesGens, setCmaesGens] = useState<number>(20)
-  const [debugMode, setDebugMode] = useState<boolean>(false)
 
   // Results for both modes
   const [esiResult, setEsiResult] = useState<ESIResult | null>(null)
@@ -99,7 +104,7 @@ export default function AnalysisPage() {
       fdSource.append("include_eeg", "true")
       fdSource.append("max_windows", String(maxWindows))
       fdSource.append("cmaes_generations", String(cmaesGens))
-      fdSource.append("debug", debugMode ? "true" : "false")
+      fdSource.append("xai_window_idx", String(selectedWindow))
       fdSource.append("ws", "false")
       fdSource.append("mode", "source_localization")
 
@@ -108,7 +113,7 @@ export default function AnalysisPage() {
       fdBio.append("include_eeg", "true")
       fdBio.append("max_windows", String(maxWindows))
       fdBio.append("cmaes_generations", String(cmaesGens))
-      fdBio.append("debug", debugMode ? "true" : "false")
+      fdBio.append("xai_window_idx", String(selectedWindow))
       fdBio.append("ws", "false")
       fdBio.append("mode", "biomarkers")
 
@@ -143,10 +148,15 @@ export default function AnalysisPage() {
       console.log("[AnalysisPage] Bio result:", {
         hasEegData: !!bioData?.eegData,
         eegWindowsLen: bioData?.eegData?.windows?.length,
-        cmaesStatus: bioData?.cmaes?.status,
-        cmaesGens: bioData?.cmaes?.generations,
-        hasConcordance: !!bioData?.concordance,
-        jobId: bioData?.jobId,
+      })
+
+      console.debug("[Page] ESIResult received:", {
+        hasAnimation: sourceData?.hasAnimation,
+        nWindows: sourceData?.nWindowsProcessed,
+        animDataLen: sourceData?.animationData?.length,
+        vertexRegionLen: sourceData?.vertexRegion?.length,
+        firstFrameScores: sourceData?.animationData?.[0]?.scoresArray?.slice(0, 3),
+        eegWindows: sourceData?.eegData?.windows?.length,
       })
 
       setEsiResult(sourceData)
@@ -156,7 +166,7 @@ export default function AnalysisPage() {
       setError(err instanceof Error ? err.message : "An error occurred during analysis")
       setStep("upload")
     }
-  }, [selectedFile, maxWindows, cmaesGens, debugMode])
+  }, [selectedFile, maxWindows, cmaesGens])
 
   /* ---- Reset to upload state ---- */
   const handleReset = useCallback(() => {
@@ -177,12 +187,13 @@ export default function AnalysisPage() {
     }
 
     const jobId = bioResult.jobId
-    const backendUrl = process.env.NEXT_PUBLIC_PHYSDEEPSIF_BACKEND || "http://localhost:8000"
     const poll = async () => {
       try {
-        const res = await fetch(`${backendUrl}/api/job/${jobId}/cmaes`)
-        if (!res.ok) return
+        console.debug("[Page] CMA-ES polling", { jobId })
+        const res = await fetch(`/api/job/${jobId}/cmaes`)
+        if (!res.ok) { console.debug("[Page] CMA-ES poll not OK", res.status); return }
         const data = await res.json()
+        console.debug("[Page] CMA-ES response:", data)
         if (data.status === "completed") {
           setBioResult((prev) => {
             if (!prev) return prev
@@ -190,6 +201,19 @@ export default function AnalysisPage() {
               ...prev,
               concordance: data.concordance ?? prev.concordance,
               cmaes: data.cmaes ?? prev.cmaes,
+            }
+          })
+        } else if (data.status === "running") {
+          setBioResult((prev) => {
+            if (!prev) return prev
+            return {
+              ...prev,
+              cmaes: {
+                status: "running",
+                generations: data.generation ?? prev.cmaes?.generations ?? 0,
+                max_generations: data.max_generations ?? prev.cmaes?.max_generations,
+                best_score: data.best_score ?? prev.cmaes?.best_score,
+              },
             }
           })
         } else if (data.status === "failed") {
@@ -231,19 +255,32 @@ export default function AnalysisPage() {
   )
 
   const handleBrainFrameChange = useCallback((frameIndex: number) => {
-    const total = esiResult?.eegData?.windows?.length ?? 0
-    console.log(`[AnalysisPage] handleBrainFrameChange: frameIndex=${frameIndex}, total=${total}, esiResult?.nWindowsProcessed=${esiResult?.nWindowsProcessed}, esiResult?.hasAnimation=${esiResult?.hasAnimation}`)
-    if (total <= 0) {
-      console.log(`[AnalysisPage] handleBrainFrameChange: total=${total} <= 0, ignoring`)
-      return
+    setClampedWindow(frameIndex)
+  }, [setClampedWindow])
+
+  /* ---- Re-analyze XAI when selected window changes ---- */
+  const xaiWindowRef = useRef<number>(0)
+  useEffect(() => {
+    if (!bioResult?.jobId || selectedWindow === xaiWindowRef.current) return
+    xaiWindowRef.current = selectedWindow
+    const jobId = bioResult.jobId
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/xai/${jobId}/${selectedWindow}`)
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.status === "ok" && data.xai) {
+          setBioResult((prev) => prev ? { ...prev, xai: data.xai } : prev)
+        }
+      } catch { /* ignore */ }
     }
-    const normalizedIndex = ((frameIndex % total) + total) % total
-    console.log(`[AnalysisPage] handleBrainFrameChange: normalized ${frameIndex} -> ${normalizedIndex}`)
-    setClampedWindow(normalizedIndex)
-  }, [esiResult?.eegData?.windows?.length, setClampedWindow])
+    poll()
+  }, [selectedWindow, bioResult?.jobId])
 
   /* ---- Derive detected regions from biomarker result ---- */
+  const roiDetected = bioResult?.epileptogenicity?.roi_detected ?? true
   const detectedRegions: string[] =
+    bioResult?.epileptogenicity?.regions_of_interest_full ??
     bioResult?.epileptogenicity?.epileptogenic_regions_full ??
     bioResult?.epileptogenicity?.epileptogenic_regions ??
     []
@@ -323,18 +360,6 @@ export default function AnalysisPage() {
                 <span className="text-xs text-muted-foreground">
                   (1-30, lower = faster)
                 </span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id="debug-mode"
-                  checked={debugMode}
-                  onCheckedChange={(v) => setDebugMode(v === true)}
-                />
-                <label htmlFor="debug-mode" className="text-sm text-muted-foreground cursor-pointer select-none flex items-center gap-1">
-                  <Zap className="h-3.5 w-3.5 text-amber-500" />
-                  Debug mode (skip CMA-ES, dummy concordance)
-                </label>
               </div>
 
               <Button
@@ -459,9 +484,18 @@ export default function AnalysisPage() {
                   {(() => {
                     const html = esiResult?.plotHtml ?? bioResult?.plotHtml
                     if (!html) return null
+                    const isSourceView = viewMode === "source"
+                    const animData = isSourceView ? esiResult?.animationData ?? undefined : undefined
+                    const vertReg = isSourceView ? esiResult?.vertexRegion ?? undefined : undefined
+                    console.debug("[Page] Passing to BrainVisualization:", {
+                      isSourceView, animLen: animData?.length, vertRegLen: vertReg?.length,
+                      currentFrame: selectedWindow, htmlLen: html?.length,
+                    })
                     return (
                       <BrainVisualization
                         plotHtml={html}
+                        animationData={animData}
+                        vertexRegion={vertReg}
                         label="Source Activity"
                         className="h-[640px] w-full"
                         playbackSpeed={playbackSpeed}
@@ -487,92 +521,87 @@ export default function AnalysisPage() {
                     />
                   </div>
 
-                  {/* Right column: results OR CMA-ES loading */}
+                  {/* Right column: results stacked vertically */}
                   <div className="space-y-4">
-                    {bioResult?.cmaes?.status === "running" ? (
+                    {/* Section 1: Detected Regions */}
+                    <Card>
+                      <div className="px-4 py-2 border-b">
+                        <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Epileptogenic Regions</span>
+                      </div>
+                      <div className="p-4">
+                        <DetectedRegions regions={detectedRegions} variant="clinical" />
+                      </div>
+                    </Card>
+
+                    {/* Section 2: CMA-ES Biophysical Validation */}
+                    {bioResult?.cmaes && (
                       <Card>
-                        <div className="p-10 flex flex-col items-center justify-center gap-4 text-center">
-                          <Loader2 className="h-10 w-10 animate-spin text-primary" />
-                          <div>
-                            <p className="text-base font-semibold">Running CMA-ES Biophysical Inversion</p>
-                            <p className="text-sm text-muted-foreground mt-1.5 max-w-xs">
-                              Validating concordance between heuristic and biophysical epileptogenicity markers
-                            </p>
-                          </div>
+                        <div className="px-4 py-2 border-b">
+                          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Biophysical Validation</span>
+                        </div>
+                        <div className="p-4 space-y-3">
+                          {bioResult.cmaes.status === "running" && (
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2 text-sm">
+                                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                                <span>CMA-ES biophysical validation in progress...</span>
+                              </div>
+                              {bioResult.cmaes.generations != null && bioResult.cmaes.max_generations && (
+                                <div className="space-y-1">
+                                  <div className="flex justify-between text-xs text-muted-foreground">
+                                    <span>Generation {bioResult.cmaes.generations} / {bioResult.cmaes.max_generations}</span>
+                                  </div>
+                                  <div className="h-2 bg-muted rounded overflow-hidden">
+                                    <div
+                                      className="h-full bg-primary transition-all duration-500"
+                                      style={{ width: `${((bioResult.cmaes.generations ?? 0) / (bioResult.cmaes.max_generations || 1)) * 100}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                              <p className="text-xs text-muted-foreground">
+                                Simulates neural propagation across brain regions using The Virtual Brain to verify whether detected activity patterns are physiologically plausible.
+                              </p>
+                            </div>
+                          )}
+                          {bioResult.cmaes.status === "completed" && bioResult.concordance && (
+                            <ConcordanceBadge
+                              tier={bioResult.concordance.tier}
+                              overlap={bioResult.concordance.overlap}
+                              description={bioResult.concordance.tier_description}
+                              sharedRegions={bioResult.concordance.shared_regions}
+                            />
+                          )}
+                          {bioResult.cmaes.status === "completed" && !bioResult.concordance && (
+                            <p className="text-xs text-muted-foreground">Validation complete — no concordance data available.</p>
+                          )}
+                          {bioResult.cmaes.status === "failed" && (
+                            <p className="text-xs text-red-400">Biophysical validation failed: {bioResult.cmaes.error ?? "Unknown error"}</p>
+                          )}
+                          {bioResult.cmaes.status === "debug_skip" && (
+                            <p className="text-xs text-muted-foreground">Debug mode — biophysical validation skipped.</p>
+                          )}
                         </div>
                       </Card>
-                    ) : (
-                      <>
-                        {/* Window selector for biomarker view */}
-                        {(esiResult?.eegData?.windows && esiResult.eegData.windows.length > 1) && (
-                          <div className="flex items-center gap-3 text-sm">
-                            <span className="text-muted-foreground">Window:</span>
-                            <div className="flex gap-1">
-                              {esiResult.eegData.windows.map((_, idx) => (
-                                <button
-                                  key={idx}
-                                  onClick={() => setClampedWindow(idx)}
-                                  className={`
-                                    rounded-md px-3 py-1 text-xs font-medium transition-colors
-                                    ${selectedWindow === idx
-                                      ? "bg-primary text-primary-foreground"
-                                      : "bg-muted text-muted-foreground hover:text-foreground"
-                                    }
-                                  `}
-                                >
-                                  {idx + 1}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
+                    )}
 
-                        {/* Section 1: Detected Regions */}
-                        <Card>
-                          <div className="px-4 py-2 border-b">
-                            <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Epileptogenic Regions</span>
-                          </div>
-                          <div className="p-4">
-                            <DetectedRegions regions={detectedRegions} variant="clinical" />
-                          </div>
-                        </Card>
-
-                        {/* Section 2: CMA-ES Validation */}
-                        {bioResult?.concordance && (
-                          <Card>
-                            <div className="px-4 py-2 border-b">
-                              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Biophysical Validation</span>
-                            </div>
-                            <div className="p-4 space-y-3">
-                              <ConcordanceBadge
-                                tier={bioResult.concordance.tier}
-                                overlap={bioResult.concordance.overlap}
-                                description={bioResult.concordance.tier_description}
-                                sharedRegions={bioResult.concordance.shared_regions}
-                              />
-                            </div>
-                          </Card>
-                        )}
-
-                        {/* Section 3: XAI Panel */}
-                        {bioResult?.xai && (
-                          <Card>
-                            <div className="px-4 py-2 border-b">
-                              <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Explainability (XAI)</span>
-                            </div>
-                            <div className="p-4">
-                              <XaiPanel
-                                channelImportance={bioResult.xai.channel_importance ?? []}
-                                timeImportance={bioResult.xai.time_importance ?? []}
-                                channelNames={esiResult?.eegData?.channels ?? bioResult?.eegData?.channels ?? DEFAULT_CHANNEL_NAMES}
-                                topSegments={bioResult.xai.top_segments ?? []}
-                                eegData={esiResult?.eegData ?? bioResult?.eegData ?? undefined}
-                                selectedWindow={selectedWindow}
-                              />
-                            </div>
-                          </Card>
-                        )}
-                      </>
+                    {/* Section 3: XAI Panel */}
+                    {bioResult?.xai && (
+                      <Card>
+                        <div className="px-4 py-2 border-b">
+                          <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Explainability (XAI)</span>
+                        </div>
+                        <div className="p-4">
+                          <XaiPanel
+                            channelImportance={bioResult.xai.channel_importance ?? []}
+                            timeImportance={bioResult.xai.time_importance ?? []}
+                            channelNames={esiResult?.eegData?.channels ?? bioResult?.eegData?.channels ?? DEFAULT_CHANNEL_NAMES}
+                            topSegments={bioResult.xai.top_segments ?? []}
+                            eegData={esiResult?.eegData ?? bioResult?.eegData ?? undefined}
+                            selectedWindow={selectedWindow}
+                          />
+                        </div>
+                      </Card>
                     )}
                   </div>
                 </div>

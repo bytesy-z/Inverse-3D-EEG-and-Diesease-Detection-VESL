@@ -24,6 +24,10 @@ const nextConfig = {
         destination: `${backendUrl}/api/results/:path*`,
       },
       {
+        source: '/api/job/:path*',
+        destination: `${backendUrl}/api/job/:path*`,
+      },
+      {
         source: '/api/biomarkers',
         destination: `${backendUrl}/api/biomarkers`,
       },

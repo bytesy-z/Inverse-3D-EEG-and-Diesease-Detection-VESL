@@ -384,26 +384,38 @@ start_backend() {
     BACKEND_PID=$!
     cd "$PROJECT_ROOT"
 
+    # Give process time to fail fast (port conflict) before polling
+    sleep 2
+
     # Wait for backend to be ready (model loading takes a few seconds)
     log_info "Waiting for backend to load model..."
     local attempts=0
     local max_attempts=60  # 60 seconds max
     while [[ $attempts -lt $max_attempts ]]; do
-        if curl -s "http://localhost:$BACKEND_PORT/api/health" | grep -q '"ok"' 2>/dev/null; then
+        if curl -s "http://localhost:$BACKEND_PORT/api/health" 2>/dev/null | \
+            python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('status')=='ok' else 1)" 2>/dev/null; then
             log_success "Backend ready (PID $BACKEND_PID)"
             return 0
         fi
-        sleep 1
-        attempts=$((attempts + 1))
+        sleep 2
+        attempts=$((attempts + 2))
 
         # Check if process died
         if ! kill -0 "$BACKEND_PID" 2>/dev/null; then
             log_error "Backend process died during startup"
+            log_info "Last 10 lines of backend.log:"
+            tail -10 "$PROJECT_ROOT/logs/backend.log" 2>/dev/null || true
             return 1
+        fi
+
+        if [[ $((attempts % 10)) -eq 0 ]]; then
+            log_info "Still waiting... (${attempts}s elapsed)"
         fi
     done
 
     log_error "Backend did not become ready within ${max_attempts}s"
+    log_info "Last 20 lines of backend.log:"
+    tail -20 "$PROJECT_ROOT/logs/backend.log" 2>/dev/null || true
     return 1
 }
 
@@ -446,9 +458,8 @@ run_smoke_test() {
 
     # Test 1: Backend health
     log_info "Testing backend health..."
-    local health
-    health=$(curl -s "http://localhost:$BACKEND_PORT/api/health" 2>/dev/null)
-    if echo "$health" | grep -q '"ok"'; then
+    if curl -s "http://localhost:$BACKEND_PORT/api/health" 2>/dev/null | \
+        python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('status')=='ok' else 1)"; then
         log_success "Backend health: OK"
     else
         log_error "Backend health check failed"
@@ -466,31 +477,38 @@ run_smoke_test() {
         fi
     done
 
-    # Test 3: API proxy (test-samples)
-    local samples
-    samples=$(curl -s "http://localhost:$FRONTEND_PORT/api/test-samples?mode=epileptogenic&limit=3" 2>/dev/null)
-    if echo "$samples" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['count']>0" 2>/dev/null; then
-        log_success "API proxy /api/test-samples: OK"
-    else
-        log_error "API proxy /api/test-samples: Failed"
-    fi
-
-    # Test 4: Full inference pipeline via proxy
-    log_info "Testing full inference pipeline (sample_idx=10)..."
+    # Test 3: API proxy (/api/analyze source_localization)
+    log_info "Testing /api/analyze (sample_idx=10, mode=source_localization)..."
     local result
-    result=$(curl -s -X POST "http://localhost:$FRONTEND_PORT/api/physdeepsif" \
-        -F "sample_idx=10" -F "threshold_percentile=87.5" 2>/dev/null)
+    result=$(curl -s -X POST "http://localhost:$FRONTEND_PORT/api/analyze" \
+        -F "sample_idx=10" -F "mode=source_localization" -F "threshold_percentile=87.5" 2>/dev/null)
 
     local success
     success=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('success',''))" 2>/dev/null)
     if [[ "$success" == "True" ]]; then
-        local max_ei max_region recall
-        max_ei=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f\"{d['epileptogenicity']['max_score']:.3f}\")" 2>/dev/null)
-        max_region=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['epileptogenicity']['max_score_region'])" 2>/dev/null)
-        recall=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('groundTruth',{}).get('recall'); print(f'{r:.1%}' if r else 'N/A')" 2>/dev/null)
+        local max_ei
+        max_ei=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f\"{d.get('epileptogenicity',{}).get('max_score','?'):.3f}\")" 2>/dev/null || echo "?")
+        local max_region
+        max_region=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('epileptogenicity',{}).get('max_score_region','?'))" 2>/dev/null || echo "?")
+        local recall
+        recall=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('groundTruth',{}).get('recall'); print(f'{r:.1%}' if r else 'N/A')" 2>/dev/null || echo "?")
         log_success "Inference: max_EI=$max_ei ($max_region), recall=$recall"
     else
         log_error "Inference pipeline failed: success=$success"
+        log_info "Response: $(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error','(no error field)'))" 2>/dev/null || echo "$result" | head -c 500)"
+    fi
+
+    # Test 4: Biomarkers mode
+    log_info "Testing /api/analyze (sample_idx=10, mode=biomarkers)..."
+    local bio_result
+    bio_result=$(curl -s -X POST "http://localhost:$FRONTEND_PORT/api/analyze" \
+        -F "sample_idx=10" -F "mode=biomarkers" 2>/dev/null)
+    local bio_ok
+    bio_ok=$(echo "$bio_result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('success',''))" 2>/dev/null)
+    if [[ "$bio_ok" == "True" ]]; then
+        log_success "Biomarkers: OK"
+    else
+        log_error "Biomarkers failed: success=$bio_ok"
     fi
 
     echo ""
@@ -552,6 +570,7 @@ main() {
         --frontend|-f)
             log_header "Dependency Checks"
             check_node
+            check_ports
             start_frontend
             print_urls
             wait "$FRONTEND_PID"
