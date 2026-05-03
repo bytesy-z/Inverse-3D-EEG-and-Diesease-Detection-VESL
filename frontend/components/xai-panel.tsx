@@ -31,6 +31,8 @@ interface XaiPanelProps {
   selectedWindow?: number
 }
 
+const uVPerDivOptions = [5, 10, 15, 20, 25, 50, 100]
+
 export function XaiPanel({
   channelImportance,
   timeImportance,
@@ -41,30 +43,23 @@ export function XaiPanel({
   eegData,
   selectedWindow = 0,
 }: XaiPanelProps) {
-  const topChannels = channelImportance
-    .map((val, idx) => ({ idx, val }))
-    .sort((a, b) => b.val - a.val)
-  const maxVal = topChannels.length > 0 ? topChannels[0].val : 1
-
   const plotRef = useRef<HTMLDivElement>(null)
-  const [plotlyReady, setPlotlyReady] = useState(false)
+  const [plotlyReady, setPlotlyReady] = useState(() => {
+    return typeof window !== "undefined" && !!(window as any).Plotly
+  })
+  const [uVPerDiv, setUVPerDiv] = useState<number>(50)
 
   const hasEeg = eegData && eegData.windows.length > 0
 
-  // Dynamically load Plotly if not already available via window.Plotly
   useEffect(() => {
-    if (typeof window !== "undefined" && (window as any).Plotly) {
-      setPlotlyReady(true)
-      return
-    }
+    if (plotlyReady) return
     const script = document.createElement("script")
     script.src = "https://cdn.plot.ly/plotly-2.35.3.min.js"
     script.onload = () => setPlotlyReady(true)
     script.onerror = () => console.error("Failed to load Plotly")
     document.head.appendChild(script)
-  }, [])
+  }, [plotlyReady])
 
-  // Render EEG waveform chart
   useEffect(() => {
     if (!plotlyReady || !hasEeg || !eegData || !plotRef.current) return
 
@@ -85,20 +80,8 @@ export function XaiPanel({
       timeAxis.push(win.startTime + i / eegData.samplingRate)
     }
 
-    // Compute offset for vertically stacked channels
-    let globalMax = 0
-    for (let ch = 0; ch < numChannels; ch++) {
-      const d = win.data[ch]
-      if (!d) continue
-      for (let s = 0; s < d.length; s++) {
-        const abs = Math.abs(d[s])
-        if (abs > globalMax) globalMax = abs
-      }
-    }
-    if (globalMax === 0) globalMax = 1
-    const channelOffset = globalMax * 3
+    const channelOffset = uVPerDiv
 
-    // Build one trace per channel (no smoothing, linear line shape)
     const traces: Record<string, unknown>[] = []
     for (let ch = 0; ch < numChannels; ch++) {
       const yOffset = (numChannels - 1 - ch) * channelOffset
@@ -122,7 +105,6 @@ export function XaiPanel({
       })
     }
 
-    // Build occlusion-segment highlight shapes
     const shapes: Record<string, unknown>[] = topSegments
       .filter((seg) => seg.channel_idx >= 0 && seg.channel_idx < numChannels)
       .map((seg) => {
@@ -189,9 +171,8 @@ export function XaiPanel({
         Plotly.purge(plotRef.current)
       }
     }
-  }, [plotlyReady, hasEeg, eegData, selectedWindow, topSegments])
+  }, [plotlyReady, hasEeg, eegData, selectedWindow, topSegments, uVPerDiv])
 
-  // Resize Plotly on window resize
   useEffect(() => {
     if (!plotlyReady) return
     const container = plotRef.current
@@ -218,30 +199,29 @@ export function XaiPanel({
             <div key={i} className="text-xs">
               <strong>{channelNames[seg.channel_idx] ?? `Ch${seg.channel_idx}`}</strong>
               {" "}{seg.start_time_sec.toFixed(2)}s–{seg.end_time_sec.toFixed(2)}s
-              {" "}(&Delta;score: {seg.importance.toFixed(4)})
             </div>
           ))}
         </div>
       )}
 
-      <div className="space-y-1 mt-3">
-        <p className="text-xs text-muted-foreground">Top channels by importance:</p>
-        {topChannels.slice(0, 5).map((ch) => {
-          const pct = maxVal > 0 ? (ch.val / maxVal) * 100 : 0
-          return (
-            <div key={ch.idx} className="flex items-center gap-2 text-xs">
-              <span className="w-8 text-right font-mono">{channelNames[ch.idx] ?? `Ch${ch.idx}`}</span>
-              <div className="flex-1 h-2 bg-muted rounded">
-                <div
-                  className="h-full bg-emerald-500 rounded"
-                  style={{ width: `${pct}%` }}
-                />
-              </div>
-              <span className="w-12 text-right font-mono text-muted-foreground">{ch.val.toFixed(3)}</span>
-            </div>
-          )
-        })}
-      </div>
+      {hasEeg && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <span>uV/div:</span>
+          {uVPerDivOptions.map((v) => (
+            <button
+              key={v}
+              onClick={() => setUVPerDiv(v)}
+              className={`rounded px-1.5 py-0.5 transition-colors ${
+                uVPerDiv === v
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-muted hover:text-foreground"
+              }`}
+            >
+              {v}
+            </button>
+          ))}
+        </div>
+      )}
 
       {hasEeg && (
         <div

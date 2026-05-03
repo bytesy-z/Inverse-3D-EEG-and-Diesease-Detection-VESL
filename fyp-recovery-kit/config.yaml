@@ -1,0 +1,164 @@
+forward_model:
+  channel_names:
+  - Fp1
+  - Fp2
+  - F3
+  - F4
+  - C3
+  - C4
+  - P3
+  - P4
+  - O1
+  - O2
+  - F7
+  - F8
+  - T3
+  - T4
+  - T5
+  - T6
+  - Fz
+  - Cz
+  - Pz
+  leadfield_file: data/leadfield_19x76.npy
+  montage: standard_1020
+  n_channels: 19
+  reference: linked_ears
+heatmap:
+  colormap: hot
+  ei_threshold: 0.5
+  output_formats:
+  - png
+  - html
+  - csv
+  x0_max: -1.0
+  x0_min: -2.4
+network:
+  output_skip: true
+  spatial_module:
+    activation: relu
+    batch_norm: true
+    hidden_dims:
+    - 128
+    - 256
+    - 256
+    - 128
+    input_dim: 19
+    output_dim: 76
+    skip_connections: true
+  temporal_module:
+    bidirectional: true
+    dropout: 0.1
+    hidden_dim: 76
+    input_dim: 76
+    num_layers: 2
+    type: bilstm
+neural_mass_model:
+  default_params:
+    Iext1: 3.1
+    Iext2: 0.45
+    tau0: 2857.0
+    tau2: 10.0
+    x0: -2.2
+    y0: 1.0
+  dt: 0.1
+  model_type: Epileptor
+  output_variable: x2-x1
+  sampling_ranges:
+    Iext1:
+    - 2.8
+    - 3.4
+    Iext2:
+    - 0.3
+    - 0.6
+    conduction_speed:
+    - 3.0
+    - 6.0
+    global_coupling:
+    - 0.5
+    - 3.0
+    noise_intensity:
+    - 0.0001
+    - 0.005
+    tau0:
+    - 2000.0
+    - 4000.0
+    tau2:
+    - 6.0
+    - 15.0
+    x0_epileptogenic:
+    - -1.8
+    - -1.2
+    x0_healthy:
+    - -2.2
+    - -2.05
+parameter_inversion:
+  bounds: [-2.4, -1.0]
+  initial_sigma: 0.3
+  initial_x0: -2.1
+  max_generations: 30
+  population_size: 14
+preprocessing:
+  bandpass:
+  - 0.5
+  - 70.0
+  epoch_length_sec: 2.0
+  ica_method: fastica
+  ica_n_components: 15
+  notch_freq: 50.0
+  reject_threshold_uv: 200.0
+source_space:
+  connectivity_file: data/connectivity_76.npy
+  n_regions: 76
+  parcellation: desikan_killiany
+  region_centers_file: data/region_centers_76.npy
+  region_labels_file: data/region_labels_76.json
+  tract_lengths_file: data/tract_lengths_76.npy
+synthetic_data:
+  clustering_probability: 0.5
+  colored_noise_alpha_range:
+  - 0.5
+  - 1.5
+  colored_noise_amplitude_fraction:
+  - 0.1
+  - 0.3
+  hdf5_batch_size: 500
+  n_epileptogenic_range:
+  - 0
+  - 8
+  n_jobs: 16
+  n_simulations_test: 2900
+  n_simulations_train: 23000
+  n_simulations_val: 2900
+  output_dir: data/synthetic3/
+  sampling_rate: 200
+  simulation_length_ms: 12000
+  snr_range_db:
+  - 5
+  - 30
+  transient_ms: 2000
+  window_length_samples: 400
+  windows_per_simulation: 5
+training:
+  amplitude_max: 3.0
+  batch_size: 64
+  early_stopping_patience: 40
+  gradient_clip_norm: 5.0
+  learning_rate: 0.001
+  loss_weights:
+    alpha_source: 1.0
+    beta_forward: 0.0
+    delta_epi: 1.0
+    gamma_physics: 0.01
+  lr_scheduler:
+    factor: 0.5
+    min_lr: 1.0e-06
+    mode: min
+    patience: 10
+    type: reduce_on_plateau
+  max_epochs: 200
+  optimizer: adamw
+  physics_sub_weights:
+    lambda_amplitude: 0.2
+    lambda_laplacian: 0.0
+    lambda_temporal: 0.3
+  weight_decay: 0.0001

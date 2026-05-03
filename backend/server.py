@@ -706,9 +706,11 @@ def _process_edf_raw(raw, max_windows=None) -> dict:
 # ========================================================================
 
 def _set_job_status(job_id: str, status: str, progress: int, message: str, **extra) -> None:
-    """Set job status with timestamp for automatic cleanup."""
+    """Set job status with timestamp for automatic cleanup. Preserves existing keys (e.g. _cmaes_future)."""
     with active_jobs_lock:
-        active_jobs[job_id] = {"status": status, "progress": progress, "message": message, "_ts": time.time(), **extra}
+        if job_id not in active_jobs:
+            active_jobs[job_id] = {}
+        active_jobs[job_id].update({"status": status, "progress": progress, "message": message, "_ts": time.time(), **extra})
 
 
 async def _cleanup_stale_jobs():
@@ -771,6 +773,21 @@ def _load_fsaverage5_mesh():
     return _mesh_cache
 
 
+def _get_cached_mesh_data():
+    if not hasattr(_get_cached_mesh_data, 'cache'):
+        all_coords, all_faces, n_verts_lh, lh_coords, rh_coords = _load_fsaverage5_mesh()
+        vertex_region = _assign_vertices_to_regions(all_coords, n_verts_lh, lh_coords, rh_coords)
+        _get_cached_mesh_data.cache = {
+            'all_coords': all_coords,
+            'all_faces': all_faces,
+            'vertex_region': vertex_region,
+            'n_verts_lh': n_verts_lh,
+            'lh_coords': lh_coords,
+            'rh_coords': rh_coords,
+        }
+    return _get_cached_mesh_data.cache
+
+
 def _assign_vertices_to_regions(
     all_coords, n_verts_lh, lh_coords, rh_coords
 ):
@@ -816,7 +833,7 @@ def generate_heatmap_html(
     top_k: int = 5,
 ) -> str:
     """
-    Generate a standalone Plotly 3D brain heatmap for epileptogenicity.
+    Generate a static Plotly 3D brain heatmap for epileptogenicity.
 
     Uses a HARD THRESHOLD approach: only the top-K highest-scoring regions
     are colored (red shading by intensity). All other regions are rendered
@@ -829,16 +846,15 @@ def generate_heatmap_html(
         top_k: Number of top epileptogenic regions to highlight (default: 5).
 
     Returns:
-        The complete HTML document string containing the Plotly 3D mesh.
+        HTML fragment string containing the Plotly 3D mesh (without CDN script tag).
     """
     import plotly.graph_objects as go
 
-    # ---- Load cortical mesh and build vertex→region mapping ----
-    all_coords, all_faces, n_verts_lh, lh_coords, rh_coords = _load_fsaverage5_mesh()
+    mesh = _get_cached_mesh_data()
+    all_coords = mesh['all_coords']
+    all_faces = mesh['all_faces']
+    vertex_region = mesh['vertex_region']
     n_verts = all_coords.shape[0]
-    vertex_region = _assign_vertices_to_regions(
-        all_coords, n_verts_lh, lh_coords, rh_coords
-    )
 
     # ---- Hard threshold: only top-K regions are colored ----
     top_k_indices = set(np.argsort(ei_scores)[::-1][:top_k].tolist())
@@ -938,7 +954,7 @@ def generate_heatmap_html(
     )
 
     return fig.to_html(
-        include_plotlyjs='cdn', full_html=True, auto_play=False,
+        include_plotlyjs=False, full_html=False,
         config=dict(responsive=True),
     )
 
@@ -1043,92 +1059,105 @@ def compute_source_activity_metrics(
     }
 
 
+def _compute_animated_frames(all_win_sources, timestamps, job_id=None):
+    n_win = len(all_win_sources)
+    rms_matrix = np.zeros((n_win, N_REGIONS), dtype=np.float64)
+    for i, ws in enumerate(all_win_sources):
+        rms_matrix[i] = np.sqrt(np.mean(ws.astype(np.float64) ** 2, axis=1))
+    region_mean = rms_matrix.mean(axis=0)       # (76,)
+    region_std = rms_matrix.std(axis=0)          # (76,)
+    region_std = np.maximum(region_std, 1e-10)
+    animated_frames = []
+    for i in range(n_win):
+        z = (rms_matrix[i] - region_mean) / region_std
+        z_clipped = np.clip(z, -3.0, 3.0)
+        scores = (z_clipped + 3.0) / 6.0
+        animated_frames.append(np.array(scores, dtype=np.float32))
+        logger.info(
+            f"[ANIM_Z] Window {i}/{n_win}: z-range=[{z.min():.2f}, {z.max():.2f}], "
+            f"score-range=[{scores.min():.4f}, {scores.max():.4f}], "
+            f"non-zero={int((scores > 0.01).sum())}/{N_REGIONS}",
+            extra={"job_id": job_id} if job_id else {}
+        )
+    mesh_data = _get_cached_mesh_data()
+    vertex_region_list = mesh_data['vertex_region'].tolist()
+    animation_data = [
+        {"scoresArray": scores.tolist(), "timestamp": ts}
+        for scores, ts in zip(animated_frames, timestamps)
+    ]
+    logger.info(
+        f"[ANIM_Z] Built {len(animation_data)} frames, vertex_region={len(vertex_region_list)} verts",
+        extra={"job_id": job_id} if job_id else {}
+    )
+    return animation_data, vertex_region_list
+
+
 def generate_source_activity_heatmap_html(
     activity_scores: NDArray[np.float32],
     title: str = "EEG Source Imaging — Estimated Brain Activity",
-    animated_frames: Optional[List[NDArray[np.float32]]] = None,
-    frame_timestamps: Optional[List[float]] = None,
 ) -> str:
     """
-    Generate a standalone Plotly 3D brain heatmap for source activity (ESI).
+    Generate a static Plotly 3D brain heatmap for source activity (ESI).
 
     Uses an inferno-style colorscale (matching standard neuroimaging conventions):
-    dark purple (low) → orange → bright yellow (high). Clean professional look
-    with no debug annotations or technical overlays.
+    dark purple (low) → orange → bright yellow (high). Clean professional look.
 
-    If animated_frames is provided, creates a Plotly animation with play/pause
-    and a frame slider for sliding-window playback of longer recordings.
+    Animation is handled by the frontend using per-frame scores_array data
+    and the vertex→region mapping via Plotly.restyle calls — no go.Frame
+    objects, sliders, or updatemenus are embedded in the HTML.
 
     Args:
-        activity_scores: Array of shape (76,) with values in [0, 1] — best/single window.
+        activity_scores: Array of shape (76,) with values in [0, 1] for initial frame.
         title: Title displayed above the 3D plot.
-        animated_frames: Optional list of (76,) score arrays, one per time window.
-        frame_timestamps: Optional list of timestamps (seconds) for each frame.
 
     Returns:
-        The complete HTML document string containing the Plotly 3D mesh.
+        HTML fragment string containing the Plotly 3D mesh (without CDN script tag).
     """
     import plotly.graph_objects as go
 
-    # ---- Load cortical mesh and build vertex→region mapping ----
-    all_coords, all_faces, n_verts_lh, lh_coords, rh_coords = _load_fsaverage5_mesh()
+    mesh = _get_cached_mesh_data()
+    all_coords = mesh['all_coords']
+    all_faces = mesh['all_faces']
+    vertex_region = mesh['vertex_region']
     n_verts = all_coords.shape[0]
-    vertex_region = _assign_vertices_to_regions(
-        all_coords, n_verts_lh, lh_coords, rh_coords
-    )
 
-    def _scores_to_vertex_colors(scores, with_hover=False, _debug_tag=""):
+    def _scores_to_vertex_colors(scores):
         v_colors = np.full(n_verts, 0.0, dtype=np.float32)
-        v_hover = [''] * n_verts if with_hover else None
-        score_min = float('inf')
-        score_max = float('-inf')
         for v_idx in range(n_verts):
             r_idx = vertex_region[v_idx]
             if r_idx >= 0:
-                s_val = float(scores[r_idx])
-                v_colors[v_idx] = s_val
-                if s_val < score_min: score_min = s_val
-                if s_val > score_max: score_max = s_val
-                if with_hover:
-                    v_hover[v_idx] = (
-                        f"{region_labels[r_idx]}: "
-                        f"Activity {scores[r_idx]:.3f}"
-                    )
-            else:
-                if with_hover:
-                    v_hover[v_idx] = "unassigned"
-        logger.info(
-            f"[{_debug_tag}] vertex_colors: {n_verts} verts, "
-            f"score range=[{score_min:.4f}, {score_max:.4f}], "
-            f"non-zero={int((v_colors > 0.01).sum())}/{n_verts}"
-        )
-        return v_colors, v_hover
+                v_colors[v_idx] = float(scores[r_idx])
+        return v_colors
+
+    # Build hover text (region names only — scores omitted since they change per frame)
+    vertex_hover = []
+    for v_idx in range(n_verts):
+        r_idx = vertex_region[v_idx]
+        if r_idx >= 0:
+            vertex_hover.append(region_labels[r_idx])
+        else:
+            vertex_hover.append("unassigned")
 
     logger.info(
-        f"[generate_heatmap] Building first frame: activity_scores "
-        f"range=[{float(activity_scores.min()):.4f}, {float(activity_scores.max()):.4f}], "
-        f"shape={activity_scores.shape}"
+        f"[generate_source_activity_heatmap_html] Building static mesh: "
+        f"scores range=[{float(activity_scores.min()):.4f}, {float(activity_scores.max()):.4f}]"
     )
 
-    vertex_colors, vertex_hover = _scores_to_vertex_colors(
-        activity_scores, with_hover=True, _debug_tag="first_frame"
-    )
+    vertex_colors = _scores_to_vertex_colors(activity_scores)
 
-    # ---- Build Plotly 3D mesh figure ----
     fig = go.Figure()
 
-    # Inferno-inspired colorscale (standard in neuroimaging)
     inferno_colorscale = [
-        [0.00, '#000004'],   # Near-black (lowest activity)
-        [0.15, '#1b0c41'],   # Dark indigo
-        [0.30, '#4a0c6b'],   # Purple
-        [0.45, '#781c6d'],   # Red-purple
-        [0.55, '#a52c60'],   # Warm magenta
-        [0.65, '#cf4446'],   # Orange-red
-        [0.75, '#ed6925'],   # Orange
-        [0.85, '#fb9b06'],   # Yellow-orange
-        [0.95, '#f7d13d'],   # Yellow
-        [1.00, '#fcffa4'],   # Bright yellow-white (highest activity)
+        [0.00, '#000004'],
+        [0.15, '#1b0c41'],
+        [0.30, '#4a0c6b'],
+        [0.45, '#781c6d'],
+        [0.55, '#a52c60'],
+        [0.65, '#cf4446'],
+        [0.75, '#ed6925'],
+        [0.85, '#fb9b06'],
+        [0.95, '#f7d13d'],
+        [1.00, '#fcffa4'],
     ]
 
     fig.add_trace(go.Mesh3d(
@@ -1156,112 +1185,6 @@ def generate_source_activity_heatmap_html(
         name='Brain Surface',
     ))
 
-    # ---- Add animation frames if sliding-window data is provided ----
-    has_animation = (
-        animated_frames is not None
-        and frame_timestamps is not None
-        and len(animated_frames) > 1
-    )
-
-    logger.info(
-        f"[generate_heatmap] has_animation={has_animation}, "
-        f"animated_frames={len(animated_frames) if animated_frames is not None else 'None'}, "
-        f"frame_timestamps={len(frame_timestamps) if frame_timestamps is not None else 'None'}"
-    )
-
-    if has_animation:
-        frames = []
-        slider_steps = []
-        n_frames_total = len(animated_frames)
-        for i, (frame_scores, ts) in enumerate(
-            zip(animated_frames, frame_timestamps)
-        ):
-            if i == 0 or i == n_frames_total - 1 or (i < 5) or (i % 10 == 0):
-                logger.info(
-                    f"[generate_heatmap] Frame {i}/{n_frames_total}: scores "
-                    f"range=[{frame_scores.min():.4f}, {frame_scores.max():.4f}], "
-                    f"ts={ts:.2f}s"
-                )
-            v_colors_frame, _ = _scores_to_vertex_colors(
-                frame_scores, _debug_tag=f"frame{i}"
-            )
-            frames.append(go.Frame(
-                data=[go.Mesh3d(intensity=v_colors_frame)],
-                name=str(i),
-                traces=[0],
-            ))
-            minutes = int(ts) // 60
-            seconds = ts - (minutes * 60)
-            ts_label = f"{minutes}:{seconds:04.1f}" if minutes > 0 else f"0:{seconds:04.1f}"
-            slider_steps.append(dict(
-                args=[[str(i)], dict(
-                    frame=dict(duration=200, redraw=True),
-                    mode='immediate',
-                    transition=dict(duration=0),
-                )],
-                label=ts_label,
-                method='animate',
-            ))
-
-        fig.frames = frames
-        logger.info(
-            f"[generate_heatmap] Created {len(fig.frames)} frames and {len(slider_steps)} slider steps"
-        )
-
-        # Add play/pause buttons and slider
-        fig.update_layout(
-            updatemenus=[
-                dict(
-                    type='buttons',
-                    showactive=False,
-                    x=0.05, y=0.02,
-                    xanchor='left', yanchor='bottom',
-                    pad=dict(r=10, t=65),
-                    font=dict(size=12),
-                    bgcolor='rgba(40,40,60,0.85)',
-                    bordercolor='rgba(120,120,150,0.5)',
-                    borderwidth=1,
-                    buttons=[
-                        dict(
-                            label='▶ Play',
-                            method='animate',
-                            args=[None, dict(
-                                frame=dict(duration=200, redraw=True),
-                                fromcurrent=True,
-                                transition=dict(duration=0),
-                            )],
-                        ),
-                        dict(
-                            label='⏸ Pause',
-                            method='animate',
-                            args=[[None], dict(
-                                frame=dict(duration=0, redraw=False),
-                                mode='immediate',
-                                transition=dict(duration=0),
-                            )],
-                        ),
-                    ],
-                ),
-            ],
-            sliders=[dict(
-                active=0,
-                currentvalue=dict(
-                    prefix='Time: ',
-                    visible=True,
-                    xanchor='center',
-                ),
-                pad=dict(b=10, t=40),
-                len=0.9,
-                x=0.05,
-                xanchor='left',
-                steps=slider_steps,
-                transition=dict(duration=0),
-            )],
-        )
-    else:
-        # Static view — no buttons needed (mouse interaction for rotation)
-        pass
-
     fig.update_layout(
         title=dict(
             text=title,
@@ -1281,26 +1204,15 @@ def generate_source_activity_heatmap_html(
         ),
         paper_bgcolor='#1a1a2e',
         plot_bgcolor='#1a1a2e',
-        margin=dict(l=0, r=0, t=50, b=60),
+        margin=dict(l=0, r=0, t=50, b=10),
         font=dict(color='#e0e0e0'),
         autosize=True,
     )
 
-    # Debug: log frame count before HTML generation
-    n_frames_before = len(fig.frames) if fig.frames else 0
-    logger.info(f"[generate_source_activity_heatmap_html] Frames in figure: {n_frames_before}, has_animation={has_animation}")
-    
-    html_output = fig.to_html(
-        include_plotlyjs='cdn', full_html=True, auto_play=False,
+    return fig.to_html(
+        include_plotlyjs=False, full_html=False,
         config=dict(responsive=True),
     )
-    
-    # Debug: count frames in generated HTML
-    import re
-    frame_names = re.findall(r'"name":"\d+"', html_output)
-    logger.info(f"[generate_source_activity_heatmap_html] Frame definitions in HTML: {len(frame_names)}")
-    
-    return html_output
 
 
 # ========================================================================
@@ -1405,20 +1317,6 @@ def _build_eeg_payload(eeg_data, fs, channel_names, edf_all_windows=None, edf_wi
             logger.exception(f"Failed to build eeg_payload", extra=extra)
             eeg_payload = None
     return eeg_payload
-
-
-def _extract_plotly_body(html_content):
-    import re
-    script_match = re.search(
-        r'<script[^>]*src="https://cdn\.plot\.ly/plotly[^"]*"[^>]*></script>',
-        html_content, re.I
-    )
-    plotly_script = script_match.group(0) if script_match else ''
-    body_match = re.search(
-        r'<body[^>]*>([\s\S]*?)</body>', html_content, re.I
-    )
-    body_content = body_match.group(1) if body_match else html_content
-    return plotly_script + body_content
 
 
 def _run_xai(eeg_data, ei_result, region_labels):
@@ -1778,9 +1676,11 @@ async def analyze_eeg(
             activity_result = compute_source_activity_metrics(predicted_sources)
 
             # ---- Sliding window animation (EDF files with > 1 window) ----
-            animated_frames = None
+            animation_data = None
+            vertex_region_list = None
             frame_timestamps = None
             n_windows_processed = 1
+            all_win_sources = None
 
             if edf_all_windows is not None and edf_window_timestamps is not None:
                 n_win = len(edf_all_windows)
@@ -1789,7 +1689,6 @@ async def analyze_eeg(
                     extra={"job_id": job_id}
                 )
 
-                # Log timestamp range
                 ts_start = edf_window_timestamps[0] if edf_window_timestamps else 0
                 ts_end = edf_window_timestamps[-1] if edf_window_timestamps else 0
                 logger.info(
@@ -1798,70 +1697,26 @@ async def analyze_eeg(
                     extra={"job_id": job_id}
                 )
 
-                animated_frames = []
                 frame_timestamps = edf_window_timestamps
                 n_windows_processed = n_win
 
-                # First pass: compute all window RMS scores to determine global min/max
+                # Run inference on all windows
                 all_win_sources = []
                 for i, win_eeg in enumerate(edf_all_windows):
-                    win_eeg_range = f"[{win_eeg.min():.2f}, {win_eeg.max():.2f}]"
-                    logger.info(f"[ANIM] Window {i}/{n_win}: EEG range={win_eeg_range}", extra={"job_id": job_id})
+                    logger.info(f"[ANIM] Window {i}/{n_win}: running inference...", extra={"job_id": job_id})
                     win_sources = run_inference(win_eeg)
-                    src_range = f"[{win_sources.min():.4f}, {win_sources.max():.4f}]"
-                    logger.info(f"[ANIM] Window {i}/{n_win}: source range={src_range}, shape={win_sources.shape}", extra={"job_id": job_id})
+                    logger.info(f"[ANIM] Window {i}/{n_win}: source shape={win_sources.shape}", extra={"job_id": job_id})
                     all_win_sources.append(win_sources)
 
-                # Compute global RMS min/max across all windows.
-                # Use global normalization (not per-window) because the model
-                # outputs nearly identical spatial patterns for all windows.
-                # Per-window normalization maps identical patterns to identical
-                # [0,1] ranges, making all frames visually indistinguishable.
-                # Global normalization preserves absolute magnitude differences
-                # between windows, revealing subtle temporal activity shifts.
-                all_rms = []
-                for i, ws in enumerate(all_win_sources):
-                    win_rms = np.sqrt(np.mean(ws ** 2, axis=1))
-                    logger.info(f"[ANIM] Window {i}/{n_win}: RMS range=[{win_rms.min():.6f}, {win_rms.max():.6f}], mean={win_rms.mean():.6f}", extra={"job_id": job_id})
-                    all_rms.extend(win_rms.tolist())
-                global_metric_min = min(all_rms)
-                global_metric_max = max(all_rms)
-                logger.info(
-                    f"[ANIM] Global RMS bounds: min={global_metric_min:.6f}, max={global_metric_max:.6f}, range={global_metric_max-global_metric_min:.6f}",
-                    extra={"job_id": job_id}
+            # Build animation data for frontend using per-region temporal z-scoring
+            if all_win_sources is not None and len(all_win_sources) > 1:
+                animation_data, vertex_region_list = _compute_animated_frames(
+                    all_win_sources, frame_timestamps, job_id=job_id
                 )
 
-                for i, win_sources in enumerate(all_win_sources):
-                    win_metrics = compute_source_activity_metrics(
-                        win_sources,
-                        global_min=global_metric_min,
-                        global_max=global_metric_max,
-                        _debug_label=f"_win{i}",
-                    )
-                    frame_scores = np.array(win_metrics['scores_array'], dtype=np.float32)
-                    logger.info(
-                        f"[ANIM] Window {i}/{n_win}: scores range=[{frame_scores.min():.4f}, {frame_scores.max():.4f}], "
-                        f"non-zero={int((frame_scores > 0.01).sum())}/{N_REGIONS}",
-                        extra={"job_id": job_id}
-                    )
-                    animated_frames.append(frame_scores)
-
-                logger.info(
-                    f"[ANIM] Complete: {len(animated_frames)} frames generated",
-                    extra={"job_id": job_id}
-                )
-
-            logger.info(
-                f"[ANIM] Generating heatmap: animated_frames={len(animated_frames) if animated_frames else 'None'}, "
-                f"frame_timestamps={len(frame_timestamps) if frame_timestamps else 'None'}, "
-                f"n_windows_processed={n_windows_processed}",
-                extra={"job_id": job_id}
-            )
             heatmap_html = generate_source_activity_heatmap_html(
                 activity_scores=np.array(activity_result['scores_array']),
                 title="EEG Source Imaging — Estimated Brain Activity",
-                animated_frames=animated_frames,
-                frame_timestamps=frame_timestamps,
             )
 
             if shutil.disk_usage(RESULTS_DIR).free < MIN_FREE_BYTES:
@@ -1884,10 +1739,10 @@ async def analyze_eeg(
             processing_time = time.time() - start_time
             logger.info(f"Complete in {processing_time:.1f}s", extra={"job_id": job_id})
 
-            plot_content = _extract_plotly_body(heatmap_html)
+            plot_content = heatmap_html  # Already a fragment — no extraction needed
             logger.info(
-                f"[ANIM] Plotly body extracted: {len(plot_content)} chars, "
-                f"starts with script={plot_content[:30] if plot_content else 'EMPTY!'}",
+                f"[ANIM] Plotly HTML fragment: {len(plot_content)} chars, "
+                f"starts with={plot_content[:40] if plot_content else 'EMPTY!'}",
                 extra={"job_id": job_id}
             )
             eeg_payload = _build_eeg_payload(
@@ -1899,17 +1754,18 @@ async def analyze_eeg(
             eeg_windows_count = len(eeg_payload['windows']) if eeg_payload and eeg_payload.get('windows') else 0
             logger.info(
                 f"[ANIM] EEG payload: {eeg_windows_count} windows, "
-                f"hasAnimation={animated_frames is not None and len(animated_frames) > 1}",
+                f"hasAnimation={animation_data is not None}",
                 extra={"job_id": job_id}
             )
 
-            has_animation_final = animated_frames is not None and len(animated_frames) > 1
+            has_animation_final = animation_data is not None
             logger.info(
                 f"[ANIM] Returning response: nWindowsProcessed={n_windows_processed}, "
                 f"nWindowsTotal={total_edf_windows}, "
                 f"hasAnimation={has_animation_final}, "
                 f"plotHtml_len={len(plot_content)}, "
-                f"eegData_windows={eeg_windows_count}",
+                f"eegData_windows={eeg_windows_count}, "
+                f"animationData_frames={len(animation_data) if animation_data else 0}",
                 extra={"job_id": job_id}
             )
 
@@ -1920,14 +1776,14 @@ async def analyze_eeg(
                 "processingTime": round(processing_time, 2),
                 "source": source_label,
                 "plotHtml": plot_content,
-                # Include raw EEG windows so frontend can render waveform comparisons
                 "eegData": eeg_payload,
                 "fullHtmlPath": f"/api/results/{job_id}/source_activity_heatmap.html",
                 "nWindowsProcessed": n_windows_processed,
                 "nWindowsTotal": total_edf_windows,
                 "windowsTruncated": edf_windows_truncated,
                 "hasAnimation": has_animation_final,
-                # Per-region activity scores
+                "animationData": animation_data,
+                "vertexRegion": vertex_region_list,
                 "sourceLocalization": {
                     "scores": activity_result['scores'],
                     "scores_array": activity_result['scores_array'],
@@ -1938,7 +1794,6 @@ async def analyze_eeg(
                     "region_labels": region_labels,
                     "summary": activity_result['summary'],
                 },
-                # Raw source activity summary
                 "sourceActivity": source_summary,
             })
 
@@ -1984,7 +1839,7 @@ async def analyze_eeg(
             processing_time = time.time() - start_time
             logger.info(f"Complete in {processing_time:.1f}s", extra={"job_id": job_id})
 
-            plot_content = _extract_plotly_body(heatmap_html)
+            plot_content = heatmap_html
 
             # ── CMA-ES / Concordance ──
             concordance = None
@@ -2367,24 +2222,34 @@ async def _process_analysis_async(
             activity_result = compute_source_activity_metrics(predicted_sources)
 
             # Sliding window animation for EDF uploads with >1 window
-            animated_frames = None
-            frame_timestamps = None
+            animation_data = None
+            vertex_region_ws = None
             if edf_all_windows is not None and edf_window_timestamps is not None:
-                animated_frames = []
-                frame_timestamps = edf_window_timestamps
+                n_win = len(edf_all_windows)
+                logger.info(
+                    f"[ANIM_WS] Processing {n_win} sliding windows (z-score norm)...",
+                    extra={"job_id": job_id}
+                )
+                # Compute all sources (async/inference), then delegate to shared helper
+                all_win_sources = []
                 for win_eeg in edf_all_windows:
                     win_sources = await asyncio.wait_for(
                         asyncio.get_event_loop().run_in_executor(None, run_inference, win_eeg),
                         timeout=60.0,
                     )
-                    win_metrics = compute_source_activity_metrics(win_sources)
-                    animated_frames.append(np.array(win_metrics['scores_array'], dtype=np.float32))
+                    all_win_sources.append(win_sources)
+                animation_data, vertex_region_ws = _compute_animated_frames(
+                    all_win_sources, edf_window_timestamps, job_id=job_id
+                )
+                logger.info(
+                    f"[ANIM_WS] Built {len(animation_data)} frames, "
+                    f"vertex_region length={len(vertex_region_ws) if vertex_region_ws else 0}",
+                    extra={"job_id": job_id}
+                )
 
             heatmap_html = generate_source_activity_heatmap_html(
                 activity_scores=np.array(activity_result['scores_array']),
                 title="EEG Source Imaging — Estimated Brain Activity",
-                animated_frames=animated_frames,
-                frame_timestamps=frame_timestamps,
             )
 
             if shutil.disk_usage(RESULTS_DIR).free < MIN_FREE_BYTES:
@@ -2399,6 +2264,9 @@ async def _process_analysis_async(
                     "status": "completed",
                     "mode": "source_localization",
                     "fullHtmlPath": f"/api/results/{job_id}/source_activity_heatmap.html",
+                    "hasAnimation": animation_data is not None,
+                    "animationData": animation_data,
+                    "vertexRegion": vertex_region_ws,
                 }
             )
         else:

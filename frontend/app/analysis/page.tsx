@@ -38,6 +38,11 @@ interface EegWindowData {
   }>
 }
 
+interface AnimationFrameData {
+  scoresArray: number[]
+  timestamp: number
+}
+
 interface ESIResult {
   jobId: string
   fileName: string
@@ -48,6 +53,8 @@ interface ESIResult {
   windowsTruncated?: boolean
   hasAnimation?: boolean
   eegData?: EegWindowData | null
+  animationData?: AnimationFrameData[] | null
+  vertexRegion?: number[] | null
 }
 
 type ViewMode = "source" | "biomarkers"
@@ -145,6 +152,15 @@ export default function AnalysisPage() {
         eegWindowsLen: bioData?.eegData?.windows?.length,
       })
 
+      console.debug("[Page] ESIResult received:", {
+        hasAnimation: sourceData?.hasAnimation,
+        nWindows: sourceData?.nWindowsProcessed,
+        animDataLen: sourceData?.animationData?.length,
+        vertexRegionLen: sourceData?.vertexRegion?.length,
+        firstFrameScores: sourceData?.animationData?.[0]?.scoresArray?.slice(0, 3),
+        eegWindows: sourceData?.eegData?.windows?.length,
+      })
+
       setEsiResult(sourceData)
       setBioResult(bioData)
       setStep("results")
@@ -173,12 +189,13 @@ export default function AnalysisPage() {
     }
 
     const jobId = bioResult.jobId
-    const backendUrl = process.env.NEXT_PUBLIC_PHYSDEEPSIF_BACKEND || "http://localhost:8000"
     const poll = async () => {
       try {
-        const res = await fetch(`${backendUrl}/api/job/${jobId}/cmaes`)
-        if (!res.ok) return
+        console.debug("[Page] CMA-ES polling", { jobId })
+        const res = await fetch(`/api/job/${jobId}/cmaes`)
+        if (!res.ok) { console.debug("[Page] CMA-ES poll not OK", res.status); return }
         const data = await res.json()
+        console.debug("[Page] CMA-ES response:", data)
         if (data.status === "completed") {
           setBioResult((prev) => {
             if (!prev) return prev
@@ -227,16 +244,8 @@ export default function AnalysisPage() {
   )
 
   const handleBrainFrameChange = useCallback((frameIndex: number) => {
-    const total = esiResult?.eegData?.windows?.length ?? 0
-    console.log(`[AnalysisPage] handleBrainFrameChange: frameIndex=${frameIndex}, total=${total}, esiResult?.nWindowsProcessed=${esiResult?.nWindowsProcessed}, esiResult?.hasAnimation=${esiResult?.hasAnimation}`)
-    if (total <= 0) {
-      console.log(`[AnalysisPage] handleBrainFrameChange: total=${total} <= 0, ignoring`)
-      return
-    }
-    const normalizedIndex = ((frameIndex % total) + total) % total
-    console.log(`[AnalysisPage] handleBrainFrameChange: normalized ${frameIndex} -> ${normalizedIndex}`)
-    setClampedWindow(normalizedIndex)
-  }, [esiResult?.eegData?.windows?.length, setClampedWindow])
+    setClampedWindow(frameIndex)
+  }, [setClampedWindow])
 
   /* ---- Derive detected regions from biomarker result ---- */
   const detectedRegions: string[] =
@@ -455,9 +464,18 @@ export default function AnalysisPage() {
                   {(() => {
                     const html = esiResult?.plotHtml ?? bioResult?.plotHtml
                     if (!html) return null
+                    const isSourceView = viewMode === "source"
+                    const animData = isSourceView ? esiResult?.animationData ?? undefined : undefined
+                    const vertReg = isSourceView ? esiResult?.vertexRegion ?? undefined : undefined
+                    console.debug("[Page] Passing to BrainVisualization:", {
+                      isSourceView, animLen: animData?.length, vertRegLen: vertReg?.length,
+                      currentFrame: selectedWindow, htmlLen: html?.length,
+                    })
                     return (
                       <BrainVisualization
                         plotHtml={html}
+                        animationData={animData}
+                        vertexRegion={vertReg}
                         label="Source Activity"
                         className="h-[640px] w-full"
                         playbackSpeed={playbackSpeed}
@@ -485,30 +503,6 @@ export default function AnalysisPage() {
 
                   {/* Right column: results stacked vertically */}
                   <div className="space-y-4">
-                    {/* Window selector for biomarker view */}
-                    {(esiResult?.eegData?.windows && esiResult.eegData.windows.length > 1) && (
-                      <div className="flex items-center gap-3 text-sm">
-                        <span className="text-muted-foreground">Window:</span>
-                        <div className="flex gap-1">
-                          {esiResult.eegData.windows.map((_, idx) => (
-                            <button
-                              key={idx}
-                              onClick={() => setClampedWindow(idx)}
-                              className={`
-                                rounded-md px-3 py-1 text-xs font-medium transition-colors
-                                ${selectedWindow === idx
-                                  ? "bg-primary text-primary-foreground"
-                                  : "bg-muted text-muted-foreground hover:text-foreground"
-                                }
-                              `}
-                            >
-                              {idx + 1}
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
                     {/* Section 1: Detected Regions */}
                     <Card>
                       <div className="px-4 py-2 border-b">
