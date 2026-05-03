@@ -2,7 +2,7 @@
 
 Physics-constrained deep learning for EEG source localization and patient-specific epileptogenicity mapping. Uses a 76-region brain parcellation (Desikan-Killiany atlas) and the Epileptor neural mass model in The Virtual Brain (TVB) to produce biophysically grounded epileptogenicity heatmaps from 19-channel scalp EEG (10-20 montage, linked-ear reference).
 
-**Final year project.** 149 test functions pass, DLE=31mm, AUC=0.923.
+**Final year project.** 149 test functions pass, DLE=31mm, AUC=0.697.
 
 ---
 
