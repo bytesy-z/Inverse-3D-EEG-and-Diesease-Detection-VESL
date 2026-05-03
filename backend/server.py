@@ -569,20 +569,29 @@ def compute_epileptogenicity_index(
     else:
         ei_scores = (ei_raw - score_min) / (score_max - score_min)
 
-    # Adaptive threshold
-    threshold = float(np.percentile(ei_scores, threshold_percentile))
-    threshold = np.clip(threshold, 0.0, 1.0)
-    threshold = max(threshold, 0.6)  # Absolute confidence floor
+    # Statistical thresholding on ei_raw (pre-minmax) to avoid always flagging regions
+    # ei_raw > 0.88 ≈ z > 2.0 on per-region power (p < 0.05)
+    # ei_raw > 0.92 ≈ z > 2.5; ei_raw > 0.95 ≈ z > 3.0
+    # Escalate threshold if too many regions flagged, to suppress noise in uniform samples
+    stat_z = 2.0
+    if np.sum(ei_raw > 0.95) > 10:
+        stat_z = 3.0
+    elif np.sum(ei_raw > 0.92) > 8:
+        stat_z = 2.5
+    stat_thresh = 1.0 / (1.0 + np.exp(-stat_z))  # Convert back to sigmoid
 
-    epileptogenic_idx = np.where(ei_scores > threshold)[0]
-    epileptogenic_names = [region_labels[i] for i in epileptogenic_idx]
-    # Include full anatomical names for each detected region
-    epileptogenic_names_full = [
-        format_region_for_display(region_labels[i])
-        for i in epileptogenic_idx
-    ]
+    roi_idx = np.where(ei_raw > stat_thresh)[0]
+    roi_names = [region_labels[i] for i in roi_idx]
+    roi_names_full = [format_region_for_display(region_labels[i]) for i in roi_idx]
+    n_roi = len(roi_idx)
 
-    # Build per-region scores dict for JSON serialization
+    # Legacy percentile threshold (kept for backward compat)
+    legacy_threshold = float(np.percentile(ei_scores, threshold_percentile))
+    legacy_threshold = max(legacy_threshold, 0.6)
+    legacy_idx = np.where(ei_scores > legacy_threshold)[0]
+    legacy_names = [region_labels[i] for i in legacy_idx]
+    legacy_names_full = [format_region_for_display(region_labels[i]) for i in legacy_idx]
+
     scores_dict = {
         region_labels[i]: float(ei_scores[i])
         for i in range(N_REGIONS)
@@ -590,11 +599,19 @@ def compute_epileptogenicity_index(
 
     result = {
         'scores': scores_dict,
-        'scores_array': ei_scores.tolist(),  # JSON-safe list, min-max rescaled to [0,1]
-        'scores_array_raw': ei_raw.tolist(), # Pre-rescale sigmoid scores for XAI occlusion
-        'epileptogenic_regions': epileptogenic_names,
-        'epileptogenic_regions_full': epileptogenic_names_full,  # With full anatomical names
-        'threshold': float(threshold),
+        'scores_array': ei_scores.tolist(),
+        'scores_array_raw': ei_raw.tolist(),
+        # New statistically-thresholded regions (preferred)
+        'regions_of_interest': roi_names,
+        'regions_of_interest_full': roi_names_full,
+        'regions_of_interest_count': n_roi,
+        'statistical_threshold': float(stat_thresh),
+        'statistical_z': stat_z,
+        'roi_detected': n_roi > 0,
+        # Legacy percentile-thresholded regions
+        'epileptogenic_regions': legacy_names,
+        'epileptogenic_regions_full': legacy_names_full,
+        'threshold': float(legacy_threshold),
         'threshold_percentile': threshold_percentile,
         'max_score_region': region_labels[int(np.argmax(ei_scores))],
         'max_score': float(np.max(ei_scores)),
@@ -608,13 +625,17 @@ def compute_epileptogenicity_index(
         result['ground_truth_regions'] = true_epi_names
         result['n_true_epileptogenic'] = len(true_epi_names)
 
-        pred_set = set(epileptogenic_idx.tolist())
+        pred_set = set(legacy_idx.tolist())
         true_set = set(true_epi_idx.tolist())
         if len(true_set) > 0:
             intersection = pred_set & true_set
             result['recall'] = len(intersection) / len(true_set)
         if len(pred_set) > 0 and len(true_set) > 0:
             result['precision'] = len(pred_set & true_set) / len(pred_set)
+
+        roi_set = set(roi_idx.tolist())
+        result['roi_recall'] = len(roi_set & true_set) / max(len(true_set), 1)
+        result['roi_precision'] = len(roi_set & true_set) / max(len(roi_set), 1)
 
         # Top-K recall metrics
         for k in [5, 10]:
@@ -831,19 +852,19 @@ def generate_heatmap_html(
     ei_scores: NDArray[np.float32],
     title: str = "Epileptogenic Zone Detection",
     top_k: int = 5,
+    highlight_indices: Optional[List[int]] = None,
 ) -> str:
     """
     Generate a static Plotly 3D brain heatmap for epileptogenicity.
 
-    Uses a HARD THRESHOLD approach: only the top-K highest-scoring regions
-    are colored (red shading by intensity). All other regions are rendered
-    in a neutral brain gray, creating a clear clinical-style visualization
-    where highlighted regions stand out unambiguously.
+    Only the specified highlight_indices (or top-K by score if not provided)
+    are colored. All other regions render in neutral gray.
 
     Args:
         ei_scores: Array of shape (76,) with values in [0, 1].
         title: Title displayed above the 3D plot.
-        top_k: Number of top epileptogenic regions to highlight (default: 5).
+        top_k: Fallback — number of top regions to highlight if highlight_indices not given.
+        highlight_indices: Explicit list of region indices to highlight (overrides top_k).
 
     Returns:
         HTML fragment string containing the Plotly 3D mesh (without CDN script tag).
@@ -856,38 +877,41 @@ def generate_heatmap_html(
     vertex_region = mesh['vertex_region']
     n_verts = all_coords.shape[0]
 
-    # ---- Hard threshold: only top-K regions are colored ----
-    top_k_indices = set(np.argsort(ei_scores)[::-1][:top_k].tolist())
-    top_k_names = [region_labels[i] for i in sorted(top_k_indices)]
+    if highlight_indices is not None and len(highlight_indices) > 0:
+        highlight_set = set(highlight_indices)
+    else:
+        highlight_set = set(np.argsort(ei_scores)[::-1][:top_k].tolist())
 
     # Build vertex colors:
-    #   - Non-highlighted regions → 0.0 (will map to neutral gray)
-    #   - Highlighted regions → score rescaled within highlighted range for contrast
-    highlighted_scores = ei_scores[list(top_k_indices)]
-    hl_min = highlighted_scores.min()
-    hl_max = highlighted_scores.max()
-    hl_range = hl_max - hl_min if hl_max - hl_min > 1e-10 else 1.0
+    #   - Non-highlighted regions → 0.0 (neutral gray)
+    #   - Highlighted regions → score rescaled to 0.3–1.0 for red gradient
+    if len(highlight_set) > 0:
+        highlighted_scores = ei_scores[list(highlight_set)]
+        hl_min = highlighted_scores.min()
+        hl_max = highlighted_scores.max()
+        hl_range = hl_max - hl_min if hl_max - hl_min > 1e-10 else 1.0
 
-    # Use a two-tier intensity scheme:
-    #   0.0 = neutral brain, 0.3-1.0 = epileptogenic gradient
-    vertex_colors = np.full(n_verts, 0.0, dtype=np.float32)
-    vertex_hover = [''] * n_verts
+        vertex_colors = np.full(n_verts, 0.0, dtype=np.float32)
+        vertex_hover = [''] * n_verts
 
-    for v_idx in range(n_verts):
-        r_idx = vertex_region[v_idx]
-        if r_idx < 0:
-            vertex_hover[v_idx] = "unassigned"
-            continue
+        for v_idx in range(n_verts):
+            r_idx = vertex_region[v_idx]
+            if r_idx < 0:
+                vertex_hover[v_idx] = "unassigned"
+                continue
 
-        rname = region_labels[r_idx]
-        if r_idx in top_k_indices:
-            # Map score to 0.3–1.0 range for the epileptogenic gradient
-            normalized = (ei_scores[r_idx] - hl_min) / hl_range
-            vertex_colors[v_idx] = 0.3 + 0.7 * normalized
-            vertex_hover[v_idx] = f"⚠ {rname} (EI: {ei_scores[r_idx]:.3f})"
-        else:
-            vertex_colors[v_idx] = 0.0
-            vertex_hover[v_idx] = rname
+            rname = region_labels[r_idx]
+            if r_idx in highlight_set:
+                normalized = (ei_scores[r_idx] - hl_min) / hl_range
+                vertex_colors[v_idx] = 0.3 + 0.7 * normalized
+                vertex_hover[v_idx] = f"{rname} (EI: {ei_scores[r_idx]:.3f})"
+            else:
+                vertex_colors[v_idx] = 0.0
+                vertex_hover[v_idx] = rname
+    else:
+        # All gray — no regions highlighted
+        vertex_colors = np.zeros(n_verts, dtype=np.float32)
+        vertex_hover = [region_labels[r_idx] if r_idx >= 0 else "unassigned" for r_idx in vertex_region]
 
     # ---- Build Plotly 3D mesh figure ----
     fig = go.Figure()
@@ -1813,11 +1837,14 @@ async def analyze_eeg(
             if xai_result:
                 logger.info(f"XAI complete", extra={"job_id": job_id})
 
-            logger.info(f"Generating epileptogenicity 3D heatmap...", extra={"job_id": job_id})
+            logger.info(f"Generating brain heatmap...", extra={"job_id": job_id})
+            hl_roi = ei_result.get('regions_of_interest', [])
+            hl_indices = [region_labels.index(r) for r in hl_roi] if hl_roi else None
             heatmap_html = generate_heatmap_html(
                 ei_scores=np.array(ei_result['scores_array']),
-                title="Epileptogenic Zone Detection",
+                title="Regions of Interest — Source Activity",
                 top_k=5,
+                highlight_indices=hl_indices,
             )
 
             # Save HTML to disk
@@ -1917,6 +1944,11 @@ async def analyze_eeg(
                 "epileptogenicity": {
                     "scores": ei_result['scores'],
                     "scores_array": ei_result['scores_array'],
+                    "regions_of_interest": ei_result.get('regions_of_interest', []),
+                    "regions_of_interest_full": ei_result.get('regions_of_interest_full', []),
+                    "regions_of_interest_count": ei_result.get('regions_of_interest_count', 0),
+                    "roi_detected": ei_result.get('roi_detected', False),
+                    "statistical_z": ei_result.get('statistical_z', 2.0),
                     "epileptogenic_regions": ei_result['epileptogenic_regions'],
                     "epileptogenic_regions_full": ei_result['epileptogenic_regions_full'],
                     "threshold": ei_result['threshold'],
@@ -2310,6 +2342,10 @@ async def _process_analysis_async(
                     "scores": list(ei_result.get('scores', {}).items()),
                     "scores_array": list(ei_result.get('scores_array', [])),
                     "region_labels": ei_result.get('region_labels', []),
+                    "regions_of_interest": ei_result.get('regions_of_interest', []),
+                    "regions_of_interest_full": ei_result.get('regions_of_interest_full', []),
+                    "regions_of_interest_count": ei_result.get('regions_of_interest_count', 0),
+                    "roi_detected": ei_result.get('roi_detected', False),
                     "epileptogenic_regions": ei_result.get('epileptogenic_regions', []),
                     "epileptogenic_regions_full": ei_result.get('epileptogenic_regions_full', []),
                     "threshold": ei_result.get('threshold'),

@@ -205,6 +205,19 @@ export default function AnalysisPage() {
               cmaes: data.cmaes ?? prev.cmaes,
             }
           })
+        } else if (data.status === "running") {
+          setBioResult((prev) => {
+            if (!prev) return prev
+            return {
+              ...prev,
+              cmaes: {
+                status: "running",
+                generations: data.generation ?? prev.cmaes?.generations ?? 0,
+                max_generations: data.max_generations ?? prev.cmaes?.max_generations,
+                best_score: data.best_score ?? prev.cmaes?.best_score,
+              },
+            }
+          })
         } else if (data.status === "failed") {
           setBioResult((prev) => {
             if (!prev) return prev
@@ -248,7 +261,9 @@ export default function AnalysisPage() {
   }, [setClampedWindow])
 
   /* ---- Derive detected regions from biomarker result ---- */
+  const roiDetected = bioResult?.epileptogenicity?.roi_detected ?? true
   const detectedRegions: string[] =
+    bioResult?.epileptogenicity?.regions_of_interest_full ??
     bioResult?.epileptogenicity?.epileptogenic_regions_full ??
     bioResult?.epileptogenicity?.epileptogenic_regions ??
     []
@@ -513,19 +528,55 @@ export default function AnalysisPage() {
                       </div>
                     </Card>
 
-                    {/* Section 2: CMA-ES Validation */}
-                    {bioResult?.concordance && (
+                    {/* Section 2: CMA-ES Biophysical Validation */}
+                    {bioResult?.cmaes && (
                       <Card>
                         <div className="px-4 py-2 border-b">
                           <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Biophysical Validation</span>
                         </div>
                         <div className="p-4 space-y-3">
-                          <ConcordanceBadge
-                            tier={bioResult.concordance.tier}
-                            overlap={bioResult.concordance.overlap}
-                            description={bioResult.concordance.tier_description}
-                            sharedRegions={bioResult.concordance.shared_regions}
-                          />
+                          {bioResult.cmaes.status === "running" && (
+                            <div className="space-y-2">
+                              <div className="flex items-center gap-2 text-sm">
+                                <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+                                <span>CMA-ES biophysical validation in progress...</span>
+                              </div>
+                              {bioResult.cmaes.generations != null && bioResult.cmaes.max_generations && (
+                                <div className="space-y-1">
+                                  <div className="flex justify-between text-xs text-muted-foreground">
+                                    <span>Generation {bioResult.cmaes.generations} / {bioResult.cmaes.max_generations}</span>
+                                    <span>~{bioResult.cmaes.max_generations * 8}s estimated</span>
+                                  </div>
+                                  <div className="h-2 bg-muted rounded overflow-hidden">
+                                    <div
+                                      className="h-full bg-primary transition-all duration-500"
+                                      style={{ width: `${((bioResult.cmaes.generations ?? 0) / (bioResult.cmaes.max_generations || 1)) * 100}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                              <p className="text-xs text-muted-foreground">
+                                Simulates neural propagation across brain regions using The Virtual Brain to verify whether detected activity patterns are physiologically plausible.
+                              </p>
+                            </div>
+                          )}
+                          {bioResult.cmaes.status === "completed" && bioResult.concordance && (
+                            <ConcordanceBadge
+                              tier={bioResult.concordance.tier}
+                              overlap={bioResult.concordance.overlap}
+                              description={bioResult.concordance.tier_description}
+                              sharedRegions={bioResult.concordance.shared_regions}
+                            />
+                          )}
+                          {bioResult.cmaes.status === "completed" && !bioResult.concordance && (
+                            <p className="text-xs text-muted-foreground">Validation complete — no concordance data available.</p>
+                          )}
+                          {bioResult.cmaes.status === "failed" && (
+                            <p className="text-xs text-red-400">Biophysical validation failed: {bioResult.cmaes.error ?? "Unknown error"}</p>
+                          )}
+                          {bioResult.cmaes.status === "debug_skip" && (
+                            <p className="text-xs text-muted-foreground">Debug mode — biophysical validation skipped.</p>
+                          )}
                         </div>
                       </Card>
                     )}

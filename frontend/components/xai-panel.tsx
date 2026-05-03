@@ -29,6 +29,7 @@ interface XaiPanelProps {
   strideSamples?: number
   eegData?: EegData
   selectedWindow?: number
+  xaiWindowIndex?: number
 }
 
 const uVPerDivOptions = [5, 10, 15, 20, 25, 50, 100]
@@ -42,6 +43,7 @@ export function XaiPanel({
   strideSamples = 20,
   eegData,
   selectedWindow = 0,
+  xaiWindowIndex,
 }: XaiPanelProps) {
   const plotRef = useRef<HTMLDivElement>(null)
   const [plotlyReady, setPlotlyReady] = useState(() => {
@@ -80,14 +82,15 @@ export function XaiPanel({
       timeAxis.push(win.startTime + i / eegData.samplingRate)
     }
 
-    const channelOffset = uVPerDiv
+    const channelSpacing = 100
+    const gain = 50 / uVPerDiv
 
     const traces: Record<string, unknown>[] = []
     for (let ch = 0; ch < numChannels; ch++) {
-      const yOffset = (numChannels - 1 - ch) * channelOffset
+      const yOffset = (numChannels - 1 - ch) * channelSpacing
       const raw = win.data[ch]
       if (!raw) continue
-      const yValues = raw.map((v) => v + yOffset)
+      const yValues = raw.map((v) => v * gain + yOffset)
       traces.push({
         x: timeAxis,
         y: yValues,
@@ -106,10 +109,11 @@ export function XaiPanel({
     }
 
     const shapes: Record<string, unknown>[] = topSegments
+      .slice(0, 3)
       .filter((seg) => seg.channel_idx >= 0 && seg.channel_idx < numChannels)
       .map((seg) => {
-        const yCenter = (numChannels - 1 - seg.channel_idx) * channelOffset
-        const halfBand = channelOffset * 0.48
+        const yCenter = (numChannels - 1 - seg.channel_idx) * channelSpacing
+        const halfBand = channelSpacing * 0.48
         return {
           type: "rect",
           x0: seg.start_time_sec,
@@ -140,7 +144,7 @@ export function XaiPanel({
       },
       yaxis: {
         tickvals: eegData.channels.map(
-          (_, i) => (numChannels - 1 - i) * channelOffset
+          (_, i) => (numChannels - 1 - i) * channelSpacing
         ),
         ticktext: eegData.channels,
         tickfont: { color: "#a1a1aa", size: 7 },
@@ -148,8 +152,8 @@ export function XaiPanel({
         zeroline: false,
         showgrid: true,
         range: [
-          -channelOffset * 0.7,
-          (numChannels - 0.3) * channelOffset,
+          -channelSpacing * 0.7,
+          (numChannels - 0.3) * channelSpacing,
         ],
         fixedrange: false,
       },
@@ -177,7 +181,6 @@ export function XaiPanel({
     if (!plotlyReady) return
     const container = plotRef.current
     if (!container) return
-
     const handleResize = () => {
       const Plotly = (window as any).Plotly
       if (Plotly?.Plots?.resize && container) {
@@ -188,11 +191,16 @@ export function XaiPanel({
     return () => window.removeEventListener("resize", handleResize)
   }, [plotlyReady])
 
+  const winLabel = xaiWindowIndex != null
+    ? ` (Window ${xaiWindowIndex + 1})`
+    : ""
+  const hasTop = topSegments.length > 0
+
   return (
     <div className="space-y-3 p-4 rounded-lg border">
-      <h3 className="text-sm font-medium">Explainability (XAI)</h3>
+      <h3 className="text-sm font-medium">Explainability (XAI){winLabel}</h3>
 
-      {topSegments.length > 0 && (
+      {hasTop && (
         <div className="space-y-1">
           <p className="text-xs text-muted-foreground">Top influential segments:</p>
           {topSegments.slice(0, 3).map((seg, i) => (
