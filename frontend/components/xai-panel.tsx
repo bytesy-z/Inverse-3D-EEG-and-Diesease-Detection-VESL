@@ -7,6 +7,7 @@ interface XaiSegment {
   start_time_sec: number
   end_time_sec: number
   importance: number
+  window_idx?: number
 }
 
 interface EegData {
@@ -121,19 +122,17 @@ export function XaiPanel({
       })
     }
 
-    // Green bars at absolute recording time
-    const xaiWin = windows[Math.min(selectedWindow, windows.length - 1)]
+    // Green bars at absolute recording time (backend returns absolute timestamps)
     const shapes: Record<string, unknown>[] = topSegments
       .slice(0, 3)
       .filter((seg) => seg.channel_idx >= 0 && seg.channel_idx < numChannels)
       .map((seg) => {
         const yCenter = (numChannels - 1 - seg.channel_idx) * channelSpacing
         const halfBand = channelSpacing * 0.48
-        const x0 = xaiWin.startTime + seg.start_time_sec
-        const x1 = xaiWin.startTime + seg.end_time_sec
         return {
           type: "rect",
-          x0, x1,
+          x0: seg.start_time_sec,
+          x1: seg.end_time_sec,
           y0: yCenter - halfBand,
           y1: yCenter + halfBand,
           fillcolor: "rgba(16, 185, 129, 0.25)",
@@ -202,7 +201,6 @@ export function XaiPanel({
   }, [plotlyReady])
 
   const hasTop = topSegments.length > 0
-  const xaiWinIdx = selectedWindow + 1
 
   return (
     <div className="space-y-3 p-4 rounded-lg border">
@@ -211,12 +209,13 @@ export function XaiPanel({
       {hasTop && (
         <div className="space-y-1">
           <p className="text-xs text-muted-foreground">
-            Top influential segments (analyzed from Window {xaiWinIdx}):
+            Top influential segments (from full recording):
           </p>
           {topSegments.slice(0, 3).map((seg, i) => (
             <div key={i} className="text-xs">
               <strong>{channelNames[seg.channel_idx] ?? `Ch${seg.channel_idx}`}</strong>
               {" "}{seg.start_time_sec.toFixed(2)}s–{seg.end_time_sec.toFixed(2)}s
+              {seg.window_idx != null ? ` (W${seg.window_idx + 1})` : ""}
             </div>
           ))}
         </div>

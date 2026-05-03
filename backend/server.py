@@ -1347,29 +1347,37 @@ def _build_eeg_payload(eeg_data, fs, channel_names, edf_all_windows=None, edf_wi
 def _run_xai(eeg_data, ei_result, region_labels):
     xai_result = None
     try:
-        from src.xai.eeg_occlusion import explain_biomarker
         scores_array = np.array(ei_result['scores_array'])
         top_region_idx = int(np.argmax(scores_array))
         top_region_code = region_labels[top_region_idx]
-
-        def _ei_pipeline(win):
-            sources = run_inference(win)
-            ei = compute_epileptogenicity_index(sources)
-            return {"scores": np.array(ei["scores_array_raw"])}
-
-        xai_result = explain_biomarker(
-            eeg_window=eeg_data.astype(np.float32),
-            target_region_idx=top_region_idx,
-            run_pipeline_fn=_ei_pipeline,
-            occlusion_width=40,
-            stride=20,
-        )
-        xai_result["target_region"] = top_region_code
-        xai_result["target_region_full"] = format_region_for_display(top_region_code)
+        xai_result = _run_xai_single(eeg_data, top_region_idx, top_region_code)
+        if xai_result:
+            xai_result["target_region"] = top_region_code
+            xai_result["target_region_full"] = format_region_for_display(top_region_code)
     except Exception as e:
         logger.warning(f"XAI skipped: {e}")
         xai_result = None
     return xai_result
+
+
+def _run_xai_single(eeg_window, target_region_idx, target_region_code):
+    from src.xai.eeg_occlusion import explain_biomarker
+
+    def _ei_pipeline(win):
+        sources = run_inference(win)
+        ei = compute_epileptogenicity_index(sources)
+        return {"scores": np.array(ei["scores_array_raw"])}
+
+    result = explain_biomarker(
+        eeg_window=eeg_window.astype(np.float32),
+        target_region_idx=target_region_idx,
+        run_pipeline_fn=_ei_pipeline,
+        occlusion_width=40,
+        stride=20,
+    )
+    result["target_region"] = target_region_code
+    result["target_region_full"] = format_region_for_display(target_region_code)
+    return result
 
 
 def _make_cmaes_callback(job_id: str, max_generations: int):
@@ -1457,6 +1465,7 @@ async def analyze_eeg(
     ws: bool = Form(False),
     max_windows: Optional[int] = Form(None),
     cmaes_generations: Optional[int] = Form(None),
+    xai_window_idx: Optional[int] = Form(None),
     debug: bool = Form(False),
 ):
     """
@@ -1833,8 +1842,52 @@ async def analyze_eeg(
                 threshold_percentile=threshold_percentile,
             )
 
-            # ── XAI: Explain top detected region via occlusion ──
-            xai_result = _run_xai(eeg_data, ei_result, region_labels)
+            # ── XAI: Occlusion across top windows (or single window) ──
+            if edf_all_windows is not None and len(edf_all_windows) > 1:
+                n_screen = min(len(edf_all_windows), 10)
+                logger.info(f"Pre-screening {n_screen} windows for XAI...", extra={"job_id": job_id})
+
+                # Pre-screen: compute EI for each window to find top-3
+                window_scores = []
+                for i in range(n_screen):
+                    win_src = run_inference(edf_all_windows[i])
+                    win_ei = compute_epileptogenicity_index(win_src)
+                    window_scores.append((i, float(win_ei.get('max_score', 0.0))))
+
+                top_3 = sorted(window_scores, key=lambda x: x[1], reverse=True)[:3]
+                logger.info(f"Top windows for XAI: {top_3}", extra={"job_id": job_id})
+
+                # Run occlusion on top-3 windows, targeting the same top region
+                top_region_idx = int(np.argmax(np.array(ei_result['scores_array'])))
+                top_region_code = region_labels[top_region_idx]
+                combined_segments = []
+                for win_idx, ei_max in top_3:
+                    win_eeg = edf_all_windows[win_idx]
+                    win_xai = _run_xai_single(win_eeg, top_region_idx, top_region_code)
+                    if win_xai and win_xai.get('top_segments'):
+                        win_start = edf_window_timestamps[win_idx] - WINDOW_LENGTH / (2 * SAMPLING_RATE) if edf_window_timestamps else 0.0
+                        for seg in win_xai['top_segments']:
+                            seg['start_time_sec'] = round(win_start + seg['start_time_sec'], 3)
+                            seg['end_time_sec'] = round(win_start + seg['end_time_sec'], 3)
+                            seg['window_idx'] = win_idx
+                            combined_segments.append(seg)
+
+                combined_segments.sort(key=lambda s: s.get('importance', 0), reverse=True)
+                combined_segments = combined_segments[:5]
+
+                xai_result = {
+                    'channel_importance': win_xai.get('channel_importance', []) if win_xai else [],
+                    'time_importance': win_xai.get('time_importance', []) if win_xai else [],
+                    'top_segments': combined_segments,
+                    'target_region': top_region_code,
+                    'target_region_full': format_region_for_display(top_region_code),
+                    'target_region_idx': top_region_idx,
+                    'analyzed_windows': [w[0] for w in top_3],
+                    'total_windows_screened': n_screen,
+                }
+                logger.info(f"XAI complete: {len(combined_segments)} segments from {len(top_3)} windows", extra={"job_id": job_id})
+            else:
+                xai_result = _run_xai(eeg_data, ei_result, region_labels)
             if xai_result:
                 logger.info(f"XAI complete", extra={"job_id": job_id})
 
@@ -2153,6 +2206,37 @@ async def poll_cmaes_results(job_id: str):
             active_jobs[job_id]["_cmaes_result"] = response_data
 
     return JSONResponse(response_data)
+
+
+@app.get("/api/xai/{job_id}/{window_idx}")
+async def reanalyze_xai(job_id: str, window_idx: int):
+    """Re-run occlusion XAI on a specific window of a completed biomarker job."""
+    job_dir = RESULTS_DIR / job_id
+    if not job_dir.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    scores_path = job_dir / "epileptogenicity_scores.json"
+    if not scores_path.exists():
+        raise HTTPException(status_code=404, detail="Biomarker result not found for this job")
+    with open(scores_path, 'r') as f:
+        ei_result = json.load(f)
+
+    all_win_path = job_dir / "edf_all_windows.npy"
+    if not all_win_path.exists():
+        raise HTTPException(status_code=404, detail="No multi-window data for this job")
+    all_windows = np.load(str(all_win_path))
+    n_windows = all_windows.shape[0]
+    if window_idx < 0 or window_idx >= n_windows:
+        raise HTTPException(status_code=400, detail=f"Window {window_idx} out of range [0, {n_windows})")
+
+    scores_array = np.array(ei_result.get('scores_array', []))
+    top_region_idx = int(np.argmax(scores_array))
+    top_region_code = region_labels[top_region_idx] if top_region_idx < len(region_labels) else "unknown"
+    xai_eeg = all_windows[window_idx].astype(np.float32)
+    xai_result = _run_xai_single(xai_eeg, top_region_idx, top_region_code)
+    if xai_result is None:
+        raise HTTPException(status_code=500, detail="XAI occlusion failed")
+    return JSONResponse({"status": "ok", "window_idx": window_idx, "xai": xai_result})
 
 
 # ========================================================================

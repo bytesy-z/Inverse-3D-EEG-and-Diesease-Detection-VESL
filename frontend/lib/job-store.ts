@@ -105,7 +105,10 @@ export interface PhysDeepSIFResult {
       start_time_sec: number
       end_time_sec: number
       importance: number
+      window_idx?: number
     }>
+    analyzed_windows?: number[]
+    total_windows_screened?: number
     target_region_idx?: number
     baseline_score?: number
   } | null

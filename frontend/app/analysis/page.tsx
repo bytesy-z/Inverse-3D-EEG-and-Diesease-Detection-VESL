@@ -1,10 +1,9 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from "react"
-import { RotateCcw, Brain, Activity, Zap } from "lucide-react"
+import { RotateCcw, Brain, Activity } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Checkbox } from "@/components/ui/checkbox"
 import { Card } from "@/components/ui/card"
 import { AppHeader, AppContainer, AppFooter } from "@/components/app-shell"
 import { StepIndicator, type StepId } from "@/components/step-indicator"
@@ -75,7 +74,6 @@ export default function AnalysisPage() {
   const [viewMode, setViewMode] = useState<ViewMode>("source")
   const [maxWindows, setMaxWindows] = useState<number>(5)
   const [cmaesGens, setCmaesGens] = useState<number>(20)
-  const [debugMode, setDebugMode] = useState<boolean>(false)
 
   // Results for both modes
   const [esiResult, setEsiResult] = useState<ESIResult | null>(null)
@@ -106,7 +104,7 @@ export default function AnalysisPage() {
       fdSource.append("include_eeg", "true")
       fdSource.append("max_windows", String(maxWindows))
       fdSource.append("cmaes_generations", String(cmaesGens))
-      fdSource.append("debug", debugMode ? "true" : "false")
+      fdSource.append("xai_window_idx", String(selectedWindow))
       fdSource.append("ws", "false")
       fdSource.append("mode", "source_localization")
 
@@ -115,7 +113,7 @@ export default function AnalysisPage() {
       fdBio.append("include_eeg", "true")
       fdBio.append("max_windows", String(maxWindows))
       fdBio.append("cmaes_generations", String(cmaesGens))
-      fdBio.append("debug", debugMode ? "true" : "false")
+      fdBio.append("xai_window_idx", String(selectedWindow))
       fdBio.append("ws", "false")
       fdBio.append("mode", "biomarkers")
 
@@ -168,7 +166,7 @@ export default function AnalysisPage() {
       setError(err instanceof Error ? err.message : "An error occurred during analysis")
       setStep("upload")
     }
-  }, [selectedFile, maxWindows, cmaesGens, debugMode])
+  }, [selectedFile, maxWindows, cmaesGens])
 
   /* ---- Reset to upload state ---- */
   const handleReset = useCallback(() => {
@@ -260,6 +258,25 @@ export default function AnalysisPage() {
     setClampedWindow(frameIndex)
   }, [setClampedWindow])
 
+  /* ---- Re-analyze XAI when selected window changes ---- */
+  const xaiWindowRef = useRef<number>(0)
+  useEffect(() => {
+    if (!bioResult?.jobId || selectedWindow === xaiWindowRef.current) return
+    xaiWindowRef.current = selectedWindow
+    const jobId = bioResult.jobId
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/xai/${jobId}/${selectedWindow}`)
+        if (!res.ok) return
+        const data = await res.json()
+        if (data.status === "ok" && data.xai) {
+          setBioResult((prev) => prev ? { ...prev, xai: data.xai } : prev)
+        }
+      } catch { /* ignore */ }
+    }
+    poll()
+  }, [selectedWindow, bioResult?.jobId])
+
   /* ---- Derive detected regions from biomarker result ---- */
   const roiDetected = bioResult?.epileptogenicity?.roi_detected ?? true
   const detectedRegions: string[] =
@@ -343,18 +360,6 @@ export default function AnalysisPage() {
                 <span className="text-xs text-muted-foreground">
                   (1-30, lower = faster)
                 </span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Checkbox
-                  id="debug-mode"
-                  checked={debugMode}
-                  onCheckedChange={(v) => setDebugMode(v === true)}
-                />
-                <label htmlFor="debug-mode" className="text-sm text-muted-foreground cursor-pointer select-none flex items-center gap-1">
-                  <Zap className="h-3.5 w-3.5 text-amber-500" />
-                  Debug mode (skip CMA-ES, dummy concordance)
-                </label>
               </div>
 
               <Button
