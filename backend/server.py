@@ -1839,7 +1839,7 @@ async def analyze_eeg(
                 logger.info(f"XAI complete", extra={"job_id": job_id})
 
             logger.info(f"Generating brain heatmap...", extra={"job_id": job_id})
-            hl_indices = ei_result.get('roi_indices') or None
+            hl_indices = ei_result.get('roi_indices')
             heatmap_html = generate_heatmap_html(
                 ei_scores=np.array(ei_result['scores_array']),
                 title="Regions of Interest — Source Activity",

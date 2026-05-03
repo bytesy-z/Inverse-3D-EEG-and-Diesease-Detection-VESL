@@ -29,7 +29,6 @@ interface XaiPanelProps {
   strideSamples?: number
   eegData?: EegData
   selectedWindow?: number
-  xaiWindowIndex?: number
 }
 
 const uVPerDivOptions = [5, 10, 15, 20, 25, 50, 100]
@@ -43,7 +42,6 @@ export function XaiPanel({
   strideSamples = 20,
   eegData,
   selectedWindow = 0,
-  xaiWindowIndex,
 }: XaiPanelProps) {
   const plotRef = useRef<HTMLDivElement>(null)
   const [plotlyReady, setPlotlyReady] = useState(() => {
@@ -69,22 +67,30 @@ export function XaiPanel({
     const Plotly = (window as any).Plotly
     if (!Plotly?.newPlot) return
 
-    const winIdx = Math.min(selectedWindow, eegData.windows.length - 1)
-    const win = eegData.windows[winIdx]
-    if (!win || !win.data.length) return
-
     const numChannels = eegData.channels.length
-    const numSamples = win.data[0]?.length ?? 0
-    if (numSamples === 0) return
+    const sr = eegData.samplingRate
+    const windows = eegData.windows
 
-    const timeAxis: number[] = []
-    for (let i = 0; i < numSamples; i++) {
-      timeAxis.push(win.startTime + i / eegData.samplingRate)
+    // Concatenate all windows into full EEG
+    const fullTime: number[] = []
+    const fullData: number[][] = new Array(numChannels).fill(null).map(() => [])
+    let totalTime = 0
+    for (const w of windows) {
+      const nSamples = w.data[0]?.length ?? 0
+      for (let s = 0; s < nSamples; s++) {
+        fullTime.push(totalTime + s / sr)
+      }
+      for (let ch = 0; ch < numChannels; ch++) {
+        if (w.data[ch]) fullData[ch].push(...w.data[ch])
+      }
+      totalTime += w.endTime - w.startTime
     }
+    const fullDuration = totalTime
 
+    // Global max across all windows
     let globalMax = 0
     for (let ch = 0; ch < numChannels; ch++) {
-      const d = win.data[ch]
+      const d = fullData[ch]
       if (!d) continue
       for (let s = 0; s < d.length; s++) {
         const abs = Math.abs(d[s])
@@ -95,43 +101,43 @@ export function XaiPanel({
     const channelSpacing = globalMax * 3
     const gain = 50 / uVPerDiv
 
+    // One trace per channel across full recording
     const traces: Record<string, unknown>[] = []
     for (let ch = 0; ch < numChannels; ch++) {
       const yOffset = (numChannels - 1 - ch) * channelSpacing
-      const raw = win.data[ch]
+      const raw = fullData[ch]
       if (!raw) continue
       const yValues = raw.map((v) => v * gain + yOffset)
       traces.push({
-        x: timeAxis,
+        x: fullTime,
         y: yValues,
         type: "scatter",
         mode: "lines",
         name: eegData.channels[ch],
-        line: {
-          color: "#60a5fa",
-          width: 0.8,
-          shape: "linear",
-        },
-        hoverinfo: "name+x+y",
+        line: { color: "#60a5fa", width: 0.6, shape: "linear" },
+        hoverinfo: "name",
         showlegend: false,
-        hovertemplate: "%{y:.2f}",
+        hovertemplate: `${eegData.channels[ch]}<extra></extra>`,
       })
     }
 
+    // Green bars at absolute recording time
+    const xaiWin = windows[Math.min(selectedWindow, windows.length - 1)]
     const shapes: Record<string, unknown>[] = topSegments
       .slice(0, 3)
       .filter((seg) => seg.channel_idx >= 0 && seg.channel_idx < numChannels)
       .map((seg) => {
         const yCenter = (numChannels - 1 - seg.channel_idx) * channelSpacing
         const halfBand = channelSpacing * 0.48
+        const x0 = xaiWin.startTime + seg.start_time_sec
+        const x1 = xaiWin.startTime + seg.end_time_sec
         return {
           type: "rect",
-          x0: seg.start_time_sec,
-          x1: seg.end_time_sec,
+          x0, x1,
           y0: yCenter - halfBand,
           y1: yCenter + halfBand,
-          fillcolor: "rgba(16, 185, 129, 0.15)",
-          line: { width: 0 },
+          fillcolor: "rgba(16, 185, 129, 0.25)",
+          line: { width: 1, color: "rgba(16, 185, 129, 0.6)" },
           layer: "below",
         }
       })
@@ -140,10 +146,10 @@ export function XaiPanel({
       paper_bgcolor: "rgba(0,0,0,0)",
       plot_bgcolor: "rgba(0,0,0,0)",
       font: { color: "#a1a1aa", size: 10 },
-      height: 380,
+      height: 280,
       margin: { l: 58, r: 10, t: 5, b: 30 },
       showlegend: false,
-      hovermode: "x unified",
+      hovermode: "closest",
       dragmode: "pan",
       xaxis: {
         title: { text: "Time (s)", font: { color: "#a1a1aa", size: 10 } },
@@ -151,20 +157,16 @@ export function XaiPanel({
         gridcolor: "rgba(255,255,255,0.06)",
         zeroline: false,
         showgrid: true,
+        range: fullDuration > 0 ? [0, Math.min(fullDuration, 10)] : undefined,
       },
       yaxis: {
-        tickvals: eegData.channels.map(
-          (_, i) => (numChannels - 1 - i) * channelSpacing
-        ),
+        tickvals: eegData.channels.map((_, i) => (numChannels - 1 - i) * channelSpacing),
         ticktext: eegData.channels,
         tickfont: { color: "#a1a1aa", size: 7 },
         gridcolor: "rgba(255,255,255,0.06)",
         zeroline: false,
         showgrid: true,
-        range: [
-          -channelSpacing * 0.7,
-          (numChannels - 0.3) * channelSpacing,
-        ],
+        range: [-channelSpacing * 0.7, (numChannels - 0.3) * channelSpacing],
         fixedrange: false,
       },
       shapes,
@@ -172,8 +174,10 @@ export function XaiPanel({
 
     const config: Record<string, unknown> = {
       responsive: true,
-      displayModeBar: false,
-      scrollZoom: false,
+      displayModeBar: true,
+      modeBarButtonsToRemove: ["lasso2d", "select2d"],
+      displaylogo: false,
+      scrollZoom: true,
     }
 
     Plotly.purge(plotRef.current)
@@ -181,9 +185,7 @@ export function XaiPanel({
 
     return () => {
       cancelled = true
-      if (plotRef.current) {
-        Plotly.purge(plotRef.current)
-      }
+      if (plotRef.current) Plotly.purge(plotRef.current)
     }
   }, [plotlyReady, hasEeg, eegData, selectedWindow, topSegments, uVPerDiv])
 
@@ -193,26 +195,24 @@ export function XaiPanel({
     if (!container) return
     const handleResize = () => {
       const Plotly = (window as any).Plotly
-      if (Plotly?.Plots?.resize && container) {
-        Plotly.Plots.resize(container)
-      }
+      if (Plotly?.Plots?.resize && container) Plotly.Plots.resize(container)
     }
     window.addEventListener("resize", handleResize)
     return () => window.removeEventListener("resize", handleResize)
   }, [plotlyReady])
 
-  const winLabel = xaiWindowIndex != null
-    ? ` (Window ${xaiWindowIndex + 1})`
-    : ""
   const hasTop = topSegments.length > 0
+  const xaiWinIdx = selectedWindow + 1
 
   return (
     <div className="space-y-3 p-4 rounded-lg border">
-      <h3 className="text-sm font-medium">Explainability (XAI){winLabel}</h3>
+      <h3 className="text-sm font-medium">Explainability (XAI)</h3>
 
       {hasTop && (
         <div className="space-y-1">
-          <p className="text-xs text-muted-foreground">Top influential segments:</p>
+          <p className="text-xs text-muted-foreground">
+            Top influential segments (analyzed from Window {xaiWinIdx}):
+          </p>
           {topSegments.slice(0, 3).map((seg, i) => (
             <div key={i} className="text-xs">
               <strong>{channelNames[seg.channel_idx] ?? `Ch${seg.channel_idx}`}</strong>
@@ -230,9 +230,7 @@ export function XaiPanel({
               key={v}
               onClick={() => setUVPerDiv(v)}
               className={`rounded px-1.5 py-0.5 transition-colors ${
-                uVPerDiv === v
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted hover:text-foreground"
+                uVPerDiv === v ? "bg-primary text-primary-foreground" : "bg-muted hover:text-foreground"
               }`}
             >
               {v}
@@ -242,11 +240,7 @@ export function XaiPanel({
       )}
 
       {hasEeg && (
-        <div
-          ref={plotRef}
-          className="w-full overflow-x-auto"
-          style={{ minHeight: 380 }}
-        />
+        <div ref={plotRef} className="w-full overflow-x-auto" style={{ minHeight: 280 }} />
       )}
     </div>
   )

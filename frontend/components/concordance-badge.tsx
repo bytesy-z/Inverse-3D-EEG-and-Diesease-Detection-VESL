@@ -84,7 +84,7 @@ export function ConcordanceBadge({ tier, overlap, description, sharedRegions }: 
       {sharedRegions && sharedRegions.length > 0 && (
         <details className="mt-2">
           <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
-            Shared regions ({sharedRegions.length})
+            Simulation Anomaly Regions ({sharedRegions.length})
           </summary>
           <ul className="mt-1 space-y-0.5">
             {sharedRegions.map((r) => (
